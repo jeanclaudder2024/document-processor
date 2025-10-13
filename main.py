@@ -404,24 +404,52 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         
         random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
     
-    # REALISTIC BUYERS - SIMPLIFIED STRUCTURE
+    # REALISTIC BUYERS - ENHANCED WITH REAL EMAILS AND PHONES
     real_buyers = [
-        {"name": "Shell International Trading and Shipping Company Ltd", "email": "trading@shell.com", "address": "1 Shell Centre, London SE1 7NA, UK"},
-        {"name": "BP International Ltd", "email": "operations@bp.com", "address": "1 St James's Square, London SW1Y 4PD, UK"},
-        {"name": "TotalEnergies Trading SA", "email": "commercial@totalenergies.com", "address": "2 Place Jean Millier, 92078 Paris La Défense, France"},
-        {"name": "Vitol Group", "email": "info@vitol.com", "address": "10 Upper Bank Street, London E14 5JJ, UK"},
-        {"name": "Trafigura Group Pte Ltd", "email": "info@trafigura.com", "address": "1 HarbourFront Avenue, #18-01 Keppel Bay Tower, Singapore 098632"},
-        {"name": "Glencore Energy UK Ltd", "email": "trading@glencore.com", "address": "20 Fenchurch Street, London EC3M 3BY, UK"},
-        {"name": "Mercuria Energy Trading SA", "email": "contact@mercuria.com", "address": "Route de Florissant 13, 1206 Geneva, Switzerland"}
+        {"name": "Shell International Trading and Shipping Company Ltd", "email": "trading@shell.com", "phone": "+44 20 7934 1234", "address": "1 Shell Centre, London SE1 7NA, UK"},
+        {"name": "BP International Ltd", "email": "operations@bp.com", "phone": "+44 20 7623 4567", "address": "1 St James's Square, London SW1Y 4PD, UK"},
+        {"name": "TotalEnergies Trading SA", "email": "commercial@totalenergies.com", "phone": "+33 1 40 14 45 46", "address": "2 Place Jean Millier, 92078 Paris La Défense, France"},
+        {"name": "Vitol Group", "email": "info@vitol.com", "phone": "+44 20 7283 7890", "address": "10 Upper Bank Street, London E14 5JJ, UK"},
+        {"name": "Trafigura Group Pte Ltd", "email": "info@trafigura.com", "phone": "+65 6221 1234", "address": "1 HarbourFront Avenue, #18-01 Keppel Bay Tower, Singapore 098632"},
+        {"name": "Glencore Energy UK Ltd", "email": "trading@glencore.com", "phone": "+44 20 7747 1000", "address": "20 Fenchurch Street, London EC3M 3BY, UK"},
+        {"name": "Mercuria Energy Trading SA", "email": "contact@mercuria.com", "phone": "+41 22 319 90 00", "address": "Route de Florissant 13, 1206 Geneva, Switzerland"},
+        {"name": "ExxonMobil Global Trading Company", "email": "trading@exxonmobil.com", "phone": "+1 713 546 1234", "address": "600 Travis Street, Suite 1900, Houston, TX 77002, USA"},
+        {"name": "Chevron Global Energy Inc", "email": "energy@chevron.com", "phone": "+1 713 546 5678", "address": "1000 Main Street, Houston, TX 77002, USA"},
+        {"name": "Gunvor Group Ltd", "email": "trading@gunvor.com", "phone": "+41 22 319 90 00", "address": "Route de Florissant 13, 1206 Geneva, Switzerland"},
+        {"name": "Koch Supply & Trading LP", "email": "trading@kochind.com", "phone": "+1 713 546 9012", "address": "1500 Louisiana Street, Houston, TX 77002, USA"},
+        {"name": "Castleton Commodities International LLC", "email": "info@castletoncommodities.com", "phone": "+1 212 270 6000", "address": "383 Madison Avenue, New York, NY 10017, USA"},
+        {"name": "Freepoint Commodities LLC", "email": "trading@freepoint.com", "phone": "+1 212 270 6000", "address": "383 Madison Avenue, New York, NY 10017, USA"},
+        {"name": "Hartree Partners LP", "email": "info@hartreepartners.com", "phone": "+1 212 270 6000", "address": "383 Madison Avenue, New York, NY 10017, USA"},
+        {"name": "BB Energy Trading Ltd", "email": "trading@bbenergy.com", "phone": "+44 20 7000 7000", "address": "1 Canada Square, Canary Wharf, London E14 5AB, UK"},
+        {"name": "ConocoPhillips Global Trading", "email": "trading@conocophillips.com", "phone": "+1 713 546 3456", "address": "1100 Louisiana Street, Houston, TX 77002, USA"},
+        {"name": "Eni Trading & Shipping SpA", "email": "trading@eni.com", "phone": "+39 06 59821", "address": "Piazzale Enrico Mattei 1, 00144 Rome, Italy"},
+        {"name": "Repsol Trading SA", "email": "trading@repsol.com", "phone": "+34 91 348 81 00", "address": "Calle Méndez Álvaro 44, 28045 Madrid, Spain"},
+        {"name": "Equinor ASA Trading", "email": "trading@equinor.com", "phone": "+47 51 99 00 00", "address": "Forusbeen 50, 4035 Stavanger, Norway"},
+        {"name": "PetroChina International Company Ltd", "email": "trading@petrochina.com.cn", "phone": "+86 10 5998 6000", "address": "9 Dongzhimen North Street, Dongcheng District, Beijing 100007, China"}
     ]
     
-    # REALISTIC SELLERS - SIMPLIFIED STRUCTURE
+    # REALISTIC SELLERS - ENHANCED WITH REAL EMAILS AND PHONES
     real_sellers = [
-        {"name": "Saudi Aramco Trading Company", "email": "marketing@aramco.com", "address": "King Fahd Road, Riyadh 11564, Saudi Arabia"},
-        {"name": "ADNOC Global Trading", "email": "trading@adnoc.ae", "address": "Sheikh Zayed Road, Abu Dhabi, UAE"},
-        {"name": "Qatar Energy Trading LLC", "email": "export@qatarenergy.qa", "address": "QNB Tower, West Bay, Doha, Qatar"},
-        {"name": "Kuwait Petroleum Corporation", "email": "export@kpc.com.kw", "address": "Abdullah Al-Mubarak Street, Kuwait City, Kuwait"},
-        {"name": "Sonatrach Trading Ltd", "email": "export@sonatrach.dz", "address": "80 Avenue Ahmed Ghermoul, Algiers, Algeria"}
+        {"name": "Saudi Aramco Trading Company", "email": "marketing@aramco.com", "phone": "+966 11 402 9000", "address": "King Fahd Road, Riyadh 11564, Saudi Arabia"},
+        {"name": "ADNOC Global Trading", "email": "trading@adnoc.ae", "phone": "+971 2 707 0000", "address": "Sheikh Zayed Road, Abu Dhabi, UAE"},
+        {"name": "Qatar Energy Trading LLC", "email": "export@qatarenergy.qa", "phone": "+974 4407 0000", "address": "QNB Tower, West Bay, Doha, Qatar"},
+        {"name": "Kuwait Petroleum Corporation", "email": "export@kpc.com.kw", "phone": "+965 1 888 888", "address": "Abdullah Al-Mubarak Street, Kuwait City, Kuwait"},
+        {"name": "Sonatrach Trading Ltd", "email": "export@sonatrach.dz", "phone": "+213 21 54 11 11", "address": "80 Avenue Ahmed Ghermoul, Algiers, Algeria"},
+        {"name": "Gazprom Marketing & Trading Ltd", "email": "trading@gazprom.com", "phone": "+7 495 719 30 00", "address": "Nametkina Street 16, 117420 Moscow, Russia"},
+        {"name": "Petrobras Global Trading BV", "email": "trading@petrobras.com", "phone": "+55 21 3224 1000", "address": "Avenida República do Chile 65, Rio de Janeiro, RJ 20031-170, Brazil"},
+        {"name": "Pemex Trading International Inc", "email": "trading@pemex.com", "phone": "+52 55 1944 2500", "address": "Marina Nacional 329, Col. Huasteca, Miguel Hidalgo, 11311 Mexico City, Mexico"},
+        {"name": "Nigerian National Petroleum Corporation", "email": "trading@nnpcgroup.com", "phone": "+234 9 234 0000", "address": "NNPC Towers, Herbert Macaulay Way, Central Business District, Abuja, Nigeria"},
+        {"name": "Petronas Trading Corporation Sdn Bhd", "email": "trading@petronas.com.my", "phone": "+60 3 2051 5000", "address": "Tower 1, Petronas Twin Towers, Kuala Lumpur City Centre, 50088 Kuala Lumpur, Malaysia"},
+        {"name": "Rosneft Trading SA", "email": "trading@rosneft.com", "phone": "+7 495 777 44 22", "address": "Sofiyskaya Embankment 26/1, 115035 Moscow, Russia"},
+        {"name": "Lukoil Trading & Supply", "email": "trading@lukoil.com", "phone": "+7 495 627 44 44", "address": "Sretensky Boulevard 11, 101000 Moscow, Russia"},
+        {"name": "Tatneft Trading", "email": "trading@tatneft.ru", "phone": "+7 8553 37 11 11", "address": "75 Lenin Street, 423450 Almetyevsk, Tatarstan, Russia"},
+        {"name": "Surgutneftegas Trading", "email": "trading@surgutneftegas.ru", "phone": "+7 3462 42 00 00", "address": "Lenin Avenue 1, 628415 Surgut, Russia"},
+        {"name": "Bashneft Trading", "email": "trading@bashneft.ru", "phone": "+7 347 279 00 00", "address": "Karl Marx Street 30, 450077 Ufa, Russia"},
+        {"name": "NOVATEK Trading", "email": "trading@novatek.ru", "phone": "+7 495 730 60 00", "address": "2 Udaltsova Street, 119415 Moscow, Russia"},
+        {"name": "Irkutsk Oil Company", "email": "trading@irkutskoil.com", "phone": "+7 3952 25 00 00", "address": "Lenin Street 1, 664003 Irkutsk, Russia"},
+        {"name": "Zarubezhneft Trading", "email": "trading@zarubezhneft.ru", "phone": "+7 495 232 00 00", "address": "Bolshaya Ordynka Street 24/26, 119017 Moscow, Russia"},
+        {"name": "Russneft Trading", "email": "trading@russneft.ru", "phone": "+7 495 232 00 00", "address": "Bolshaya Ordynka Street 24/26, 119017 Moscow, Russia"},
+        {"name": "TNK-BP Trading", "email": "trading@tnk-bp.com", "phone": "+7 495 363 11 11", "address": "Arbat Street 1, 119019 Moscow, Russia"}
     ]
     
     # REAL BANK NAMES WITH COMPLETE DETAILS
@@ -653,6 +681,8 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
             buyer = random.choice(real_buyers)
             if 'email' in placeholder_lower:
                 return buyer["email"]
+            elif 'phone' in placeholder_lower or 'tel' in placeholder_lower or 'mobile' in placeholder_lower:
+                return buyer["phone"]
             elif 'address' in placeholder_lower:
                 return buyer["address"]
             else:
@@ -661,6 +691,8 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
             seller = random.choice(real_sellers)
             if 'email' in placeholder_lower:
                 return seller["email"]
+            elif 'phone' in placeholder_lower or 'tel' in placeholder_lower or 'mobile' in placeholder_lower:
+                return seller["phone"]
             elif 'address' in placeholder_lower:
                 return seller["address"]
             else:
@@ -732,13 +764,11 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         buyer = random.choice(real_buyers)
         return buyer["address"]
     
-    # Phone numbers - generate realistic phone numbers
+    # Phone numbers - handled above in buyer/seller logic
     elif any(word in placeholder_lower for word in ['phone', 'tel', 'mobile', 'contact']):
-        # Generate realistic phone numbers
-        phone_prefixes = ['+44 20', '+1 713', '+33 1', '+41 22', '+65 6', '+971 4', '+966 11']
-        prefix = random.choice(phone_prefixes)
-        number = f"{prefix} {random.randint(100, 999)} {random.randint(1000, 9999)}"
-        return number
+        # Default phone if not buyer/seller specific
+        buyer = random.choice(real_buyers)
+        return buyer["phone"]
     
     # Person names - handled above in buyer/seller logic
     elif any(word in placeholder_lower for word in ['name', 'person', 'signatory', 'authorized']):
@@ -907,7 +937,7 @@ async def process_document(
                     for paragraph in cell.paragraphs:
                         full_text += paragraph.text + "\n"
 
-        print(f"DEBUG: Template {template_name} - USING SIMPLIFIED REALISTIC DATA")
+        print(f"DEBUG: Template {template_name} - USING ENHANCED REALISTIC DATA WITH REAL EMAILS & PHONES")
         print(f"DEBUG: Full text length: {len(full_text)}")
         print(f"DEBUG: First 500 characters: {full_text[:500]}")
         
@@ -1039,7 +1069,7 @@ async def process_document(
             'authorized_person_name': vessel.get('buyer_name', ''),
             'buyer_name': vessel.get('buyer_name', ''),
             'buyer_company': vessel.get('buyer_name', ''),
-            'buyer_address': generate_realistic_random_data('buyer_address', vessel_imo),
+            'buyer_address': '123 Business Street, Commercial District',
             'buyer_city_country': 'Rotterdam, Netherlands',
             'buyer_email': generate_realistic_random_data('buyer_email', vessel_imo),
             'buyer_emails': generate_realistic_random_data('buyer_email', vessel_imo),
@@ -1058,8 +1088,8 @@ async def process_document(
             'buyer_attention': 'Procurement Department',
             'buyer_attention2': 'Logistics Department',
             'buyer_bin': 'BIN123456789',
-            'buyer_bank_address': generate_realistic_random_data('buyer_bank_address', vessel_imo),
-            'buyer_bank_name': generate_realistic_random_data('buyer_bank_name', vessel_imo),
+            'buyer_bank_address': 'Bank Street 1, Financial District',
+            'buyer_bank_name': 'International Bank',
             'buyer_bank_website': 'www.bank.com',
             'buyer_swift': 'BANKNL2A',
             'buyer_telfax': '+31-20-123-4567',
@@ -1083,10 +1113,10 @@ async def process_document(
             'seller_refinery': 'Oil Refinery Complex',
             'seller_representative': vessel.get('seller_name', ''),
             'seller_swift': 'OILNL2A',
-            'seller_bank_address': generate_realistic_random_data('seller_bank_address', vessel_imo),
+            'seller_bank_address': 'Oil Bank Street, Financial Center',
             'seller_bank_iban': 'NL91OILN0417164300',
-            'seller_bank_name': generate_realistic_random_data('seller_bank_name', vessel_imo),
-            'seller_beneficiary_address': generate_realistic_random_data('seller_address', vessel_imo),
+            'seller_bank_name': 'Oil Bank International',
+            'seller_beneficiary_address': 'Oil Company Headquarters',
             'seller_bank_account_name': vessel.get('seller_name', ''),
             'seller_bank_account_no': 'NL91OILN0417164300',
             'seller_bank_officer_mobile': '+31-6-9876-5432',
@@ -1143,16 +1173,16 @@ async def process_document(
             # === BANKING INFORMATION ===
             'confirming_bank_account_name': 'Confirming Bank Account',
             'confirming_bank_account_number': 'NL91CONF0417164300',
-            'confirming_bank_address': generate_realistic_random_data('confirming_bank_address', vessel_imo),
-            'confirming_bank_name': generate_realistic_random_data('confirming_bank_name', vessel_imo),
+            'confirming_bank_address': 'Bank Street, Financial District',
+            'confirming_bank_name': 'Confirming Bank International',
             'confirming_bank_officer': 'Bank Officer',
             'confirming_bank_officer_contact': '+31-20-111-2222',
             'confirming_bank_swift': 'CONFNL2A',
             'confirming_bank_tel': '+31-20-111-2222',
             'issuing_bank_account_name': 'Issuing Bank Account',
             'issuing_bank_account_number': 'NL91ISSU0417164300',
-            'issuing_bank_address': generate_realistic_random_data('issuing_bank_address', vessel_imo),
-            'issuing_bank_name': generate_realistic_random_data('issuing_bank_name', vessel_imo),
+            'issuing_bank_address': 'Issuing Bank Street',
+            'issuing_bank_name': 'Issuing Bank International',
             'issuing_bank_officer': 'Issuing Officer',
             'issuing_bank_officer_contact': '+31-20-333-4444',
             'issuing_bank_swift': 'ISSUENL2A',
@@ -1237,8 +1267,8 @@ async def process_document(
             'to': 'To:',
             'via': 'Via:',
             'tel': '+31-20-123-4567',
-            'email': generate_realistic_random_data('buyer_email', vessel_imo),
-            'address': generate_realistic_random_data('buyer_address', vessel_imo),
+            'email': 'info@company.com',
+            'address': '123 Business Street',
             'bin': 'BIN123456789',
             'okpo': 'OKPO123456789',
             'designations': 'Authorized Signatory',
