@@ -404,212 +404,24 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         
         random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
     
-    # 20+ REALISTIC BUYERS WITH COMPLETE DATA
-    realistic_buyers = [
-        {
-            'name': 'James Richardson', 'company': 'Shell International Trading and Shipping Company Ltd',
-            'email_domain': 'shell.com', 'phone': '+44 20 7934 1234',
-            'address': '1 Shell Centre, London SE1 7NA, UK', 'city': 'london'
-        },
-        {
-            'name': 'Michael Thompson', 'company': 'ExxonMobil Global Trading Company',
-            'email_domain': 'exxonmobil.com', 'phone': '+1 713 546 1234',
-            'address': '600 Travis Street, Suite 1900, Houston, TX 77002, USA', 'city': 'houston'
-        },
-        {
-            'name': 'David Anderson', 'company': 'BP International Trading Ltd',
-            'email_domain': 'bp.com', 'phone': '+44 20 7623 4567',
-            'address': '25 North Colonnade, Canary Wharf, London E14 5HS, UK', 'city': 'london'
-        },
-        {
-            'name': 'Robert Wilson', 'company': 'Chevron Global Energy Inc',
-            'email_domain': 'chevron.com', 'phone': '+1 713 546 5678',
-            'address': '1000 Main Street, Houston, TX 77002, USA', 'city': 'houston'
-        },
-        {
-            'name': 'Christopher Brown', 'company': 'TotalEnergies Trading SA',
-            'email_domain': 'totalenergies.com', 'phone': '+33 1 40 14 45 46',
-            'address': '2 Place Jean Millier, 92078 Paris La Défense, France', 'city': 'paris'
-        },
-        {
-            'name': 'Daniel Davis', 'company': 'Vitol Group',
-            'email_domain': 'vitol.com', 'phone': '+44 20 7283 7890',
-            'address': '10 Upper Bank Street, London E14 5JJ, UK', 'city': 'london'
-        },
-        {
-            'name': 'Matthew Miller', 'company': 'Trafigura Group Pte Ltd',
-            'email_domain': 'trafigura.com', 'phone': '+65 6221 1234',
-            'address': '1 HarbourFront Avenue, #18-01 Keppel Bay Tower, Singapore 098632', 'city': 'singapore'
-        },
-        {
-            'name': 'Anthony Garcia', 'company': 'Glencore Energy UK Ltd',
-            'email_domain': 'glencore.com', 'phone': '+44 20 7747 1000',
-            'address': '20 Fenchurch Street, London EC3M 3BY, UK', 'city': 'london'
-        },
-        {
-            'name': 'Mark Martinez', 'company': 'Mercuria Energy Trading SA',
-            'email_domain': 'mercuria.com', 'phone': '+41 22 319 90 00',
-            'address': 'Route de Florissant 13, 1206 Geneva, Switzerland', 'city': 'geneva'
-        },
-        {
-            'name': 'Donald Rodriguez', 'company': 'Gunvor Group Ltd',
-            'email_domain': 'gunvor.com', 'phone': '+41 22 319 90 00',
-            'address': 'Route de Florissant 13, 1206 Geneva, Switzerland', 'city': 'geneva'
-        },
-        {
-            'name': 'Steven Lewis', 'company': 'Koch Supply & Trading LP',
-            'email_domain': 'kochind.com', 'phone': '+1 713 546 9012',
-            'address': '1500 Louisiana Street, Houston, TX 77002, USA', 'city': 'houston'
-        },
-        {
-            'name': 'Paul Lee', 'company': 'Castleton Commodities International LLC',
-            'email_domain': 'castletoncommodities.com', 'phone': '+1 212 270 6000',
-            'address': '383 Madison Avenue, New York, NY 10017, USA', 'city': 'newyork'
-        },
-        {
-            'name': 'Andrew Walker', 'company': 'Freepoint Commodities LLC',
-            'email_domain': 'freepoint.com', 'phone': '+1 212 270 6000',
-            'address': '383 Madison Avenue, New York, NY 10017, USA', 'city': 'newyork'
-        },
-        {
-            'name': 'Joshua Hall', 'company': 'Hartree Partners LP',
-            'email_domain': 'hartreepartners.com', 'phone': '+1 212 270 6000',
-            'address': '383 Madison Avenue, New York, NY 10017, USA', 'city': 'newyork'
-        },
-        {
-            'name': 'Kenneth Allen', 'company': 'BB Energy Trading Ltd',
-            'email_domain': 'bbenergy.com', 'phone': '+44 20 7000 7000',
-            'address': '1 Canada Square, Canary Wharf, London E14 5AB, UK', 'city': 'london'
-        },
-        {
-            'name': 'Kevin Young', 'company': 'ConocoPhillips Global Trading',
-            'email_domain': 'conocophillips.com', 'phone': '+1 713 546 3456',
-            'address': '1100 Louisiana Street, Houston, TX 77002, USA', 'city': 'houston'
-        },
-        {
-            'name': 'Brian King', 'company': 'Eni Trading & Shipping SpA',
-            'email_domain': 'eni.com', 'phone': '+39 06 59821',
-            'address': 'Piazzale Enrico Mattei 1, 00144 Rome, Italy', 'city': 'rome'
-        },
-        {
-            'name': 'George Wright', 'company': 'Repsol Trading SA',
-            'email_domain': 'repsol.com', 'phone': '+34 91 348 81 00',
-            'address': 'Calle Méndez Álvaro 44, 28045 Madrid, Spain', 'city': 'madrid'
-        },
-        {
-            'name': 'Edward Lopez', 'company': 'Equinor ASA Trading',
-            'email_domain': 'equinor.com', 'phone': '+47 51 99 00 00',
-            'address': 'Forusbeen 50, 4035 Stavanger, Norway', 'city': 'stavanger'
-        },
-        {
-            'name': 'Ronald Hill', 'company': 'PetroChina International Company Ltd',
-            'email_domain': 'petrochina.com.cn', 'phone': '+86 10 5998 6000',
-            'address': '9 Dongzhimen North Street, Dongcheng District, Beijing 100007, China', 'city': 'beijing'
-        }
+    # REALISTIC BUYERS - SIMPLIFIED STRUCTURE
+    real_buyers = [
+        {"name": "Shell International Trading and Shipping Company Ltd", "email": "trading@shell.com", "address": "1 Shell Centre, London SE1 7NA, UK"},
+        {"name": "BP International Ltd", "email": "operations@bp.com", "address": "1 St James's Square, London SW1Y 4PD, UK"},
+        {"name": "TotalEnergies Trading SA", "email": "commercial@totalenergies.com", "address": "2 Place Jean Millier, 92078 Paris La Défense, France"},
+        {"name": "Vitol Group", "email": "info@vitol.com", "address": "10 Upper Bank Street, London E14 5JJ, UK"},
+        {"name": "Trafigura Group Pte Ltd", "email": "info@trafigura.com", "address": "1 HarbourFront Avenue, #18-01 Keppel Bay Tower, Singapore 098632"},
+        {"name": "Glencore Energy UK Ltd", "email": "trading@glencore.com", "address": "20 Fenchurch Street, London EC3M 3BY, UK"},
+        {"name": "Mercuria Energy Trading SA", "email": "contact@mercuria.com", "address": "Route de Florissant 13, 1206 Geneva, Switzerland"}
     ]
     
-    # 20+ REALISTIC SELLERS WITH COMPLETE DATA
-    realistic_sellers = [
-        {
-            'name': 'Ahmed Al-Rashid', 'company': 'Saudi Aramco Trading Company',
-            'email_domain': 'aramco.com', 'phone': '+966 11 402 9000',
-            'address': 'King Fahd Road, Riyadh 11564, Saudi Arabia', 'city': 'riyadh'
-        },
-        {
-            'name': 'Mohammed Al-Zahra', 'company': 'Gazprom Marketing & Trading Ltd',
-            'email_domain': 'gazprom.com', 'phone': '+7 495 719 30 00',
-            'address': 'Nametkina Street 16, 117420 Moscow, Russia', 'city': 'moscow'
-        },
-        {
-            'name': 'Omar Al-Mansouri', 'company': 'Petrobras Global Trading BV',
-            'email_domain': 'petrobras.com', 'phone': '+55 21 3224 1000',
-            'address': 'Avenida República do Chile 65, Rio de Janeiro, RJ 20031-170, Brazil', 'city': 'riodejaneiro'
-        },
-        {
-            'name': 'Hassan Al-Kuwaiti', 'company': 'Pemex Trading International Inc',
-            'email_domain': 'pemex.com', 'phone': '+52 55 1944 2500',
-            'address': 'Marina Nacional 329, Col. Huasteca, Miguel Hidalgo, 11311 Mexico City, Mexico', 'city': 'mexicocity'
-        },
-        {
-            'name': 'Yusuf Al-Dubai', 'company': 'ADNOC Global Trading Ltd',
-            'email_domain': 'adnoc.ae', 'phone': '+971 2 707 0000',
-            'address': 'Sheikh Zayed Road, Abu Dhabi, UAE', 'city': 'dubai'
-        },
-        {
-            'name': 'Khalid Al-Riyadh', 'company': 'Kuwait Petroleum Corporation',
-            'email_domain': 'kpc.com.kw', 'phone': '+965 1 888 888',
-            'address': 'Abdullah Al-Mubarak Street, Kuwait City, Kuwait', 'city': 'kuwait'
-        },
-        {
-            'name': 'Tariq Al-Qatar', 'company': 'Qatar Petroleum Trading LLC',
-            'email_domain': 'qatarpetroleum.qa', 'phone': '+974 4407 0000',
-            'address': 'QNB Tower, West Bay, Doha, Qatar', 'city': 'doha'
-        },
-        {
-            'name': 'Nasser Al-Bahrain', 'company': 'Sonatrach Trading Ltd',
-            'email_domain': 'sonatrach.dz', 'phone': '+213 21 54 11 11',
-            'address': '80 Avenue Ahmed Ghermoul, 16035 Algiers, Algeria', 'city': 'algiers'
-        },
-        {
-            'name': 'Faisal Al-Oman', 'company': 'Nigerian National Petroleum Corporation',
-            'email_domain': 'nnpcgroup.com', 'phone': '+234 9 234 0000',
-            'address': 'NNPC Towers, Herbert Macaulay Way, Central Business District, Abuja, Nigeria', 'city': 'abuja'
-        },
-        {
-            'name': 'Saeed Al-Abu Dhabi', 'company': 'Petronas Trading Corporation Sdn Bhd',
-            'email_domain': 'petronas.com.my', 'phone': '+60 3 2051 5000',
-            'address': 'Tower 1, Petronas Twin Towers, Kuala Lumpur City Centre, 50088 Kuala Lumpur, Malaysia', 'city': 'kualalumpur'
-        },
-        {
-            'name': 'Rashid Al-Sharjah', 'company': 'Rosneft Trading SA',
-            'email_domain': 'rosneft.com', 'phone': '+7 495 777 44 22',
-            'address': 'Sofiyskaya Embankment 26/1, 115035 Moscow, Russia', 'city': 'moscow'
-        },
-        {
-            'name': 'Majid Al-Ajman', 'company': 'Lukoil Trading & Supply',
-            'email_domain': 'lukoil.com', 'phone': '+7 495 627 44 44',
-            'address': 'Sretensky Boulevard 11, 101000 Moscow, Russia', 'city': 'moscow'
-        },
-        {
-            'name': 'Sultan Al-Fujairah', 'company': 'Tatneft Trading',
-            'email_domain': 'tatneft.ru', 'phone': '+7 8553 37 11 11',
-            'address': '75 Lenin Street, 423450 Almetyevsk, Tatarstan, Russia', 'city': 'almetyevsk'
-        },
-        {
-            'name': 'Hamdan Al-Ras Al Khaimah', 'company': 'Surgutneftegas Trading',
-            'email_domain': 'surgutneftegas.ru', 'phone': '+7 3462 42 00 00',
-            'address': 'Lenin Avenue 1, 628415 Surgut, Russia', 'city': 'surgut'
-        },
-        {
-            'name': 'Zayed Al-Umm Al Quwain', 'company': 'Bashneft Trading',
-            'email_domain': 'bashneft.ru', 'phone': '+7 347 279 00 00',
-            'address': 'Karl Marx Street 30, 450077 Ufa, Russia', 'city': 'ufa'
-        },
-        {
-            'name': 'Mansour Al-Doha', 'company': 'NOVATEK Trading',
-            'email_domain': 'novatek.ru', 'phone': '+7 495 730 60 00',
-            'address': '2 Udaltsova Street, 119415 Moscow, Russia', 'city': 'moscow'
-        },
-        {
-            'name': 'Abdullah Al-Kuwait', 'company': 'Irkutsk Oil Company',
-            'email_domain': 'irkutskoil.com', 'phone': '+7 3952 25 00 00',
-            'address': 'Lenin Street 1, 664003 Irkutsk, Russia', 'city': 'irkutsk'
-        },
-        {
-            'name': 'Ibrahim Al-Manama', 'company': 'Zarubezhneft Trading',
-            'email_domain': 'zarubezhneft.ru', 'phone': '+7 495 232 00 00',
-            'address': 'Bolshaya Ordynka Street 24/26, 119017 Moscow, Russia', 'city': 'moscow'
-        },
-        {
-            'name': 'Yousef Al-Muscat', 'company': 'Russneft Trading',
-            'email_domain': 'russneft.ru', 'phone': '+7 495 232 00 00',
-            'address': 'Bolshaya Ordynka Street 24/26, 119017 Moscow, Russia', 'city': 'moscow'
-        },
-        {
-            'name': 'Salman Al-Dammam', 'company': 'TNK-BP Trading',
-            'email_domain': 'tnk-bp.com', 'phone': '+7 495 363 11 11',
-            'address': 'Arbat Street 1, 119019 Moscow, Russia', 'city': 'moscow'
-        }
+    # REALISTIC SELLERS - SIMPLIFIED STRUCTURE
+    real_sellers = [
+        {"name": "Saudi Aramco Trading Company", "email": "marketing@aramco.com", "address": "King Fahd Road, Riyadh 11564, Saudi Arabia"},
+        {"name": "ADNOC Global Trading", "email": "trading@adnoc.ae", "address": "Sheikh Zayed Road, Abu Dhabi, UAE"},
+        {"name": "Qatar Energy Trading LLC", "email": "export@qatarenergy.qa", "address": "QNB Tower, West Bay, Doha, Qatar"},
+        {"name": "Kuwait Petroleum Corporation", "email": "export@kpc.com.kw", "address": "Abdullah Al-Mubarak Street, Kuwait City, Kuwait"},
+        {"name": "Sonatrach Trading Ltd", "email": "export@sonatrach.dz", "address": "80 Avenue Ahmed Ghermoul, Algiers, Algeria"}
     ]
     
     # REAL BANK NAMES WITH COMPLETE DETAILS
@@ -835,34 +647,31 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     # Generate consistent data based on placeholder type
     placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '')
     
-    # Company/Buyer/Seller names - use realistic buyers and sellers with consistent data
+    # Company/Buyer/Seller names - use simplified realistic data
     if any(word in placeholder_lower for word in ['company', 'buyer', 'seller', 'principal']):
         if 'buyer' in placeholder_lower:
-            # Select consistent buyer based on vessel IMO
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            if 'company' in placeholder_lower or 'principal' in placeholder_lower:
-                return buyer['company']
+            buyer = random.choice(real_buyers)
+            if 'email' in placeholder_lower:
+                return buyer["email"]
+            elif 'address' in placeholder_lower:
+                return buyer["address"]
             else:
-                return buyer['name']
+                return buyer["name"]
         elif 'seller' in placeholder_lower:
-            # Select consistent seller based on vessel IMO
-            seller_index = hash(f"{vessel_imo}_seller") % len(realistic_sellers)
-            seller = realistic_sellers[seller_index]
-            if 'company' in placeholder_lower:
-                return seller['company']
+            seller = random.choice(real_sellers)
+            if 'email' in placeholder_lower:
+                return seller["email"]
+            elif 'address' in placeholder_lower:
+                return seller["address"]
             else:
-                return seller['name']
+                return seller["name"]
         elif 'principal' in placeholder_lower:
-            # Principal buyers get major companies
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            return buyer['company']
+            buyer = random.choice(real_buyers)
+            return buyer["name"]
         else:
-            # Default to buyer company
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            return buyer['company']
+            # Default to buyer
+            buyer = random.choice(real_buyers)
+            return buyer["name"]
     
     # Bank names - ensure different banks for different entities with complete details
     elif any(word in placeholder_lower for word in ['bank', 'financial', 'credit']):
@@ -911,79 +720,31 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         elif 'flag' in placeholder_lower:
             return random.choice(vessel_data['flags'])
     
-    # Email addresses - use realistic buyer/seller data with matching domains
+    # Email addresses - handled above in buyer/seller logic
     elif any(word in placeholder_lower for word in ['email', 'mail', 'e-mail', 'e_mail', 'contact']):
-        print(f"DEBUG: Processing email placeholder: {placeholder}")
-        if 'buyer' in placeholder_lower:
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            name = buyer['name'].lower().replace(' ', '.')
-            email = f"{name}@{buyer['email_domain']}"
-            print(f"DEBUG: Generated buyer email: {email}")
-            return email
-        elif 'seller' in placeholder_lower:
-            seller_index = hash(f"{vessel_imo}_seller") % len(realistic_sellers)
-            seller = realistic_sellers[seller_index]
-            name = seller['name'].lower().replace(' ', '.')
-            email = f"{name}@{seller['email_domain']}"
-            print(f"DEBUG: Generated seller email: {email}")
-            return email
-        else:
-            # Default to buyer email
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            name = buyer['name'].lower().replace(' ', '.')
-            email = f"{name}@{buyer['email_domain']}"
-            print(f"DEBUG: Generated default email: {email}")
-            return email
+        # Default email if not buyer/seller specific
+        buyer = random.choice(real_buyers)
+        return buyer["email"]
     
-    # Addresses - use realistic buyer/seller addresses
+    # Addresses - handled above in buyer/seller logic  
     elif any(word in placeholder_lower for word in ['address', 'location', 'street']):
-        if 'buyer' in placeholder_lower:
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            return buyer['address']
-        elif 'seller' in placeholder_lower:
-            seller_index = hash(f"{vessel_imo}_seller") % len(realistic_sellers)
-            seller = realistic_sellers[seller_index]
-            return seller['address']
-        else:
-            # Default to buyer address
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            return buyer['address']
+        # Default address if not buyer/seller specific
+        buyer = random.choice(real_buyers)
+        return buyer["address"]
     
-    # Phone numbers - use realistic buyer/seller phone numbers
+    # Phone numbers - generate realistic phone numbers
     elif any(word in placeholder_lower for word in ['phone', 'tel', 'mobile', 'contact']):
-        if 'buyer' in placeholder_lower:
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            return buyer['phone']
-        elif 'seller' in placeholder_lower:
-            seller_index = hash(f"{vessel_imo}_seller") % len(realistic_sellers)
-            seller = realistic_sellers[seller_index]
-            return seller['phone']
-        else:
-            # Default to buyer phone
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            return buyer['phone']
+        # Generate realistic phone numbers
+        phone_prefixes = ['+44 20', '+1 713', '+33 1', '+41 22', '+65 6', '+971 4', '+966 11']
+        prefix = random.choice(phone_prefixes)
+        number = f"{prefix} {random.randint(100, 999)} {random.randint(1000, 9999)}"
+        return number
     
-    # Person names - use realistic buyer/seller names
+    # Person names - handled above in buyer/seller logic
     elif any(word in placeholder_lower for word in ['name', 'person', 'signatory', 'authorized']):
-        if 'buyer' in placeholder_lower:
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            return buyer['name']
-        elif 'seller' in placeholder_lower:
-            seller_index = hash(f"{vessel_imo}_seller") % len(realistic_sellers)
-            seller = realistic_sellers[seller_index]
-            return seller['name']
-        else:
-            # Default to buyer name
-            buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-            buyer = realistic_buyers[buyer_index]
-            return buyer['name']
+        # Default name if not buyer/seller specific
+        buyer = random.choice(real_buyers)
+        return buyer["name"]
     
     # Trading terms
     elif any(word in placeholder_lower for word in ['incoterm', 'payment', 'terms']):
@@ -1033,29 +794,8 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     else:
         # Check if it's an email-related placeholder that didn't match above
         if any(word in placeholder_lower for word in ['email', 'mail', 'e-mail', 'e_mail', 'contact']):
-            print(f"DEBUG: Fallback processing email placeholder: {placeholder}")
-            if 'buyer' in placeholder_lower:
-                buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-                buyer = realistic_buyers[buyer_index]
-                name = buyer['name'].lower().replace(' ', '.')
-                email = f"{name}@{buyer['email_domain']}"
-                print(f"DEBUG: Fallback generated buyer email: {email}")
-                return email
-            elif 'seller' in placeholder_lower:
-                seller_index = hash(f"{vessel_imo}_seller") % len(realistic_sellers)
-                seller = realistic_sellers[seller_index]
-                name = seller['name'].lower().replace(' ', '.')
-                email = f"{name}@{seller['email_domain']}"
-                print(f"DEBUG: Fallback generated seller email: {email}")
-                return email
-            else:
-                # Default email
-                buyer_index = hash(f"{vessel_imo}_buyer") % len(realistic_buyers)
-                buyer = realistic_buyers[buyer_index]
-                name = buyer['name'].lower().replace(' ', '.')
-                email = f"{name}@{buyer['email_domain']}"
-                print(f"DEBUG: Fallback generated default email: {email}")
-                return email
+            buyer = random.choice(real_buyers)
+            return buyer["email"]
         # Check if it's a date-related placeholder that didn't match above
         elif 'date' in placeholder_lower or 'time' in placeholder_lower:
             from datetime import timedelta
@@ -1167,7 +907,7 @@ async def process_document(
                     for paragraph in cell.paragraphs:
                         full_text += paragraph.text + "\n"
 
-        print(f"DEBUG: Template {template_name} - USING REALISTIC COMPANY DATA")
+        print(f"DEBUG: Template {template_name} - USING SIMPLIFIED REALISTIC DATA")
         print(f"DEBUG: Full text length: {len(full_text)}")
         print(f"DEBUG: First 500 characters: {full_text[:500]}")
         
