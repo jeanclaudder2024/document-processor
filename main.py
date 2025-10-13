@@ -19,7 +19,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import re
-import openai
+from openai import OpenAI
 import json
 
 # Initialize FastAPI app
@@ -42,9 +42,10 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY:
-    openai.api_key = OPENAI_API_KEY
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
 else:
     print("Warning: OPENAI_API_KEY not found in environment variables")
+    openai_client = None
 
 # Create directories
 TEMPLATES_DIR = "./templates"
@@ -55,6 +56,10 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 def generate_ai_powered_data(placeholder: str, vessel_imo: str, vessel_context: dict = None) -> str:
     """Generate highly realistic, connected data using OpenAI"""
     try:
+        if not openai_client:
+            print(f"OpenAI client not available for {placeholder}")
+            return generate_realistic_random_data(placeholder, vessel_imo)
+        
         # Create context for AI
         context_info = ""
         if vessel_context:
@@ -88,7 +93,7 @@ Examples:
 
 Generate data for: {placeholder}"""
 
-        response = openai.ChatCompletion.create(
+        response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=100,
@@ -98,7 +103,8 @@ Generate data for: {placeholder}"""
         result = response.choices[0].message.content.strip()
         # Clean up the result
         result = result.strip('"').strip("'").strip()
-        print(f"AI Generated for {placeholder}: {result}")
+        # Reduced logging to avoid rate limits
+        # print(f"AI Generated for {placeholder}: {result}")
         return result
         
     except Exception as e:
@@ -162,7 +168,7 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         if any(word in placeholder_lower for word in ['date', 'time', 'eta', 'etd']):
             from datetime import timedelta
             date_result = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
-            print(f"DEBUG: Processing date placeholder: {placeholder} -> {date_result}")
+            # print(f"DEBUG: Processing date placeholder: {placeholder} -> {date_result}")
             return date_result
         
         # Reference numbers
