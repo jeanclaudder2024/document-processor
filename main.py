@@ -393,17 +393,17 @@ def process_document(template_name: str, vessel_imo: str) -> bytes:
             'refinery_location': vessel.get('refinery_location', ''),
             'refinery_capacity': vessel.get('refinery_capacity', ''),
             
-            # Use AI for key placeholders
-            'buyer_company_name': generate_ai_powered_data('buyer_company_name', vessel_imo, vessel),
-            'seller_company_name': generate_ai_powered_data('seller_company_name', vessel_imo, vessel),
-            'buyer_name': generate_ai_powered_data('buyer_name', vessel_imo, vessel),
-            'seller_name': generate_ai_powered_data('seller_name', vessel_imo, vessel),
-            'buyer_email': generate_ai_powered_data('buyer_email', vessel_imo, vessel),
-            'seller_email': generate_ai_powered_data('seller_email', vessel_imo, vessel),
-            'buyer_address': generate_ai_powered_data('buyer_address', vessel_imo, vessel),
-            'seller_address': generate_ai_powered_data('seller_address', vessel_imo, vessel),
-            'buyer_bank_name': generate_ai_powered_data('buyer_bank_name', vessel_imo, vessel),
-            'seller_bank_name': generate_ai_powered_data('seller_bank_name', vessel_imo, vessel),
+            # Use AI for key placeholders - will be generated when needed
+            'buyer_company_name': 'AI_GENERATE_buyer_company_name',
+            'seller_company_name': 'AI_GENERATE_seller_company_name',
+            'buyer_name': 'AI_GENERATE_buyer_name',
+            'seller_name': 'AI_GENERATE_seller_name',
+            'buyer_email': 'AI_GENERATE_buyer_email',
+            'seller_email': 'AI_GENERATE_seller_email',
+            'buyer_address': 'AI_GENERATE_buyer_address',
+            'seller_address': 'AI_GENERATE_seller_address',
+            'buyer_bank_name': 'AI_GENERATE_buyer_bank_name',
+            'seller_bank_name': 'AI_GENERATE_seller_bank_name',
             
             # Dates - all 2 weeks before today
             'date': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
@@ -424,8 +424,16 @@ def process_document(template_name: str, vessel_imo: str) -> bytes:
         for placeholder in placeholders:
             # First, try exact match from vessel mapping
             if placeholder in vessel_mapping:
-                replacements[placeholder] = vessel_mapping[placeholder]
-                print(f"Exact match for {placeholder}: {vessel_mapping[placeholder]}")
+                value = vessel_mapping[placeholder]
+                # Check if this is an AI generation marker
+                if isinstance(value, str) and value.startswith('AI_GENERATE_'):
+                    # Extract the actual placeholder name and generate AI data
+                    actual_placeholder = value.replace('AI_GENERATE_', '')
+                    replacements[placeholder] = generate_ai_powered_data(actual_placeholder, vessel_imo, vessel)
+                    print(f"AI Generated for {placeholder}: {replacements[placeholder]}")
+                else:
+                    replacements[placeholder] = value
+                    print(f"Exact match for {placeholder}: {value}")
             else:
                 # Try partial matching with safety checks
                 placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '')
@@ -449,7 +457,9 @@ def process_document(template_name: str, vessel_imo: str) -> bytes:
                     print(f"Generated random data for {placeholder}: {replacements[placeholder]}")
         
         # Replace placeholders in document
+        print(f"Replacing {len(replacements)} placeholders in document")
         replace_placeholders(doc, replacements)
+        print("Placeholder replacement completed")
         
         # Create password-protected DOCX
         return create_password_protected_docx(doc)
