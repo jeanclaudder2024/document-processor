@@ -1167,7 +1167,7 @@ async def process_document(
                     for paragraph in cell.paragraphs:
                         full_text += paragraph.text + "\n"
 
-        print(f"DEBUG: Template {template_name}")
+        print(f"DEBUG: Template {template_name} - UPDATED VERSION")
         print(f"DEBUG: Full text length: {len(full_text)}")
         print(f"DEBUG: First 500 characters: {full_text[:500]}")
         
