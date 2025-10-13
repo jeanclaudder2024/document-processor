@@ -1167,7 +1167,7 @@ async def process_document(
                     for paragraph in cell.paragraphs:
                         full_text += paragraph.text + "\n"
 
-        print(f"DEBUG: Template {template_name} - RAILWAY REDEPLOY TEST")
+        print(f"DEBUG: Template {template_name} - USING REALISTIC COMPANY DATA")
         print(f"DEBUG: Full text length: {len(full_text)}")
         print(f"DEBUG: First 500 characters: {full_text[:500]}")
         
@@ -1299,7 +1299,7 @@ async def process_document(
             'authorized_person_name': vessel.get('buyer_name', ''),
             'buyer_name': vessel.get('buyer_name', ''),
             'buyer_company': vessel.get('buyer_name', ''),
-            'buyer_address': '123 Business Street, Commercial District',
+            'buyer_address': generate_realistic_random_data('buyer_address', vessel_imo),
             'buyer_city_country': 'Rotterdam, Netherlands',
             'buyer_email': generate_realistic_random_data('buyer_email', vessel_imo),
             'buyer_emails': generate_realistic_random_data('buyer_email', vessel_imo),
@@ -1318,8 +1318,8 @@ async def process_document(
             'buyer_attention': 'Procurement Department',
             'buyer_attention2': 'Logistics Department',
             'buyer_bin': 'BIN123456789',
-            'buyer_bank_address': 'Bank Street 1, Financial District',
-            'buyer_bank_name': 'International Bank',
+            'buyer_bank_address': generate_realistic_random_data('buyer_bank_address', vessel_imo),
+            'buyer_bank_name': generate_realistic_random_data('buyer_bank_name', vessel_imo),
             'buyer_bank_website': 'www.bank.com',
             'buyer_swift': 'BANKNL2A',
             'buyer_telfax': '+31-20-123-4567',
@@ -1343,10 +1343,10 @@ async def process_document(
             'seller_refinery': 'Oil Refinery Complex',
             'seller_representative': vessel.get('seller_name', ''),
             'seller_swift': 'OILNL2A',
-            'seller_bank_address': 'Oil Bank Street, Financial Center',
+            'seller_bank_address': generate_realistic_random_data('seller_bank_address', vessel_imo),
             'seller_bank_iban': 'NL91OILN0417164300',
-            'seller_bank_name': 'Oil Bank International',
-            'seller_beneficiary_address': 'Oil Company Headquarters',
+            'seller_bank_name': generate_realistic_random_data('seller_bank_name', vessel_imo),
+            'seller_beneficiary_address': generate_realistic_random_data('seller_address', vessel_imo),
             'seller_bank_account_name': vessel.get('seller_name', ''),
             'seller_bank_account_no': 'NL91OILN0417164300',
             'seller_bank_officer_mobile': '+31-6-9876-5432',
@@ -1403,16 +1403,16 @@ async def process_document(
             # === BANKING INFORMATION ===
             'confirming_bank_account_name': 'Confirming Bank Account',
             'confirming_bank_account_number': 'NL91CONF0417164300',
-            'confirming_bank_address': 'Bank Street, Financial District',
-            'confirming_bank_name': 'Confirming Bank International',
+            'confirming_bank_address': generate_realistic_random_data('confirming_bank_address', vessel_imo),
+            'confirming_bank_name': generate_realistic_random_data('confirming_bank_name', vessel_imo),
             'confirming_bank_officer': 'Bank Officer',
             'confirming_bank_officer_contact': '+31-20-111-2222',
             'confirming_bank_swift': 'CONFNL2A',
             'confirming_bank_tel': '+31-20-111-2222',
             'issuing_bank_account_name': 'Issuing Bank Account',
             'issuing_bank_account_number': 'NL91ISSU0417164300',
-            'issuing_bank_address': 'Issuing Bank Street',
-            'issuing_bank_name': 'Issuing Bank International',
+            'issuing_bank_address': generate_realistic_random_data('issuing_bank_address', vessel_imo),
+            'issuing_bank_name': generate_realistic_random_data('issuing_bank_name', vessel_imo),
             'issuing_bank_officer': 'Issuing Officer',
             'issuing_bank_officer_contact': '+31-20-333-4444',
             'issuing_bank_swift': 'ISSUENL2A',
@@ -1497,8 +1497,8 @@ async def process_document(
             'to': 'To:',
             'via': 'Via:',
             'tel': '+31-20-123-4567',
-            'email': 'info@company.com',
-            'address': '123 Business Street',
+            'email': generate_realistic_random_data('buyer_email', vessel_imo),
+            'address': generate_realistic_random_data('buyer_address', vessel_imo),
             'bin': 'BIN123456789',
             'okpo': 'OKPO123456789',
             'designations': 'Authorized Signatory',
