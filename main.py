@@ -460,7 +460,7 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
             {'name': 'Standard Chartered Bank', 'swift': 'SCBLUS33', 'address': '1095 Avenue of the Americas, New York, NY 10036, USA', 'phone': '+1 212 667 7000'},
             {'name': 'Deutsche Bank AG', 'swift': 'DEUTDEFF', 'address': 'Taunusanlage 12, 60325 Frankfurt am Main, Germany', 'phone': '+49 69 910 00'},
             {'name': 'BNP Paribas SA', 'swift': 'BNPAFRPP', 'address': '16 Boulevard des Italiens, 75009 Paris, France', 'phone': '+33 1 40 14 45 46'},
-            {'name': 'Société Générale SA', 'swift': 'SOGEFRPP', 'address': '29 Boulevard Haussmann, 75009 Paris, France', 'phone': '+33 1 42 14 20 00'},
+            {'name': 'Societe Generale SA', 'swift': 'SOGEFRPP', 'address': '29 Boulevard Haussmann, 75009 Paris, France', 'phone': '+33 1 42 14 20 00'},
             {'name': 'Credit Suisse AG', 'swift': 'CRESCHZZ', 'address': 'Paradeplatz 8, 8001 Zurich, Switzerland', 'phone': '+41 44 333 11 11'},
             {'name': 'UBS AG', 'swift': 'UBSWCHZH', 'address': 'Bahnhofstrasse 45, 8001 Zurich, Switzerland', 'phone': '+41 44 234 11 11'},
             {'name': 'Barclays Bank plc', 'swift': 'BARCGB22', 'address': '1 Churchill Place, London E14 5HP, UK', 'phone': '+44 20 7116 1000'},
@@ -469,8 +469,8 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         'energy_specialists': [
             {'name': 'ING Bank NV', 'swift': 'INGBNL2A', 'address': 'Bijlmerplein 888, 1102 MG Amsterdam, Netherlands', 'phone': '+31 20 563 9111'},
             {'name': 'ABN AMRO Bank NV', 'swift': 'ABNANL2A', 'address': 'Gustav Mahlerlaan 10, 1082 PP Amsterdam, Netherlands', 'phone': '+31 20 343 3433'},
-            {'name': 'Natixis SA', 'swift': 'NATXFRPP', 'address': '30 Avenue Pierre Mendès France, 75013 Paris, France', 'phone': '+33 1 58 19 40 00'},
-            {'name': 'Crédit Agricole CIB', 'swift': 'AGRIFRPP', 'address': '12 Place des États-Unis, 92127 Montrouge, France', 'phone': '+33 1 41 89 20 00'},
+            {'name': 'Natixis SA', 'swift': 'NATXFRPP', 'address': '30 Avenue Pierre Mendes France, 75013 Paris, France', 'phone': '+33 1 58 19 40 00'},
+            {'name': 'Credit Agricole CIB', 'swift': 'AGRIFRPP', 'address': '12 Place des Etats-Unis, 92127 Montrouge, France', 'phone': '+33 1 41 89 20 00'},
             {'name': 'Mizuho Bank Ltd', 'swift': 'MHCBJPJT', 'address': '1-5-5 Otemachi, Chiyoda-ku, Tokyo 100-8176, Japan', 'phone': '+81 3 5224 1111'},
             {'name': 'Sumitomo Mitsui Banking Corporation', 'swift': 'SMBCJPJT', 'address': '1-1-2 Marunouchi, Chiyoda-ku, Tokyo 100-0005, Japan', 'phone': '+81 3 3287 0111'},
             {'name': 'Bank of China Ltd', 'swift': 'BKCHCNBJ', 'address': '1 Fuxingmen Nei Dajie, Xicheng District, Beijing 100818, China', 'phone': '+86 10 6659 6688'},
@@ -484,7 +484,7 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
             {'name': 'National Bank of Kuwait SAK', 'swift': 'NBOKKWKW', 'address': 'Abdullah Al-Mubarak Street, Kuwait City, Kuwait', 'phone': '+965 1 888 888'},
             {'name': 'Qatar National Bank SAQ', 'swift': 'QNBAQAQA', 'address': 'QNB Tower, West Bay, Doha, Qatar', 'phone': '+974 4407 0000'},
             {'name': 'Saudi National Bank', 'swift': 'NCBKSAJE', 'address': 'King Fahd Road, Riyadh 11564, Saudi Arabia', 'phone': '+966 11 402 9000'},
-            {'name': 'Banco do Brasil SA', 'swift': 'BRASBRRJ', 'address': 'Setor Bancário Sul, Quadra 1, Brasília, DF 70073-900, Brazil', 'phone': '+55 61 3214 2000'},
+            {'name': 'Banco do Brasil SA', 'swift': 'BRASBRRJ', 'address': 'Setor Bancario Sul, Quadra 1, Brasilia, DF 70073-900, Brazil', 'phone': '+55 61 3214 2000'},
             {'name': 'Banco Santander SA', 'swift': 'BSCHESMM', 'address': 'Paseo de Pereda 9-12, 39004 Santander, Spain', 'phone': '+34 942 20 61 00'},
             {'name': 'UniCredit Bank AG', 'swift': 'UNCRITMM', 'address': 'Piazza Gae Aulenti 3, 20154 Milan, Italy', 'phone': '+39 02 8862 1'},
             {'name': 'Intesa Sanpaolo SpA', 'swift': 'BCITITMM', 'address': 'Piazza San Carlo 156, 10121 Turin, Italy', 'phone': '+39 011 555 1'},
@@ -675,8 +675,30 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     # Generate consistent data based on placeholder type
     placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '')
     
-    # Company/Buyer/Seller names - use simplified realistic data
-    if any(word in placeholder_lower for word in ['company', 'buyer', 'seller', 'principal']):
+    # Bank names - ensure different banks for different entities with complete details (PRIORITY)
+    if any(word in placeholder_lower for word in ['bank', 'financial', 'credit']):
+        if 'buyer' in placeholder_lower:
+            # Buyer banks - international and energy specialists
+            bank_data = random.choice(banks['international'] + banks['energy_specialists'])
+        elif 'seller' in placeholder_lower:
+            # Seller banks - regional and energy specialists
+            bank_data = random.choice(banks['regional'] + banks['energy_specialists'])
+        else:
+            # Default bank selection
+            bank_data = random.choice(banks['international'] + banks['energy_specialists'])
+        
+        # Return appropriate bank detail based on placeholder
+        if 'swift' in placeholder_lower:
+            return bank_data['swift']
+        elif 'address' in placeholder_lower:
+            return bank_data['address']
+        elif 'phone' in placeholder_lower or 'tel' in placeholder_lower:
+            return bank_data['phone']
+        else:
+            return bank_data['name']
+    
+    # Company/Buyer/Seller names - use simplified realistic data (AFTER bank logic)
+    elif any(word in placeholder_lower for word in ['company', 'buyer', 'seller', 'principal']):
         if 'buyer' in placeholder_lower:
             buyer = random.choice(real_buyers)
             if 'email' in placeholder_lower:
@@ -704,28 +726,6 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
             # Default to buyer
             buyer = random.choice(real_buyers)
             return buyer["name"]
-    
-    # Bank names - ensure different banks for different entities with complete details
-    elif any(word in placeholder_lower for word in ['bank', 'financial', 'credit']):
-        if 'buyer' in placeholder_lower:
-            # Buyer banks - international and energy specialists
-            bank_data = random.choice(banks['international'] + banks['energy_specialists'])
-        elif 'seller' in placeholder_lower:
-            # Seller banks - regional and energy specialists
-            bank_data = random.choice(banks['regional'] + banks['energy_specialists'])
-        else:
-            # Default bank selection
-            bank_data = random.choice(banks['international'] + banks['energy_specialists'])
-        
-        # Return appropriate bank detail based on placeholder
-        if 'swift' in placeholder_lower:
-            return bank_data['swift']
-        elif 'address' in placeholder_lower:
-            return bank_data['address']
-        elif 'phone' in placeholder_lower or 'tel' in placeholder_lower:
-            return bank_data['phone']
-        else:
-            return bank_data['name']
     
     # Oil types and products
     elif any(word in placeholder_lower for word in ['oil', 'product', 'cargo', 'commodity']):
