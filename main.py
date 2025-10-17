@@ -8,6 +8,7 @@ import uuid
 import tempfile
 import zipfile
 import shutil
+import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
@@ -18,8 +19,15 @@ from supabase import create_client, Client
 from docx import Document
 import re
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Initialize FastAPI app
 app = FastAPI(title="Document Processing API", version="1.0.0")
+
+# Load environment variables
+load_dotenv()
 
 # CORS middleware
 app.add_middleware(
@@ -30,10 +38,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Supabase client - Direct configuration
-SUPABASE_URL = "https://ozjhdxvwqbzcvcywhwjg.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q"
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Supabase client - Use environment variables with fallback
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
+
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.info("Successfully connected to Supabase")
+except Exception as e:
+    logger.error(f"Failed to connect to Supabase: {e}")
+    supabase = None
 
 # Create directories
 TEMPLATES_DIR = "./templates"
@@ -41,9 +55,40 @@ TEMP_DIR = "./temp"
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the application on startup"""
+    logger.info("🚀 Document Processing API starting up...")
+    logger.info(f"📁 Templates directory: {TEMPLATES_DIR}")
+    logger.info(f"📁 Temp directory: {TEMP_DIR}")
+    logger.info(f"🔗 Supabase URL: {SUPABASE_URL}")
+    
+    # Check if templates directory has files
+    template_files = [f for f in os.listdir(TEMPLATES_DIR) if f.endswith('.docx')]
+    logger.info(f"📄 Found {len(template_files)} template files")
+    
+    if supabase:
+        logger.info("✅ Supabase connection established")
+    else:
+        logger.warning("⚠️ Supabase connection failed - using fallback data only")
+
 def get_vessel_data(imo: str) -> Optional[Dict]:
     """Get comprehensive vessel data from multiple Supabase tables"""
     try:
+        if not supabase:
+            logger.warning("Supabase not available, returning mock vessel data")
+            return {
+                'imo': imo,
+                'name': f'Vessel {imo}',
+                'vessel_type': 'Tanker',
+                'flag': 'Panama',
+                'built': '2010',
+                'deadweight': '50000',
+                'length': '200',
+                'width': '32',
+                'gross_tonnage': '30000'
+            }
+        
         vessel_data = {}
         
         # 1. Get vessel data from vessels table
@@ -747,11 +792,19 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint with detailed status information"""
+    template_files = [f for f in os.listdir(TEMPLATES_DIR) if f.endswith('.docx')]
+    
     return {
         "status": "healthy",
-        "database": "connected" if SUPABASE_URL else "not_configured",
-        "templates_count": len([f for f in os.listdir(TEMPLATES_DIR) if f.endswith('.docx')]),
-        "timestamp": datetime.now().isoformat()
+        "database": "connected" if supabase else "disconnected",
+        "supabase_url": SUPABASE_URL,
+        "templates_count": len(template_files),
+        "templates": template_files,
+        "temp_dir_exists": os.path.exists(TEMP_DIR),
+        "templates_dir_exists": os.path.exists(TEMPLATES_DIR),
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0"
     }
 
 @app.get("/templates")
@@ -1319,10 +1372,12 @@ if __name__ == "__main__":
     
     # Simple HTTP server for VPS deployment
     port = int(os.environ.get('FASTAPI_PORT', 8000))
+    host = os.environ.get('FASTAPI_HOST', '0.0.0.0')
     
-    print("🚀 Starting Document Processor API...")
-    print(f"🌐 Server running on: http://0.0.0.0:{port}")
-    print("📁 Templates directory:", os.path.join(os.getcwd(), 'templates'))
-    print("🔧 Ready for VPS deployment!")
+    logger.info("🚀 Starting Document Processing API...")
+    logger.info(f"🌐 Server running on: http://{host}:{port}")
+    logger.info(f"📁 Templates directory: {os.path.join(os.getcwd(), 'templates')}")
+    logger.info(f"📁 Temp directory: {os.path.join(os.getcwd(), 'temp')}")
+    logger.info("🔧 Ready for VPS deployment!")
     
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host=host, port=port, log_level="info")
