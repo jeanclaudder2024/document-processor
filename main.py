@@ -16,8 +16,6 @@ from fastapi.responses import Response
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
 import re
 
 # Initialize FastAPI app
@@ -282,101 +280,6 @@ def convert_docx_to_pdf(docx_path: str) -> str:
         # Final fallback: return the DOCX file
         return docx_path
 
-def create_password_protected_docx(docx_path: str, password: str = "petrodealhub@2025@") -> str:
-    """Create a Word-compatible password-protected DOCX file that prevents editing without warnings"""
-    try:
-        # Create a new protected DOCX file
-        protected_path = os.path.join(TEMP_DIR, f"protected_{uuid.uuid4().hex}.docx")
-        
-        # Load the original document
-        doc = Document(docx_path)
-        
-        # Method 1: Use python-docx's built-in protection (most compatible)
-        try:
-            # Add write protection using the standard method
-            settings = doc.settings
-            
-            # Create write protection element with proper namespace
-            write_protection = OxmlElement('w:writeProtection')
-            write_protection.set(qn('w:enforcement'), '1')
-            write_protection.set(qn('w:cryptProviderType'), 'rsaAES')
-            write_protection.set(qn('w:cryptAlgorithmClass'), 'hash')
-            write_protection.set(qn('w:cryptAlgorithmType'), 'typeAny')
-            write_protection.set(qn('w:cryptAlgorithmSid'), '14')
-            write_protection.set(qn('w:cryptSpinCount'), '100000')
-            
-            # Add password hash (simplified but compatible)
-            import hashlib
-            password_hash = hashlib.sha256(password.encode()).hexdigest()[:32]  # Truncate for compatibility
-            write_protection.set(qn('w:hash'), password_hash)
-            
-            # Add to settings
-            settings._element.append(write_protection)
-            
-            # Save the document
-            doc.save(protected_path)
-            
-            print(f"Created Word-compatible password-protected DOCX: {protected_path}")
-            return protected_path
-            
-        except Exception as docx_error:
-            print(f"Standard protection failed, trying alternative method: {docx_error}")
-            
-            # Method 2: Alternative approach using document properties
-            try:
-                # Create a new document with protection
-                new_doc = Document()
-                
-                # Copy content from original document
-                for paragraph in doc.paragraphs:
-                    new_para = new_doc.add_paragraph()
-                    for run in paragraph.runs:
-                        new_run = new_para.add_run(run.text)
-                        new_run.bold = run.bold
-                        new_run.italic = run.italic
-                        new_run.underline = run.underline
-                        new_run.font.size = run.font.size
-                        new_run.font.name = run.font.name
-                
-                # Copy tables
-                for table in doc.tables:
-                    new_table = new_doc.add_table(rows=len(table.rows), cols=len(table.columns))
-                    for i, row in enumerate(table.rows):
-                        for j, cell in enumerate(row.cells):
-                            new_table.cell(i, j).text = cell.text
-                
-                # Add protection to new document
-                settings = new_doc.settings
-                write_protection = OxmlElement('w:writeProtection')
-                write_protection.set(qn('w:enforcement'), '1')
-                write_protection.set(qn('w:cryptProviderType'), 'rsaAES')
-                write_protection.set(qn('w:cryptAlgorithmClass'), 'hash')
-                write_protection.set(qn('w:cryptAlgorithmType'), 'typeAny')
-                write_protection.set(qn('w:cryptAlgorithmSid'), '14')
-                write_protection.set(qn('w:cryptSpinCount'), '100000')
-                
-                import hashlib
-                password_hash = hashlib.sha256(password.encode()).hexdigest()[:32]
-                write_protection.set(qn('w:hash'), password_hash)
-                
-                settings._element.append(write_protection)
-                new_doc.save(protected_path)
-                
-                print(f"Created alternative password-protected DOCX: {protected_path}")
-                return protected_path
-                
-            except Exception as alt_error:
-                print(f"Alternative protection failed: {alt_error}")
-                
-                # Method 3: Simple fallback - just copy the original with basic protection
-                shutil.copy2(docx_path, protected_path)
-                print(f"Using fallback protection (copy): {protected_path}")
-                return protected_path
-        
-    except Exception as e:
-        print(f"Error creating password-protected DOCX: {e}")
-        # Final fallback: return original DOCX
-        return docx_path
 
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
     """Generate highly realistic, varied random data for oil trading documents with real professional data"""
@@ -989,10 +892,10 @@ async def process_document(
             'operator_name': vessel.get('operator_name', ''),
             'operator': vessel.get('operator_name', ''),
             'vessel_operator': vessel.get('operator_name', ''),
-            'buyer_name': vessel.get('buyer_name', ''),
-            'buyer': vessel.get('buyer_name', ''),
-            'seller_name': vessel.get('seller_name', ''),
-            'seller': vessel.get('seller_name', ''),
+            'buyer_name': generate_realistic_random_data('buyer_name', vessel_imo),
+            'buyer': generate_realistic_random_data('buyer_name', vessel_imo),
+            'seller_name': generate_realistic_random_data('seller_name', vessel_imo),
+            'seller': generate_realistic_random_data('seller_name', vessel_imo),
             'company_name': vessel.get('owner_name', ''),
             
             # === CARGO INFORMATION ===
@@ -1058,71 +961,71 @@ async def process_document(
             'invoice_no': f"INV-{vessel.get('imo', '') or 'UNKNOWN'}-{datetime.now().strftime('%Y%m%d')}",
             
             # === BUYER INFORMATION ===
-            'principal_buyer_name': vessel.get('buyer_name', ''),
-            'buyer_logistics_name': vessel.get('buyer_name', ''),
+            'principal_buyer_name': generate_realistic_random_data('buyer_name', vessel_imo),
+            'buyer_logistics_name': generate_realistic_random_data('buyer_name', vessel_imo),
             'principal_buyer_designation': 'Procurement Manager',
             'buyer_logistics_designation': 'Logistics Coordinator',
-            'principal_buyer_company': vessel.get('buyer_name', ''),
-            'buyer_logistics_company': vessel.get('buyer_name', ''),
-            'buyer_company_name': vessel.get('buyer_name', ''),
-            'buyer_company_name2': vessel.get('buyer_name', ''),
-            'authorized_person_name': vessel.get('buyer_name', ''),
-            'buyer_name': vessel.get('buyer_name', ''),
-            'buyer_company': vessel.get('buyer_name', ''),
-            'buyer_address': '123 Business Street, Commercial District',
-            'buyer_city_country': 'Rotterdam, Netherlands',
+            'principal_buyer_company': generate_realistic_random_data('buyer_company', vessel_imo),
+            'buyer_logistics_company': generate_realistic_random_data('buyer_company', vessel_imo),
+            'buyer_company_name': generate_realistic_random_data('buyer_company', vessel_imo),
+            'buyer_company_name2': generate_realistic_random_data('buyer_company', vessel_imo),
+            'authorized_person_name': generate_realistic_random_data('buyer_name', vessel_imo),
+            'buyer_name': generate_realistic_random_data('buyer_name', vessel_imo),
+            'buyer_company': generate_realistic_random_data('buyer_company', vessel_imo),
+            'buyer_address': generate_realistic_random_data('buyer_address', vessel_imo),
+            'buyer_city_country': generate_realistic_random_data('buyer_address', vessel_imo).split(',')[-2].strip() + ', ' + generate_realistic_random_data('buyer_address', vessel_imo).split(',')[-1].strip(),
             'buyer_email': generate_realistic_random_data('buyer_email', vessel_imo),
             'buyer_emails': generate_realistic_random_data('buyer_email', vessel_imo),
             'buyer_contact_email': generate_realistic_random_data('buyer_email', vessel_imo),
             'buyer_representative_email': generate_realistic_random_data('buyer_email', vessel_imo),
-            'buyer_fax': '+31-20-123-4567',
-            'buyer_mobile': '+31-6-1234-5678',
-            'buyer_office_tel': '+31-20-123-4567',
+            'buyer_fax': generate_realistic_random_data('buyer_phone', vessel_imo),
+            'buyer_mobile': generate_realistic_random_data('buyer_phone', vessel_imo),
+            'buyer_office_tel': generate_realistic_random_data('buyer_phone', vessel_imo),
             'buyer_position': 'Procurement Manager',
             'buyer_registration': 'NL123456789',
-            'buyer_representative': vessel.get('buyer_name', ''),
-            'buyer_signatory_name': vessel.get('buyer_name', ''),
+            'buyer_representative': generate_realistic_random_data('buyer_name', vessel_imo),
+            'buyer_signatory_name': generate_realistic_random_data('buyer_name', vessel_imo),
             'buyer_signatory_position': 'Authorized Signatory',
             'buyer_signatory_date': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
             'buyer_signature': 'Digital Signature',
             'buyer_attention': 'Procurement Department',
             'buyer_attention2': 'Logistics Department',
             'buyer_bin': 'BIN123456789',
-            'buyer_bank_address': 'Bank Street 1, Financial District',
-            'buyer_bank_name': 'International Bank',
+            'buyer_bank_address': generate_realistic_random_data('buyer_bank_address', vessel_imo),
+            'buyer_bank_name': generate_realistic_random_data('buyer_bank_name', vessel_imo),
             'buyer_bank_website': 'www.bank.com',
-            'buyer_swift': 'BANKNL2A',
-            'buyer_telfax': '+31-20-123-4567',
-            'buyer_account_name': vessel.get('buyer_name', ''),
+            'buyer_swift': generate_realistic_random_data('buyer_bank_swift', vessel_imo),
+            'buyer_telfax': generate_realistic_random_data('buyer_phone', vessel_imo),
+            'buyer_account_name': generate_realistic_random_data('buyer_name', vessel_imo),
             'buyer_account_no': 'NL91ABNA0417164300',
             'buyer_passport_no': 'P123456789',
             
             # === SELLER INFORMATION ===
-            'seller_name': vessel.get('seller_name', ''),
+            'seller_name': generate_realistic_random_data('seller_name', vessel_imo),
             'seller_designation': 'Sales Director',
-            'seller_company': vessel.get('seller_name', ''),
+            'seller_company': generate_realistic_random_data('seller_company', vessel_imo),
             'seller_signature': 'Authorized Signature',
-            'seller_signatory': vessel.get('seller_name', ''),
+            'seller_signatory': generate_realistic_random_data('seller_name', vessel_imo),
             'seller_title': 'Sales Director',
-            'seller_address': '456 Oil Street, Industrial Zone',
-            'seller_address2': 'Suite 100, Oil Plaza',
+            'seller_address': generate_realistic_random_data('seller_address', vessel_imo),
+            'seller_address2': generate_realistic_random_data('seller_address', vessel_imo),
             'seller_company_no': 'REG123456789',
             'seller_company_reg': 'Registered in Oil Country',
             'seller_emails': generate_realistic_random_data('seller_email', vessel_imo),
             'seller_passport_no': 'P987654321',
             'seller_refinery': 'Oil Refinery Complex',
-            'seller_representative': vessel.get('seller_name', ''),
-            'seller_swift': 'OILNL2A',
-            'seller_bank_address': 'Oil Bank Street, Financial Center',
+            'seller_representative': generate_realistic_random_data('seller_name', vessel_imo),
+            'seller_swift': generate_realistic_random_data('seller_bank_swift', vessel_imo),
+            'seller_bank_address': generate_realistic_random_data('seller_bank_address', vessel_imo),
             'seller_bank_iban': 'NL91OILN0417164300',
-            'seller_bank_name': 'Oil Bank International',
-            'seller_beneficiary_address': 'Oil Company Headquarters',
-            'seller_bank_account_name': vessel.get('seller_name', ''),
+            'seller_bank_name': generate_realistic_random_data('seller_bank_name', vessel_imo),
+            'seller_beneficiary_address': generate_realistic_random_data('seller_address', vessel_imo),
+            'seller_bank_account_name': generate_realistic_random_data('seller_name', vessel_imo),
             'seller_bank_account_no': 'NL91OILN0417164300',
-            'seller_bank_officer_mobile': '+31-6-9876-5432',
+            'seller_bank_officer_mobile': generate_realistic_random_data('seller_phone', vessel_imo),
             'seller_bank_officer_name': 'Bank Officer',
-            'seller_bank_swift': 'OILNL2A',
-            'seller_tel': '+31-20-987-6543',
+            'seller_bank_swift': generate_realistic_random_data('seller_bank_swift', vessel_imo),
+            'seller_tel': generate_realistic_random_data('seller_phone', vessel_imo),
             'seller_email': generate_realistic_random_data('seller_email', vessel_imo),
             'seller_contact_email': generate_realistic_random_data('seller_email', vessel_imo),
             'seller_representative_email': generate_realistic_random_data('seller_email', vessel_imo),
@@ -1323,30 +1226,57 @@ async def process_document(
         # Process the document
         processed_docx_path = replace_placeholders_in_docx(template_path, data_mapping)
         
-        # Create password-protected DOCX
-        protected_docx_path = create_password_protected_docx(processed_docx_path, "petrodealhub@2025@")
-        
-        # Read protected DOCX content
-        with open(protected_docx_path, 'rb') as f:
-            docx_content = f.read()
-        
-        # Clean up temp files
+        # Convert DOCX to PDF using docx2pdf
         try:
-            os.remove(processed_docx_path)
-            if protected_docx_path != processed_docx_path:  # Only remove if it's different
-                os.remove(protected_docx_path)
-        except:
-            pass  # Ignore cleanup errors
-        
-        # Return password-protected DOCX
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"processed_{vessel_imo}_{timestamp}.docx"
-        
-        return Response(
-            content=docx_content,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+            from docx2pdf import convert
+            pdf_path = os.path.join(TEMP_DIR, f"output_{uuid.uuid4().hex}.pdf")
+            convert(processed_docx_path, pdf_path)
+            print(f"Successfully converted DOCX to PDF: {pdf_path}")
+            
+            # Read PDF content
+            with open(pdf_path, 'rb') as f:
+                pdf_content = f.read()
+            
+            # Clean up temp files
+            try:
+                os.remove(processed_docx_path)
+                os.remove(pdf_path)
+            except:
+                pass  # Ignore cleanup errors
+            
+            # Return PDF file
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"processed_{vessel_imo}_{timestamp}.pdf"
+            
+            return Response(
+                content=pdf_content,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+            
+        except Exception as pdf_error:
+            print(f"PDF conversion failed: {pdf_error}")
+            print("Falling back to DOCX output...")
+            
+            # Fallback: return DOCX if PDF conversion fails
+            with open(processed_docx_path, 'rb') as f:
+                docx_content = f.read()
+            
+            # Clean up temp files
+            try:
+                os.remove(processed_docx_path)
+            except:
+                pass  # Ignore cleanup errors
+            
+            # Return DOCX file as fallback
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"processed_{vessel_imo}_{timestamp}.docx"
+            
+            return Response(
+                content=docx_content,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
         
     except HTTPException:
         raise
@@ -1357,17 +1287,17 @@ async def process_document(
 async def upload_template(
     name: str = Form(...),
     description: str = Form(...),
-    file: UploadFile = File(...)
+    template_file: UploadFile = File(...)
 ):
     """Upload a new template"""
     try:
-        if not file.filename.lower().endswith('.docx'):
+        if not template_file.filename.lower().endswith('.docx'):
             raise HTTPException(status_code=400, detail="Only .docx files are allowed")
         
         # Save file
-        file_path = os.path.join(TEMPLATES_DIR, file.filename)
+        file_path = os.path.join(TEMPLATES_DIR, template_file.filename)
         with open(file_path, 'wb') as f:
-            content = await file.read()
+            content = await template_file.read()
             f.write(content)
         
         return {
@@ -1376,7 +1306,7 @@ async def upload_template(
             "template": {
                 "name": name,
                 "description": description,
-                "file_name": file.filename,
+                "file_name": template_file.filename,
                 "file_size": len(content)
             }
         }
@@ -1386,4 +1316,13 @@ async def upload_template(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    # Simple HTTP server for VPS deployment
+    port = int(os.environ.get('FASTAPI_PORT', 8000))
+    
+    print("🚀 Starting Document Processor API...")
+    print(f"🌐 Server running on: http://0.0.0.0:{port}")
+    print("📁 Templates directory:", os.path.join(os.getcwd(), 'templates'))
+    print("🔧 Ready for VPS deployment!")
+    
+    uvicorn.run(app, host="0.0.0.0", port=port)
