@@ -11,7 +11,7 @@ import shutil
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from dotenv import load_dotenv
@@ -287,9 +287,14 @@ def convert_docx_to_pdf(docx_path: str) -> str:
         if not libreoffice_found:
             print("LibreOffice not found, trying docx2pdf fallback...")
             # Fallback to docx2pdf
-            from docx2pdf import convert
-            convert(docx_path, pdf_path)
-            return pdf_path
+            try:
+                from docx2pdf import convert
+                convert(docx_path, pdf_path)
+                return pdf_path
+            except Exception as e:
+                print(f"docx2pdf fallback failed: {e}")
+                # Final fallback: return the DOCX file
+                return docx_path
         
         # Convert using LibreOffice
         cmd = [
@@ -316,9 +321,14 @@ def convert_docx_to_pdf(docx_path: str) -> str:
             print(f"LibreOffice error: {result.stderr}")
             # Fallback to docx2pdf
             print("Falling back to docx2pdf...")
-            from docx2pdf import convert
-            convert(docx_path, pdf_path)
-            return pdf_path
+            try:
+                from docx2pdf import convert
+                convert(docx_path, pdf_path)
+                return pdf_path
+            except Exception as e:
+                print(f"docx2pdf fallback failed: {e}")
+                # Final fallback: return the DOCX file
+                return docx_path
             
     except Exception as e:
         print(f"PDF conversion failed: {e}")
@@ -860,13 +870,20 @@ async def get_vessel(imo: str):
     return {"success": True, "vessel": vessel}
 
 @app.post("/process-document")
-async def process_document(
-    template_name: str = Form(...),
-    vessel_imo: str = Form(...),
-    template_file: UploadFile = File(None)
-):
+async def process_document(request: Request):
     """Process a document template with vessel data"""
     try:
+        # Parse JSON request
+        body = await request.json()
+        template_name = body.get('template_name')
+        vessel_imo = body.get('vessel_imo')
+        
+        if not template_name or not vessel_imo:
+            raise HTTPException(status_code=422, detail="template_name and vessel_imo are required")
+        
+        print(f"Processing document: {template_name}")
+        print(f"Vessel IMO: {vessel_imo}")
+        
         # Find template file - try with .docx extension if not found
         template_path = os.path.join(TEMPLATES_DIR, template_name)
         if not os.path.exists(template_path):
@@ -1279,33 +1296,36 @@ async def process_document(
         # Process the document
         processed_docx_path = replace_placeholders_in_docx(template_path, data_mapping)
         
-        # Convert DOCX to PDF using docx2pdf
+        # Convert DOCX to PDF using LibreOffice
         try:
-            from docx2pdf import convert
-            pdf_path = os.path.join(TEMP_DIR, f"output_{uuid.uuid4().hex}.pdf")
-            convert(processed_docx_path, pdf_path)
-            print(f"Successfully converted DOCX to PDF: {pdf_path}")
+            pdf_path = convert_docx_to_pdf(processed_docx_path)
             
-            # Read PDF content
-            with open(pdf_path, 'rb') as f:
-                pdf_content = f.read()
-            
-            # Clean up temp files
-            try:
-                os.remove(processed_docx_path)
-                os.remove(pdf_path)
-            except:
-                pass  # Ignore cleanup errors
-            
-            # Return PDF file
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"processed_{vessel_imo}_{timestamp}.pdf"
-            
-            return Response(
-                content=pdf_content,
-                media_type="application/pdf",
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
-            )
+            if pdf_path.endswith('.pdf'):
+                print(f"Successfully converted DOCX to PDF: {pdf_path}")
+                
+                # Read PDF content
+                with open(pdf_path, 'rb') as f:
+                    pdf_content = f.read()
+                
+                # Clean up temp files
+                try:
+                    os.remove(processed_docx_path)
+                    os.remove(pdf_path)
+                except:
+                    pass  # Ignore cleanup errors
+                
+                # Return PDF file
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"processed_{vessel_imo}_{timestamp}.pdf"
+                
+                return Response(
+                    content=pdf_content,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"}
+                )
+            else:
+                print("PDF conversion failed, falling back to DOCX output...")
+                raise Exception("PDF conversion failed")
             
         except Exception as pdf_error:
             print(f"PDF conversion failed: {pdf_error}")
