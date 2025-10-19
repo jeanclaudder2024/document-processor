@@ -2,7 +2,6 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 python-docx==0.8.11
-docx2pdf==0.1.8
 Pillow==10.1.0
 PyMuPDF==1.23.8
 zipfile38==0.0.3
