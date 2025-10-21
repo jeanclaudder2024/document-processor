@@ -873,10 +873,28 @@ async def get_vessel(imo: str):
 async def process_document(request: Request):
     """Process a document template with vessel data"""
     try:
-        # Parse JSON request
-        body = await request.json()
-        template_name = body.get('template_name')
-        vessel_imo = body.get('vessel_imo')
+        # Add debug logging
+        print(f"DEBUG: Received request from {request.client.host}")
+        print(f"DEBUG: Content-Type: {request.headers.get('content-type')}")
+        print(f"DEBUG: Content-Length: {request.headers.get('content-length')}")
+        
+        # Handle both JSON and FormData requests
+        content_type = request.headers.get('content-type', '')
+        
+        if 'application/json' in content_type:
+            # Parse JSON request
+            body = await request.json()
+            print(f"DEBUG: Parsed JSON: {body}")
+            template_name = body.get('template_name')
+            vessel_imo = body.get('vessel_imo')
+        elif 'multipart/form-data' in content_type:
+            # Parse FormData request
+            form = await request.form()
+            print(f"DEBUG: Parsed FormData: {dict(form)}")
+            template_name = form.get('template_name')
+            vessel_imo = form.get('vessel_imo')
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported content type")
         
         if not template_name or not vessel_imo:
             raise HTTPException(status_code=422, detail="template_name and vessel_imo are required")
