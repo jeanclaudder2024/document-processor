@@ -50,7 +50,7 @@ except Exception as e:
     supabase = None
 
 # Create directories
-TEMPLATES_DIR = "./templates"
+TEMPLATES_DIR = "templates"
 TEMP_DIR = "./temp"
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
