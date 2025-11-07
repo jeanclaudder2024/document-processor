@@ -1,0 +1,51 @@
+Bank Name,Account Name,Account Number,SWIFT Code,Currency,Bank Address,Beneficiary Address
+First Global Bank & Trust,Caspian Energy Group Escrow Account,GB98 FGBT 1234 5698 7654 32,FGBTGB2L,USD,"25 Canada Square, London E14 5LQ","Level 12 Burj Daman, DIFC Dubai"
+EuroCommerce Bank AG,Meridian Energy Solutions Operating Account,DE12 1001 1001 2611 5534 89,ECBADEFF,EUR,Mainzer Landstrasse 11-13 Frankfurt,500 West Madison Chicago IL
+Singapore Intercontinental Bank,Polestar Trading Pte Ltd,SG12 3456 7890 1234 5678 9,SIBISGSG,USD,10 Marina Boulevard Singapore,1 Raffles Place Singapore
+Union Credit Suisse,Vostok Nefte Gaz Transit Account,CH12 3456 789012345678,UCSWCHZH,CHF,Bahnhofstrasse 45 Zurich,7 Krasnopresnenskaya Emb. Moscow
+Qatar International Bank,Al-Dana Energy Holdings,QA12 3456 7890 1234 5678 9012,QIBQQQA,QAR,West Bay Doha,Al Fardan Office Tower Doha
+Nordic Capital Bank AS,Nordvik Energy AS Client Account,NO12 3456 7890 123,NCBANOKK,NOK,Stranden 1 Oslo,Stranden 1 Oslo
+Asian Commerce Bank,Indioil Corporation Collection Account,HK12 3456 7890 1234 5678,ACBHHKH,HKD,1 Harbour View Street Hong Kong,Nariman Point Mumbai
+Abu Dhabi United Bank,Desert Falcon Petrochemicals,AE12 3456 7890 1234 5678,ADUBAEAD,AED,Al Maryah Island Abu Dhabi,Al Sowwah Square Abu Dhabi
+Banco Atlantico Sur,Andean Resources S.A.,ES12 3456 7890 1234567890,BASESMM,EUR,Paseo de la Castellana 89 Madrid,Av. Paseo de la República Lima
+First Singapore Trust,Straits Shipping & Trading Co.,SG98 7654 3210 9876 5432,FSTSSGSG,USD,8 Marina View Singapore,8 Marina View Singapore
+Royal Gulf Bank,Bahrain Petroleum Co.,BH12 1234 5678 9012 3456 78,RGBBHBM,USD,Diplomatic Area Manama,Government Avenue Manama
+Tokyo Mitsubishi UFJ,Japan Energy Solutions,JP12 3456 7890 1234 5678 90,BOTKJPJT,JPY,2-7-1 Marunouchi Tokyo,1-1-1 Marunouchi Tokyo
+HSBC London,Global Marine Traders,GB33 1234 5698 7654 3210 99,MIDLGB22,GBP,8 Canada Square London,Canary Wharf London
+Deutsche Bank AG,European Refinery Consortium,DE89 3704 0044 0519 3990 00,DEUTDEFF,EUR,Taunusanlage 12 Frankfurt,Taunusanlage 15 Frankfurt
+Bank of New York,Transatlantic Shipping Inc,US12 3456 7890 1234 5678,IRVTUS3N,USD,240 Greenwich Street NY,Wall Street New York
+Credit Agricole,French Petrochemicals SA,FR14 2004 1010 0505 0001,AGRIFRPP,EUR,91-93 Boulevard Pasteur Paris,La Defense Paris
+Intesa Sanpaolo,Mediterranean Oil & Gas,IT60 X054 2811 1010 0000 0123,BCITITMM,EUR,Piazza San Carlo Turin,Galleria San Carlo Milan
+Scotiabank Canada,North American Energy Corp,CA12 1234 5678 9012 3456 78,NOSCCATT,CAD,100 Yonge Street Toronto,Bay Street Toronto
+ANZ Banking Group,Australia Pacific LNG,AU12 1234 5678 9012 3456 78,ANZBAU3M,AUD,833 Collins Street Melbourne,Docklands Melbourne
+Standard Bank SA,African Resources Ltd,ZA12 1234 5678 9012 3456 78,SBZAZAJJ,ZAR,30 Baker Street Johannesburg,Sandton Johannesburg
+DBS Bank Ltd,Singapore Petrochemicals,SG12 1234 5678 9012 3456 78,DBSSGSGG,SGD,12 Marina Boulevard Singapore,Marina Bay Financial Centre
+UBS Switzerland,Alpine Energy Trading,CH12 1234 5678 9012 3456 78,UBSWCHZH80,CHF,Bahnhofstrasse 45 Zurich,Paradeplatz Zurich
+Citibank NA,Dubai Energy Partners,AE12 1234 5678 9012 3456 78,CITIAEAD,AED,Citibank Tower DIFC Dubai,Sheikh Zayed Road Dubai
+Barclays Bank UK,North Sea Oil Consortium,GB12 1234 5698 7654 3210,BARCGB22,GBP,1 Churchill Place London,Canary Wharf London
+BNP Paribas,French Energy Solutions,FR12 1234 5678 9012 3456 78,BNPAFRPP,EUR,16 Boulevard des Italiens Paris,Opera Paris
+Commonwealth Bank,Australia Mineral Export,AU12 1234 5678 9012 3456 78,CTBAAU2S,AUD,120 Harbour Circle Sydney,Barangaroo Sydney
+ING Bank Netherland,Dutch Shipping Group,NL12 1234 5678 9012 3456,INGBNL2A,EUR,Bijlmerplein 888 Amsterdam,Amsterdam Zuid
+Santander Bank,Iberian Oil Traders,ES12 1234 5678 9012 3456 78,BSCHESMM,EUR,Paseo de la Castellana Madrid,Azca Financial District
+Royal Bank Canada,Canadian Crude Export,CA12 1234 5678 9012 3456 78,ROYCCAT2,CAD,200 Bay Street Toronto,Royal Bank Plaza Toronto
+Westpac Banking,Australia Gas Export,AU12 1234 5678 9012 3456 78,WPACAU2S,AUD,275 Kent Street Sydney,Sydney CBD
+Bank of China,China Energy Import,CN12 1234 5678 9012 3456 78,BKCHCNBJ,CNY,1 Fuxingmen Nei Dajie Beijing,Financial Street Beijing
+MUFG Bank Japan,Japan Oil Trading,JP12 1234 5678 9012 3456 78,BOTKJPJT,JPY,7-1 Marunouchi Tokyo,Marunouchi District Tokyo
+Credit Suisse,Zurich Commodity Trade,CH12 1234 5678 9012 3456 78,CRESCHZZ,CHF,Paradeplatz 8 Zurich,Paradeplatz Zurich
+DNB Bank Norway,Norwegian Sea Oil,NO12 1234 5678 9012 3456 78,DNBANOKK,NOK,Kirkegata 21 Oslo,Oslo Business District
+SEB Bank Sweden,Scandinavian Energy,SE12 1234 5678 9012 3456 78,ESSESESS,SEK,Kungsträdgårdsgatan 8 Stockholm,Norrmalm Stockholm
+UniCredit Bank Italy,Mediterranean Gas,IT12 1234 5678 9012 3456 78,UNCRITMM,EUR,Piazza Cordusio Milan,Gae Aulenti Square Milan
+Bank of America,US Energy Export,US12 1234 5678 9012 3456 78,BOFAUS3N,USD,100 North Tryon Charlotte,Bank of America Plaza
+JPMorgan Chase,Global Energy Partners,US12 1234 5678 9012 3456 78,CHASUS33,USD,383 Madison Avenue NY,Manhattan New York
+Wells Fargo Bank,Western Oil Traders,US12 1234 5678 9012 3456 78,WFBIUS6S,USD,420 Montgomery Street SF,San Francisco California
+Morgan Stanley,Energy Investment Fund,US12 1234 5678 9012 3456 78,MSNYUS33,USD,1585 Broadway NY,Manhattan New York
+Goldman Sachs,Commodity Trading Desk,US12 1234 5678 9012 3456 78,GOSCUS33,USD,200 West Street NY,Manhattan New York
+Mizuho Bank Japan,Japan LNG Import,JP12 1234 5678 9012 3456 78,MHCBJPJT,JPY,1-2-1 Yurakucho Tokyo,Marunouchi Tokyo
+Sumitomo Mitsui,Japanese Energy Corp,JP12 1234 5678 9012 3456 78,SMBCJPJT,JPY,1-1-2 Marunouchi Tokyo,Tokyo Station Area
+Rabobank Netherlands,Dutch Agri Energy,NL12 1234 5678 9012 3456 78,RABONL2U,EUR,Croeselaan 18 Utrecht,Utrecht Central
+KBC Bank Belgium,Benelux Energy Trading,BE12 1234 5678 9012 3456 78,KREDBEBB,EUR,Havenlaan 2 Brussels,Brussels Business District
+National Bank Kuwait,Kuwait Petroleum Co.,KW12 1234 5678 9012 3456 78 90,NBOKKWKW,KWD,Abdullah Al-Ahmed Street Kuwait City,Kuwait City Center
+Samba Financial,Saudi Industrial Gas,SA12 1234 5678 9012 3456 78,SAMBSARI,SAR,King Fahad Road Riyadh,Olaya District Riyadh
+Emirates NBD,Dubai Natural Gas,AE12 1234 5678 9012 3456 78,EBILAEAD,AED,Al Ittihad Road Dubai,Deira Dubai
+QNB Group,Qatar Natural Gas,QA12 1234 5678 9012 3456 78 90,QNBAQAQA,QAR,QNB Tower Doha,West Bay Doha
+National Bank UAE,Abu Dhabi Energy,AE12 1234 5678 9012 3456 78,NBUAAEAD,AED,Khalifa Street Abu Dhabi,Abu Dhabi Center

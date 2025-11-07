@@ -1,17 +1,18 @@
 """
-Simple Document Processing API
-Handles Word document processing with vessel data
+Document Processing API - Clean Rebuild
+Handles Word document processing with vessel data from Supabase
 """
 
 import os
+import json
+import hashlib
 import uuid
 import tempfile
-import zipfile
-import shutil
 import logging
+import csv
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from dotenv import load_dotenv
@@ -19,26 +20,78 @@ from supabase import create_client, Client
 from docx import Document
 import re
 
-# Configure logging
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(title="Document Processing API", version="1.0.0")
+app = FastAPI(title="Document Processing API", version="2.0.0")
 
 # Load environment variables
-load_dotenv()
+try:
+    load_dotenv()
+except Exception as e:
+    logger.warning(f"Could not load .env file: {e}")
 
 # CORS middleware
+ALLOWED_ORIGINS = [
+    "http://127.0.0.1:8080",
+    "http://localhost:8080",
+    "http://127.0.0.1:8081",
+    "http://localhost:8081",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    # Allow network IP addresses for development
+    "http://10.193.191.72:5173",
+    "http://10.193.191.72:8081",
+    "http://10.193.191.72:3000",
+    # Allow any local network IP (for development flexibility)
+    "http://0.0.0.0:5173",
+    "http://0.0.0.0:8081",
+    "http://0.0.0.0:3000",
+    "http://10.237.133.72:5173",
+    "http://10.237.133.72:8080",
+    "http://10.237.133.72:8081",
+    "http://10.237.133.72:3000",
+]
+
+ALLOWED_ORIGIN_REGEX = r"http://(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}|172\\.(1[6-9]|2[0-9]|3[0-1])\\.\\d{1,3}\\.\\d{1,3}):\\d+"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
 )
 
-# Supabase client - Use environment variables with fallback
+# Directories
+BASE_DIR = os.getcwd()
+TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
+TEMP_DIR = os.path.join(BASE_DIR, 'temp')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+STORAGE_DIR = os.path.join(BASE_DIR, 'storage')
+
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(STORAGE_DIR, exist_ok=True)
+
+# Storage paths
+PLACEHOLDER_SETTINGS_PATH = os.path.join(STORAGE_DIR, 'placeholder_settings.json')
+PLANS_PATH = os.path.join(STORAGE_DIR, 'plans.json')
+USERS_PATH = os.path.join(STORAGE_DIR, 'users.json')
+
+# Supabase client
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
 
@@ -49,34 +102,1543 @@ except Exception as e:
     logger.error(f"Failed to connect to Supabase: {e}")
     supabase = None
 
-# Create directories
-TEMPLATES_DIR = "templates"
-TEMP_DIR = "./temp"
-os.makedirs(TEMPLATES_DIR, exist_ok=True)
-os.makedirs(TEMP_DIR, exist_ok=True)
+SUPABASE_ENABLED = supabase is not None
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the application on startup"""
-    logger.info("🚀 Document Processing API starting up...")
-    logger.info(f"📁 Templates directory: {TEMPLATES_DIR}")
-    logger.info(f"📁 Temp directory: {TEMP_DIR}")
-    logger.info(f"🔗 Supabase URL: {SUPABASE_URL}")
-    
-    # Check if templates directory has files
-    template_files = [f for f in os.listdir(TEMPLATES_DIR) if f.endswith('.docx')]
-    logger.info(f"📄 Found {len(template_files)} template files")
-    
-    if supabase:
-        logger.info("✅ Supabase connection established")
-    else:
-        logger.warning("⚠️ Supabase connection failed - using fallback data only")
+def encode_bytea(data: bytes) -> str:
+    """Encode raw bytes into Postgres bytea hex format"""
+    if data is None:
+        return None
+    return "\\x" + data.hex()
 
-def get_vessel_data(imo: str) -> Optional[Dict]:
-    """Get comprehensive vessel data from multiple Supabase tables"""
+def decode_bytea(value) -> Optional[bytes]:
+    """Decode Postgres bytea (hex) or raw bytes to bytes"""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        if value.startswith('\\x'):
+            return bytes.fromhex(value[2:])
+        return value.encode('utf-8')
+    # Fallback: try to convert via bytes constructor
+    try:
+        return bytes(value)
+    except Exception:
+        return None
+
+def resolve_template_record(template_name: str) -> Optional[Dict]:
+    """Find a template row in Supabase by various name permutations"""
+    if not SUPABASE_ENABLED:
+        return None
+
+    # Allow direct lookup by UUID string
+    try:
+        template_uuid = uuid.UUID(str(template_name))
+    except (ValueError, TypeError):
+        template_uuid = None
+
+    if template_uuid:
+        try:
+            response = supabase.table('document_templates') \
+                .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at') \
+                .eq('id', str(template_uuid)) \
+                .limit(1) \
+                .execute()
+            if response.data:
+                return response.data[0]
+        except Exception as exc:
+            logger.error(f"Failed to resolve template by ID '{template_name}': {exc}")
+
+    name_with_ext = template_name if template_name.endswith('.docx') else f"{template_name}.docx"
+    name_without_ext = template_name[:-5] if template_name.endswith('.docx') else template_name
+
+    candidates = list({name_with_ext, name_without_ext})
+
+    try:
+        response = supabase.table('document_templates') \
+            .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at') \
+            .in_('file_name', candidates) \
+            .limit(1) \
+            .execute()
+        if response.data:
+            return response.data[0]
+
+        response = supabase.table('document_templates') \
+            .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at') \
+            .in_('title', [name_without_ext, name_with_ext]) \
+            .limit(1) \
+            .execute()
+        if response.data:
+            return response.data[0]
+    except Exception as exc:
+        logger.error(f"Failed to resolve template '{template_name}': {exc}")
+
+    return None
+
+def fetch_template_placeholders(template_id: str) -> Dict[str, Dict[str, Optional[str]]]:
+    """Fetch placeholder configuration for a template"""
+    if not SUPABASE_ENABLED:
+        return {}
+
+    try:
+        response = supabase.table('template_placeholders').select(
+            'placeholder, source, custom_value, database_field, csv_id, csv_field, csv_row, random_option'
+        ).eq('template_id', template_id).execute()
+        settings: Dict[str, Dict[str, Optional[str]]] = {}
+        for row in response.data or []:
+            settings[row['placeholder']] = {
+                'source': row.get('source', 'random'),
+                'customValue': row.get('custom_value') or '',
+                'databaseField': row.get('database_field') or '',
+                'csvId': row.get('csv_id') or '',
+                'csvField': row.get('csv_field') or '',
+                'csvRow': row['csv_row'] if row.get('csv_row') is not None else 0,
+                'randomOption': row.get('random_option', 'auto') or 'auto'
+            }
+        return settings
+    except Exception as exc:
+        logger.error(f"Failed to fetch template placeholders for {template_id}: {exc}")
+        return {}
+
+def upsert_template_placeholders(template_id: str, settings: Dict[str, Dict]) -> None:
+    """Upsert placeholder settings into Supabase"""
+    if not SUPABASE_ENABLED or not settings:
+        return
+
+    rows = []
+    for placeholder, cfg in settings.items():
+        rows.append({
+            'template_id': template_id,
+            'placeholder': placeholder,
+            'source': cfg.get('source', 'random'),
+            'custom_value': cfg.get('customValue'),
+            'database_field': cfg.get('databaseField'),
+            'csv_id': cfg.get('csvId'),
+            'csv_field': cfg.get('csvField'),
+            'csv_row': cfg.get('csvRow'),
+            'random_option': cfg.get('randomOption', 'auto')
+        })
+
+    try:
+        supabase.table('template_placeholders').upsert(rows, on_conflict='template_id,placeholder').execute()
+    except Exception as exc:
+        logger.error(f"Failed to upsert placeholder settings: {exc}")
+
+def fetch_template_file_record(template_id: str, include_data: bool = False) -> Optional[Dict]:
+    """Get the latest template file record from Supabase"""
+    if not SUPABASE_ENABLED:
+        return None
+    try:
+        select_fields = 'filename, mime_type, file_size, sha256, uploaded_at'
+        if include_data:
+            select_fields += ', file_data'
+
+        response = supabase.table('template_files') \
+            .select(select_fields) \
+            .eq('template_id', template_id) \
+            .order('uploaded_at', desc=True) \
+            .limit(1) \
+            .execute()
+        if response.data:
+            return response.data[0]
+    except Exception as exc:
+        logger.error(f"Failed to fetch template file for {template_id}: {exc}")
+    return None
+
+def write_temp_docx_from_record(file_record: Dict) -> str:
+    """Persist a template file from Supabase to a temporary DOCX path"""
+    doc_bytes = decode_bytea(file_record.get('file_data'))
+    if not doc_bytes:
+        raise HTTPException(status_code=500, detail="Template file data is empty")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
+    tmp.write(doc_bytes)
+    tmp.flush()
+    tmp.close()
+    return tmp.name
+
+# ============================================================================
+# STEP 1: STORAGE HELPERS (JSON on disk with atomic writes)
+# ============================================================================
+
+def read_json_file(path: str, default=None):
+    """Read JSON file with default fallback"""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Error reading {path}: {e}")
+        return default if default is not None else {}
+
+def write_json_atomic(path: str, data) -> None:
+    """Write JSON file atomically (write to temp, then rename)"""
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception as e:
+        logger.error(f"Error writing {path}: {e}")
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+def ensure_storage():
+    """Initialize storage files with defaults"""
+    if not os.path.exists(PLANS_PATH):
+        write_json_atomic(PLANS_PATH, {
+            "basic": {
+                "name": "Basic Plan",
+                "can_view_all": True,
+                "can_download": ["ANALYSIS SGS.docx", "ICPO TEMPLATE.docx"],
+                "max_downloads_per_month": 10,
+                "features": ["View all documents", "Download selected templates"]
+            },
+            "premium": {
+                "name": "Premium Plan",
+                "can_view_all": True,
+                "can_download": ["ANALYSIS SGS.docx", "ICPO TEMPLATE.docx", "Commercial_Invoice_Batys_Final.docx", "PERFORMA INVOICE.docx"],
+                "max_downloads_per_month": 100,
+                "features": ["All downloads", "Priority generation"]
+            },
+            "enterprise": {
+                "name": "Enterprise Plan",
+                "can_view_all": True,
+                "can_download": ["*"],
+                "max_downloads_per_month": -1,
+                "features": ["Unlimited", "SLA"]
+            }
+        })
+    
+    if not os.path.exists(USERS_PATH):
+        pwd_hash = hashlib.sha256("admin123".encode()).hexdigest()
+        write_json_atomic(USERS_PATH, {
+            "users": [{"username": "admin", "password_hash": pwd_hash}],
+            "sessions": {}
+        })
+
+# Initialize storage on startup
+ensure_storage()
+
+# ============================================================================
+# STEP 2: AUTHENTICATION (Simple login with HttpOnly cookies)
+# ============================================================================
+
+def get_current_user(request: Request):
+    """Dependency to check if user is authenticated"""
+    token = request.cookies.get('session')
+    if not token:
+        logger.warning(f"Auth failed: No session cookie. Available cookies: {list(request.cookies.keys())}")
+        raise HTTPException(status_code=401, detail="Not authenticated - Please login")
+    
+    users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
+    username = users_data.get("sessions", {}).get(token)
+    if not username:
+        logger.warning(f"Auth failed: Invalid token {token[:10]}... Sessions: {len(users_data.get('sessions', {}))}")
+        raise HTTPException(status_code=401, detail="Invalid session - Please login again")
+    
+    logger.info(f"Authenticated user: {username}")
+    return username
+
+@app.post("/auth/login")
+async def auth_login(request: Request):
+    """Login endpoint - sets HttpOnly session cookie"""
+    try:
+        data = await request.json()
+        username = data.get('username')
+        password = data.get('password', '')
+        
+        users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        user_found = any(
+            u.get('username') == username and u.get('password_hash') == pwd_hash
+            for u in users_data.get('users', [])
+        )
+        
+        if not user_found:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Create session token
+        token = uuid.uuid4().hex
+        users_data['sessions'][token] = username
+        write_json_atomic(USERS_PATH, users_data)
+        
+        # Set HttpOnly cookie with SameSite=None and Secure for cross-origin, or Lax for same-site
+        response = Response(content=json.dumps({"success": True, "user": username}), media_type="application/json")
+        # Use SameSite='None' and Secure=True if running on different ports, but check origin first
+        origin = request.headers.get('origin', '')
+        if origin and origin.startswith('http://127.0.0.1') or origin.startswith('http://localhost'):
+            # Same-site cookies work with Lax for same-origin requests
+            response.set_cookie(key='session', value=token, httponly=True, samesite='Lax', max_age=86400)
+        else:
+            # For true cross-origin, use None with Secure (requires HTTPS)
+            response.set_cookie(key='session', value=token, httponly=True, samesite='Lax', max_age=86400)
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request):
+    """Logout endpoint - removes session"""
+    try:
+        token = request.cookies.get('session')
+        if token:
+            users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
+            users_data.get("sessions", {}).pop(token, None)
+            write_json_atomic(USERS_PATH, users_data)
+        
+        response = Response(content=json.dumps({"success": True}), media_type="application/json")
+        response.delete_cookie('session')
+        return response
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
+
+@app.get("/auth/me")
+async def auth_me(request: Request):
+    """Get current user info"""
+    token = request.cookies.get('session')
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
+    username = users_data.get("sessions", {}).get(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    
+    return {"success": True, "user": username}
+
+# ============================================================================
+# BASIC HEALTH & ROOT ENDPOINTS
+# ============================================================================
+
+@app.get("/")
+async def root():
+    return {"message": "Document Processing API v2.0", "status": "running"}
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "supabase": "connected" if supabase else "disconnected",
+        "templates_dir": TEMPLATES_DIR,
+        "storage_dir": STORAGE_DIR
+    }
+
+# ============================================================================
+# VESSELS API (from Supabase)
+# ============================================================================
+
+@app.get("/vessels")
+async def get_vessels():
+    """Get list of vessels from Supabase"""
     try:
         if not supabase:
-            logger.warning("Supabase not available, returning mock vessel data")
+            # Return mock data if Supabase not available
+            return {
+                "success": True,
+                "vessels": [
+                    {"id": 1, "imo": "IMO1234567", "name": "Test Vessel 1", "vessel_type": "Tanker", "flag": "Panama"},
+                    {"id": 2, "imo": "IMO9876543", "name": "Test Vessel 2", "vessel_type": "Cargo", "flag": "Singapore"}
+                ],
+                "count": 2
+            }
+        
+        response = supabase.table('vessels').select('id, name, imo, vessel_type, flag').limit(50).execute()
+        return {
+            "success": True,
+            "vessels": response.data or [],
+            "count": len(response.data) if response.data else 0
+        }
+    except Exception as e:
+        logger.error(f"Error fetching vessels: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch vessels: {str(e)}")
+
+@app.get("/vessel/{imo}")
+async def get_vessel(imo: str):
+    """Get vessel by IMO"""
+    try:
+        if not supabase:
+            raise HTTPException(status_code=503, detail="Supabase not available")
+        
+        response = supabase.table('vessels').select('*').eq('imo', imo).execute()
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail=f"Vessel with IMO {imo} not found")
+        
+        return {"success": True, "vessel": response.data[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching vessel {imo}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vessel-fields")
+async def get_vessel_fields():
+    """Get list of all available fields in vessels table"""
+    try:
+        # Common vessel fields that might be used in documents
+        # This is a comprehensive list based on the database schema
+        fields = [
+            {'name': 'name', 'label': 'Vessel Name'},
+            {'name': 'imo', 'label': 'IMO Number'},
+            {'name': 'mmsi', 'label': 'MMSI'},
+            {'name': 'vessel_type', 'label': 'Vessel Type'},
+            {'name': 'flag', 'label': 'Flag'},
+            {'name': 'built', 'label': 'Year Built'},
+            {'name': 'deadweight', 'label': 'Deadweight'},
+            {'name': 'cargo_capacity', 'label': 'Cargo Capacity'},
+            {'name': 'length', 'label': 'Length'},
+            {'name': 'width', 'label': 'Width'},
+            {'name': 'beam', 'label': 'Beam'},
+            {'name': 'draft', 'label': 'Draft'},
+            {'name': 'draught', 'label': 'Draught'},
+            {'name': 'gross_tonnage', 'label': 'Gross Tonnage'},
+            {'name': 'engine_power', 'label': 'Engine Power'},
+            {'name': 'fuel_consumption', 'label': 'Fuel Consumption'},
+            {'name': 'crew_size', 'label': 'Crew Size'},
+            {'name': 'speed', 'label': 'Speed'},
+            {'name': 'callsign', 'label': 'Call Sign'},
+            {'name': 'nav_status', 'label': 'Navigation Status'},
+            {'name': 'current_lat', 'label': 'Current Latitude'},
+            {'name': 'current_lng', 'label': 'Current Longitude'},
+            {'name': 'current_region', 'label': 'Current Region'},
+            {'name': 'currentport', 'label': 'Current Port'},
+            {'name': 'departure_port', 'label': 'Departure Port'},
+            {'name': 'destination_port', 'label': 'Destination Port'},
+            {'name': 'loading_port', 'label': 'Loading Port'},
+            {'name': 'departure_date', 'label': 'Departure Date'},
+            {'name': 'arrival_date', 'label': 'Arrival Date'},
+            {'name': 'eta', 'label': 'ETA'},
+            {'name': 'cargo_type', 'label': 'Cargo Type'},
+            {'name': 'cargo_quantity', 'label': 'Cargo Quantity'},
+            {'name': 'oil_type', 'label': 'Oil Type'},
+            {'name': 'oil_source', 'label': 'Oil Source'},
+            {'name': 'quantity', 'label': 'Quantity'},
+            {'name': 'price', 'label': 'Price'},
+            {'name': 'market_price', 'label': 'Market Price'},
+            {'name': 'deal_value', 'label': 'Deal Value'},
+            {'name': 'owner_name', 'label': 'Owner Name'},
+            {'name': 'operator_name', 'label': 'Operator Name'},
+            {'name': 'buyer_name', 'label': 'Buyer Name'},
+            {'name': 'seller_name', 'label': 'Seller Name'},
+            {'name': 'source_company', 'label': 'Source Company'},
+            {'name': 'target_refinery', 'label': 'Target Refinery'},
+            {'name': 'shipping_type', 'label': 'Shipping Type'},
+            {'name': 'route_distance', 'label': 'Route Distance'},
+            {'name': 'route_info', 'label': 'Route Info'},
+        ]
+        
+        return {"success": True, "fields": fields}
+    except Exception as e:
+        logger.error(f"Error getting vessel fields: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# STEP 3: PLACEHOLDER EXTRACTION (from DOCX files)
+# ============================================================================
+
+def find_placeholders(text: str) -> List[str]:
+    """Extract placeholders from text using multiple formats"""
+    patterns = [
+        r'\{\{([^}]+)\}\}',      # {{placeholder}}
+        r'\{([^}]+)\}',          # {placeholder}
+        r'\[\[([^\]]+)\]\]',     # [[placeholder]]
+        r'\[([^\]]+)\]',         # [placeholder]
+        r'%([^%]+)%',            # %placeholder%
+        r'<([^>]+)>',            # <placeholder>
+        r'__([^_]+)__',          # __placeholder__
+        r'##([^#]+)##',          # ##placeholder##
+    ]
+    
+    placeholders = set()
+    for pattern in patterns:
+        matches = re.findall(pattern, text)
+        for match in matches:
+            # Clean up match - replace newlines with spaces, remove extra whitespace
+            cleaned = match.strip().replace('\n', ' ').replace('\r', ' ')
+            cleaned = ' '.join(cleaned.split())  # Remove extra spaces
+            if cleaned:
+                placeholders.add(cleaned)
+    
+    return sorted(list(placeholders))
+
+def extract_placeholders_from_docx(file_path: str) -> List[str]:
+    """Extract all placeholders from a DOCX file"""
+    try:
+        doc = Document(file_path)
+        all_placeholders = set()
+        
+        # Extract from paragraphs
+        for paragraph in doc.paragraphs:
+            placeholders = find_placeholders(paragraph.text)
+            all_placeholders.update(placeholders)
+        
+        # Extract from tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        placeholders = find_placeholders(paragraph.text)
+                        all_placeholders.update(placeholders)
+        
+        return sorted(list(all_placeholders))
+    except Exception as e:
+        logger.error(f"Error extracting placeholders from {file_path}: {e}")
+        return []
+
+# ============================================================================
+# STEP 4: TEMPLATES API (upload, list, get, delete)
+# ============================================================================
+
+@app.options("/templates")
+async def options_templates():
+    """Handle CORS preflight for templates endpoint"""
+    return Response(status_code=200, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Max-Age": "600"
+    })
+
+@app.get("/templates")
+async def get_templates():
+    """List all available templates with placeholders"""
+    try:
+        templates = []
+
+        if SUPABASE_ENABLED:
+            try:
+                db_templates = supabase.table('document_templates').select(
+                    'id, title, description, file_name, placeholders, is_active, created_at'
+                ).eq('is_active', True).execute()
+
+                for record in db_templates.data or []:
+                    template_id = record.get('id')
+                    placeholders = record.get('placeholders') or []
+
+                    file_meta = fetch_template_file_record(template_id)
+                    size = file_meta.get('file_size') if file_meta else 0
+                    created_at = (file_meta or {}).get('uploaded_at') or record.get('created_at')
+
+                    # Normalise names for the frontend
+                    file_name = record.get('file_name') or (record.get('title') or 'template')
+                    if not file_name.endswith('.docx'):
+                        file_name = f"{file_name}.docx"
+
+                    display_name = record.get('title') or file_name.replace('.docx', '')
+
+                    templates.append({
+                        "id": str(template_id),
+                        "name": file_name,
+                        "title": display_name,
+                        "file_name": file_name.replace('.docx', ''),
+                        "file_with_extension": file_name,
+                        "description": record.get('description') or '',
+                        "size": size or 0,
+                        "created_at": created_at,
+                        "placeholders": placeholders,
+                        "placeholder_count": len(placeholders),
+                        "is_active": record.get('is_active', True)
+                    })
+            except Exception as exc:
+                logger.error(f"Failed to load templates from Supabase: {exc}")
+
+        if not templates and not SUPABASE_ENABLED:
+            # Fallback to legacy file-system templates if Supabase is unavailable
+            for filename in os.listdir(TEMPLATES_DIR):
+                if filename.endswith('.docx'):
+                    file_path = os.path.join(TEMPLATES_DIR, filename)
+                    file_size = os.path.getsize(file_path)
+                    created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
+                    placeholders = extract_placeholders_from_docx(file_path)
+
+                    template_id = hashlib.md5(filename.encode()).hexdigest()[:12]
+
+                    templates.append({
+                        "id": template_id,
+                        "name": filename,
+                        "title": filename.replace('.docx', ''),
+                        "file_name": filename.replace('.docx', ''),
+                        "file_with_extension": filename,
+                        "description": f"Template: {filename.replace('.docx', '')}",
+                        "size": file_size,
+                        "created_at": created_at,
+                        "placeholders": placeholders,
+                        "placeholder_count": len(placeholders),
+                        "is_active": True
+                    })
+
+        return {"templates": templates}
+    except Exception as e:
+        logger.error(f"Error listing templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/plans-db")
+async def get_plans_db():
+    """Get all plans from database with template permissions"""
+    try:
+        if not supabase:
+            # Fallback to JSON
+            plans = read_json_file(PLANS_PATH, {})
+            return {"success": True, "plans": plans, "source": "json"}
+        
+        try:
+            # Get plans from database
+            plans_res = supabase.table('subscription_plans').select('*').eq('is_active', True).order('sort_order').execute()
+            
+            if not plans_res.data:
+                # Fallback to JSON if no database plans
+                plans = read_json_file(PLANS_PATH, {})
+                return {"success": True, "plans": plans, "source": "json_fallback"}
+            
+            # Get all templates (may not exist yet, so handle gracefully)
+            template_map = {}
+            try:
+                templates_res = supabase.table('document_templates').select('id, file_name, title').eq('is_active', True).execute()
+                template_map = {t['id']: t for t in (templates_res.data or [])}
+            except Exception as e:
+                logger.warning(f"Could not fetch templates from database: {e}")
+            
+            # Get permissions for each plan
+            plans_dict = {}
+            for plan in plans_res.data:
+                plan_tier = plan['plan_tier']
+                
+                # Get permissions for this plan (may not exist yet)
+                allowed_templates = []
+                try:
+                    permissions_res = supabase.table('plan_template_permissions').select('template_id, can_download').eq('plan_id', plan['id']).execute()
+                    
+                    if permissions_res.data:
+                        for perm in permissions_res.data:
+                            if perm['can_download']:
+                                template_id = perm['template_id']
+                                template_info = template_map.get(template_id)
+                                if template_info:
+                                    allowed_templates.append(template_info.get('file_name', ''))
+                except Exception as e:
+                    logger.warning(f"Could not fetch permissions for plan {plan_tier}: {e}")
+                    # Default to all templates if permissions table doesn't exist
+                    allowed_templates = ['*']
+                
+                # If no permissions set, default to all templates
+                if not allowed_templates:
+                    allowed_templates = ['*']
+                
+                # Normalize template names (remove .docx if present)
+                normalized_templates = []
+                if allowed_templates:
+                    for t in allowed_templates:
+                        if isinstance(t, str):
+                            normalized_templates.append(t.replace('.docx', '').strip())
+                        else:
+                            normalized_templates.append(str(t))
+                
+                plans_dict[plan_tier] = {
+                    "id": str(plan['id']),
+                    "name": plan['plan_name'],
+                    "plan_tier": plan_tier,
+                    "description": plan.get('description', ''),
+                    "monthly_price": float(plan.get('monthly_price', 0)),
+                    "annual_price": float(plan.get('annual_price', 0)),
+                    "max_downloads_per_month": plan.get('max_downloads_per_month', 10),
+                    "can_download": normalized_templates if normalized_templates else ['*'],
+                    "features": list(plan.get('features', [])) if isinstance(plan.get('features'), (list, tuple)) else (plan.get('features', []) if plan.get('features') else []),
+                    "is_active": plan.get('is_active', True)
+                }
+            
+            return {"success": True, "plans": plans_dict, "source": "database"}
+        except Exception as db_error:
+            logger.warning(f"Database query failed, falling back to JSON: {db_error}")
+            # Fallback to JSON
+            plans = read_json_file(PLANS_PATH, {})
+            return {"success": True, "plans": plans, "source": "json_fallback"}
+    except Exception as e:
+        logger.error(f"Error getting plans: {e}")
+        # Final fallback
+        try:
+            plans = read_json_file(PLANS_PATH, {})
+            return {"success": True, "plans": plans, "source": "json_error_fallback"}
+        except:
+            raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/templates/{template_name}")
+async def get_template(template_name: str):
+    """Get details for a specific template"""
+    try:
+        if SUPABASE_ENABLED:
+            template_record = resolve_template_record(template_name)
+            if not template_record:
+                raise HTTPException(status_code=404, detail="Template not found in Supabase")
+
+            placeholders = template_record.get('placeholders') or []
+            placeholder_settings = fetch_template_placeholders(template_record['id'])
+
+            file_meta = fetch_template_file_record(template_record['id']) or {}
+
+            file_name = template_record.get('file_name') or template_name
+            if not file_name.endswith('.docx'):
+                file_name = f"{file_name}.docx"
+
+            return {
+                "id": str(template_record['id']),
+                "name": file_name,
+                "title": template_record.get('title') or file_name.replace('.docx', ''),
+                "file_name": file_name.replace('.docx', ''),
+                "file_with_extension": file_name,
+                "size": file_meta.get('file_size', 0),
+                "created_at": file_meta.get('uploaded_at') or template_record.get('created_at'),
+                "placeholders": placeholders,
+                "placeholder_count": len(placeholders),
+                "settings": placeholder_settings
+            }
+
+        if not SUPABASE_ENABLED:
+            # Legacy file-system fallback
+            if not template_name.endswith('.docx'):
+                template_name += '.docx'
+
+            file_path = os.path.join(TEMPLATES_DIR, template_name)
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="Template not found")
+
+            file_size = os.path.getsize(file_path)
+            created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
+            placeholders = extract_placeholders_from_docx(file_path)
+
+            return {
+                "name": template_name,
+                "title": template_name.replace('.docx', ''),
+                "file_name": template_name.replace('.docx', ''),
+                "file_with_extension": template_name,
+                "size": file_size,
+                "created_at": created_at,
+                "placeholders": placeholders,
+                "placeholder_count": len(placeholders)
+            }
+
+        raise HTTPException(status_code=404, detail="Template not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/upload-template")
+async def upload_template(
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None)
+    # current_user: str = Depends(get_current_user)  # Disabled for now
+):
+    """Upload a new template"""
+    try:
+        if not file.filename.endswith('.docx'):
+            raise HTTPException(status_code=400, detail="Only .docx files are allowed")
+        
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        # Write to temp file to extract placeholders
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+
+        placeholders = extract_placeholders_from_docx(tmp_path)
+        placeholders = list(dict.fromkeys(placeholders))
+        os.remove(tmp_path)
+
+        logger.info(f"Template uploaded: {file.filename} ({len(placeholders)} placeholders)")
+
+        if SUPABASE_ENABLED:
+            base_name = file.filename
+            inferred_title = base_name[:-5] if base_name.endswith('.docx') else base_name
+            existing_record = resolve_template_record(base_name)
+
+            title_value = name.strip() if name else (existing_record.get('title') if existing_record and existing_record.get('title') else inferred_title)
+            description_value = (description.strip() if description and description.strip() else (existing_record.get('description') if existing_record and existing_record.get('description') else f"Template: {title_value}"))
+
+            template_payload = {
+                'title': title_value,
+                'description': description_value,
+                'file_name': base_name,
+                'placeholders': placeholders,
+                'is_active': True,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+
+            try:
+                upsert_response = supabase.table('document_templates').upsert(
+                    template_payload,
+                    on_conflict='file_name',
+                    returning='representation'
+                ).execute()
+
+                if upsert_response.data:
+                    template_record = upsert_response.data[0]
+                else:
+                    template_record = resolve_template_record(base_name)
+
+                if not template_record:
+                    raise HTTPException(status_code=500, detail="Failed to persist template metadata")
+
+                template_id = template_record['id']
+
+                file_payload = {
+                    'template_id': template_id,
+                    'filename': base_name,
+                    'mime_type': file.content_type or 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'file_size': len(file_bytes),
+                    'file_data': encode_bytea(file_bytes),
+                    'sha256': hashlib.sha256(file_bytes).hexdigest(),
+                    'uploaded_at': datetime.utcnow().isoformat()
+                }
+
+                supabase.table('template_files').upsert(
+                    file_payload,
+                    on_conflict='template_id'
+                ).execute()
+
+                # Ensure placeholder settings rows exist (defaults to random)
+                existing_settings = fetch_template_placeholders(template_id)
+                new_rows = []
+                for placeholder in placeholders:
+                    if placeholder not in existing_settings:
+                        new_rows.append({
+                            'template_id': template_id,
+                            'placeholder': placeholder,
+                            'source': 'random',
+                            'random_option': 'auto'
+                        })
+                if new_rows:
+                    supabase.table('template_placeholders').insert(new_rows).execute()
+
+                return {
+                    "success": True,
+                    "template_id": str(template_id),
+                    "filename": base_name,
+                    "placeholders": placeholders,
+                    "placeholder_count": len(placeholders)
+                }
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.error(f"Failed to store template in Supabase: {exc}")
+                raise HTTPException(status_code=500, detail="Failed to store template in Supabase")
+        
+        # Legacy behaviour (no Supabase available)
+        file_path = os.path.join(TEMPLATES_DIR, file.filename)
+        with open(file_path, 'wb') as f:
+            f.write(file_bytes)
+
+        return {
+            "success": True,
+            "filename": file.filename,
+            "placeholders": placeholders,
+            "placeholder_count": len(placeholders)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/templates/{template_name}")
+async def delete_template(
+    template_name: str
+    # current_user: str = Depends(get_current_user)  # Disabled for now
+):
+    """Delete a template"""
+    try:
+        if SUPABASE_ENABLED:
+            template_record = resolve_template_record(template_name)
+            if not template_record:
+                raise HTTPException(status_code=404, detail="Template not found")
+
+            template_id = template_record['id']
+
+            try:
+                supabase.table('template_files').delete().eq('template_id', template_id).execute()
+                supabase.table('template_placeholders').delete().eq('template_id', template_id).execute()
+                supabase.table('document_templates').delete().eq('id', template_id).execute()
+            except Exception as exc:
+                logger.error(f"Failed to delete template from Supabase: {exc}")
+                raise HTTPException(status_code=500, detail="Failed to delete template")
+
+            return {"success": True, "message": f"Template {template_name} deleted"}
+
+        if not template_name.endswith('.docx'):
+            template_name += '.docx'
+
+        file_path = os.path.join(TEMPLATES_DIR, template_name)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        os.remove(file_path)
+        logger.info(f"Template deleted: {template_name}")
+
+        return {"success": True, "message": f"Template {template_name} deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# STEP 5: PLACEHOLDER SETTINGS API (JSON-backed)
+# ============================================================================
+
+@app.get("/placeholder-settings")
+async def get_placeholder_settings(template_name: Optional[str] = None, template_id: Optional[str] = None):
+    """Get placeholder settings (all or per-template)"""
+    try:
+        if SUPABASE_ENABLED and (template_name or template_id):
+            template_record = None
+            if template_id:
+                template_record = resolve_template_record(template_id)
+            if not template_record and template_name:
+                template_record = resolve_template_record(template_name)
+            if not template_record:
+                raise HTTPException(status_code=404, detail="Template not found")
+            settings = fetch_template_placeholders(template_record['id'])
+            return {
+                "template": template_record.get('file_name') or template_name,
+                "settings": settings,
+                "template_id": str(template_record['id'])
+            }
+
+        if SUPABASE_ENABLED and not template_name:
+            response = supabase.table('template_placeholders').select(
+                'template_id, placeholder, source, custom_value, database_field, csv_id, csv_field, csv_row, random_option'
+            ).execute()
+
+            aggregated: Dict[str, Dict[str, Dict]] = {}
+            for row in response.data or []:
+                template_id = str(row['template_id'])
+                aggregated.setdefault(template_id, {})[row['placeholder']] = {
+                    'source': row.get('source', 'random'),
+                    'customValue': row.get('custom_value') or '',
+                    'databaseField': row.get('database_field') or '',
+                    'csvId': row.get('csv_id') or '',
+                    'csvField': row.get('csv_field') or '',
+                    'csvRow': row['csv_row'] if row.get('csv_row') is not None else 0,
+                    'randomOption': row.get('random_option', 'auto') or 'auto'
+                }
+            return {"settings": aggregated}
+
+        if not SUPABASE_ENABLED:
+            settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+            if template_name:
+                template_settings = settings.get(template_name, {})
+                return {"template": template_name, "settings": template_settings}
+            return {"settings": settings}
+
+        raise HTTPException(status_code=404, detail="Template not found")
+    except Exception as e:
+        logger.error(f"Error getting placeholder settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/placeholder-settings")
+async def save_placeholder_settings(
+    request: Request
+    # current_user: str = Depends(get_current_user)  # Disabled for now
+):
+    """Save placeholder settings for a template"""
+    try:
+        data = await request.json()
+        template_name = data.get('template_name')
+        template_id_override = data.get('template_id')
+        new_settings = data.get('settings', {})
+        
+        if not template_name and not template_id_override:
+            raise HTTPException(status_code=400, detail="template_name or template_id is required")
+
+        if SUPABASE_ENABLED:
+            template_record = None
+            if template_id_override:
+                template_record = resolve_template_record(template_id_override)
+            if not template_record and template_name:
+                template_record = resolve_template_record(template_name)
+            if not template_record:
+                raise HTTPException(status_code=404, detail="Template not found")
+
+            template_id = template_record['id']
+
+            # Normalise payload to Supabase schema then upsert
+            sanitised_settings: Dict[str, Dict] = {}
+            for placeholder, cfg in new_settings.items():
+                if not placeholder:
+                    continue
+                sanitised_settings[placeholder] = {
+                    'source': cfg.get('source', 'random'),
+                    'customValue': cfg.get('customValue'),
+                    'databaseField': cfg.get('databaseField'),
+                    'csvId': cfg.get('csvId'),
+                    'csvField': cfg.get('csvField'),
+                    'csvRow': cfg.get('csvRow', 0),
+                    'randomOption': cfg.get('randomOption', 'auto')
+                }
+
+            upsert_template_placeholders(template_id, sanitised_settings)
+
+            # Return latest snapshot
+            refreshed = fetch_template_placeholders(template_id)
+            return {"success": True, "template": template_name, "template_id": str(template_id), "settings": refreshed}
+
+        if not SUPABASE_ENABLED and template_name:
+            all_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+            if template_name not in all_settings:
+                all_settings[template_name] = {}
+            all_settings[template_name].update(new_settings)
+            write_json_atomic(PLACEHOLDER_SETTINGS_PATH, all_settings)
+            logger.info(f"Saved placeholder settings for {template_name}")
+            return {"success": True, "template": template_name, "settings": all_settings[template_name]}
+
+        raise HTTPException(status_code=503, detail="Supabase not available")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving placeholder settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# STEP 6: PLANS API (JSON-backed)
+# ============================================================================
+
+@app.get("/plans")
+async def get_plans():
+    """Get all subscription plans"""
+    try:
+        plans = read_json_file(PLANS_PATH, {})
+        return {"success": True, "plans": plans}
+    except Exception as e:
+        logger.error(f"Error getting plans: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/user-plan/{user_id}")
+async def get_user_plan(user_id: str):
+    """Get plan for a specific user (mock - can be extended)"""
+    try:
+        plans_data = read_json_file(PLANS_PATH, {})
+        # For now, return basic plan as default
+        # In production, this would look up user's actual plan
+        return {
+            "success": True,
+            "user_id": user_id,
+            "plan": "basic",  # Default
+            "plan_data": plans_data.get("basic", {})
+        }
+    except Exception as e:
+        logger.error(f"Error getting user plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/check-download-permission")
+async def check_download_permission(request: Request):
+    """Check if a user can download a specific template"""
+    try:
+        data = await request.json()
+        user_id = data.get('user_id', 'basic')  # Default to basic
+        template_name = data.get('template_name')
+        
+        if not template_name:
+            raise HTTPException(status_code=400, detail="template_name is required")
+        
+        plans_data = read_json_file(PLANS_PATH, {})
+        user_plan_data = plans_data.get(user_id, plans_data.get("basic", {}))
+        
+        can_download = user_plan_data.get("can_download", [])
+        
+        # Check if user can download all templates
+        if "*" in can_download:
+            return {"can_download": True, "reason": "unlimited"}
+        
+        # Check if specific template is allowed
+        can_download_bool = template_name in can_download or any(
+            template_name.startswith(t.replace("*", "")) for t in can_download if "*" in t
+        )
+        
+        return {
+            "can_download": can_download_bool,
+            "user_id": user_id,
+            "template_name": template_name,
+            "plan": user_plan_data.get("name", "Unknown")
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking permission: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/update-plan")
+async def update_plan(request: Request):
+    """Update a subscription plan"""
+    try:
+        body = await request.json()
+        plan_id = body.get('plan_id')
+        plan_data = body.get('plan_data')
+        
+        if not plan_id or not plan_data:
+            raise HTTPException(status_code=400, detail="plan_id and plan_data are required")
+        
+        # If Supabase is available, update in database
+        if supabase:
+            try:
+                # Get plan by tier
+                plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', plan_id).limit(1).execute()
+                if plan_res.data:
+                    db_plan_id = plan_res.data[0]['id']
+                    
+                    # Update max_downloads_per_month
+                    update_data = {}
+                    if 'max_downloads_per_month' in plan_data:
+                        update_data['max_downloads_per_month'] = plan_data['max_downloads_per_month']
+                    
+                    if update_data:
+                        supabase.table('subscription_plans').update(update_data).eq('id', db_plan_id).execute()
+                    
+                    # Update template permissions if provided
+                    # Check both 'allowed_templates' and 'can_download' for compatibility
+                    allowed = plan_data.get('allowed_templates') or plan_data.get('can_download')
+                    
+                    if allowed:
+                        # Get all templates
+                        templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
+                        
+                        if templates_res.data:
+                            # Delete existing permissions
+                            supabase.table('plan_template_permissions').delete().eq('plan_id', db_plan_id).execute()
+                            
+                            # Create new permissions
+                            if allowed == '*' or allowed == ['*'] or (isinstance(allowed, list) and '*' in allowed):
+                                # Allow all templates
+                                for template in templates_res.data:
+                                    supabase.table('plan_template_permissions').insert({
+                                        'plan_id': db_plan_id,
+                                        'template_id': template['id'],
+                                        'can_download': True
+                                    }).execute()
+                                logger.info(f"Set all templates permission for plan {plan_id}")
+                            elif isinstance(allowed, list):
+                                # Allow specific templates - normalize names (remove .docx if present)
+                                template_names = {t.replace('.docx', '').strip() for t in allowed if t != '*'}
+                                
+                                for template in templates_res.data:
+                                    template_name = template.get('file_name', '').strip()
+                                    # Match by file_name (without extension)
+                                    if template_name in template_names:
+                                        supabase.table('plan_template_permissions').insert({
+                                            'plan_id': db_plan_id,
+                                            'template_id': template['id'],
+                                            'can_download': True
+                                        }).execute()
+                                logger.info(f"Set {len(template_names)} template permissions for plan {plan_id}")
+                    
+                    logger.info(f"Updated plan in database: {plan_id}")
+            except Exception as e:
+                logger.warning(f"Failed to update plan in database: {e}, using JSON fallback")
+        
+        # Also update JSON file as fallback/primary storage
+        plans = read_json_file(PLANS_PATH, {})
+        if plan_id not in plans:
+            raise HTTPException(status_code=404, detail=f"Plan '{plan_id}' not found")
+        
+        # Get existing plan data
+        existing_plan = plans.get(plan_id, {})
+        
+        # Merge with existing plan data to preserve other fields
+        # Only update fields that are provided in plan_data
+        updated_plan = existing_plan.copy()
+        
+        # Update specific fields if provided
+        if 'can_download' in plan_data:
+            can_download = plan_data['can_download']
+            # Normalize: ensure it's a list and remove .docx extensions for consistency
+            if isinstance(can_download, str):
+                updated_plan['can_download'] = [can_download]
+            elif isinstance(can_download, list):
+                # Remove .docx extension from template names for consistency
+                updated_plan['can_download'] = [t.replace('.docx', '').strip() if isinstance(t, str) else t for t in can_download if t]
+            else:
+                updated_plan['can_download'] = can_download
+        
+        if 'max_downloads_per_month' in plan_data:
+            updated_plan['max_downloads_per_month'] = plan_data['max_downloads_per_month']
+        
+        if 'features' in plan_data:
+            updated_plan['features'] = plan_data['features'] if isinstance(plan_data['features'], list) else []
+        
+        # Preserve other fields from plan_data if they exist
+        for key in ['name', 'description', 'monthly_price', 'annual_price', 'plan_tier', 'is_active']:
+            if key in plan_data:
+                updated_plan[key] = plan_data[key]
+        
+        plans[plan_id] = updated_plan
+        write_json_atomic(PLANS_PATH, plans)
+        
+        logger.info(f"Updated plan: {plan_id}")
+        logger.info(f"  - can_download: {updated_plan.get('can_download')}")
+        logger.info(f"  - max_downloads_per_month: {updated_plan.get('max_downloads_per_month')}")
+        logger.info(f"  - features: {updated_plan.get('features')}")
+        
+        return {"success": True, "plan_id": plan_id, "plan_data": updated_plan}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/check-download-permission-db")
+async def check_download_permission_db(request: Request):
+    """Check if a user can download a specific template from database"""
+    try:
+        body = await request.json()
+        user_id = body.get('user_id')
+        template_name = body.get('template_name')
+        
+        if not user_id or not template_name:
+            raise HTTPException(status_code=400, detail="user_id and template_name are required")
+        
+        if not supabase:
+            # Fallback to JSON-based check
+            return await check_download_permission(request)
+        
+        # Get template ID
+        template_file_name = template_name.replace('.docx', '')
+        template_res = supabase.table('document_templates').select('id').eq('file_name', template_file_name).eq('is_active', True).limit(1).execute()
+        
+        if not template_res.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        template_id = template_res.data[0]['id']
+        
+        # Call database function to check permissions
+        permission_res = supabase.rpc('can_user_download_template', {
+            'p_user_id': user_id,
+            'p_template_id': template_id
+        }).execute()
+        
+        if permission_res.data:
+            return {
+                "success": True,
+                **permission_res.data
+            }
+        else:
+            return {
+                "success": False,
+                "can_download": False,
+                "reason": "No permission data returned"
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking download permission: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.options("/user-downloadable-templates")
+async def options_user_downloadable_templates():
+    """Handle CORS preflight for user-downloadable-templates endpoint"""
+    return Response(status_code=200)
+
+@app.post("/user-downloadable-templates")
+async def get_user_downloadable_templates(request: Request):
+    """Get list of templates user can download with download counts"""
+    try:
+        body = await request.json()
+        user_id = body.get('user_id')
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id is required")
+        
+        if not supabase:
+            # Fallback to JSON-based templates
+            templates = []
+            for filename in os.listdir(TEMPLATES_DIR):
+                if filename.endswith('.docx'):
+                    file_path = os.path.join(TEMPLATES_DIR, filename)
+                    file_size = os.path.getsize(file_path)
+                    created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
+                    placeholders = extract_placeholders_from_docx(file_path)
+                    
+                    templates.append({
+                        "name": filename,
+                        "file_name": filename.replace('.docx', ''),
+                        "size": file_size,
+                        "created_at": created_at,
+                        "placeholders": placeholders,
+                        "can_download": True,  # Default to true for JSON fallback
+                        "max_downloads": 10,
+                        "current_downloads": 0,
+                        "remaining_downloads": 10
+                    })
+            
+            return {
+                "success": True,
+                "templates": templates,
+                "source": "json"
+            }
+        
+        # Call database function
+        templates_res = supabase.rpc('get_user_downloadable_templates', {
+            'p_user_id': user_id
+        }).execute()
+        
+        if templates_res.data:
+            # Enhance with template details
+            template_ids = [t['template_id'] for t in templates_res.data]
+            details_res = supabase.table('document_templates').select('id, title, description, file_name, placeholders').in_('id', template_ids).execute()
+            
+            details_map = {d['id']: d for d in (details_res.data or [])}
+            
+            enhanced_templates = []
+            for t in templates_res.data:
+                template_id = t['template_id']
+                details = details_map.get(template_id, {})
+                enhanced_templates.append({
+                    "id": str(template_id),
+                    "name": details.get('title', 'Unknown'),
+                    "file_name": details.get('file_name', ''),
+                    "description": details.get('description', ''),
+                    "placeholders": details.get('placeholders', []),
+                    "can_download": t['can_download'],
+                    "max_downloads": t['max_downloads'],
+                    "current_downloads": t['current_downloads'],
+                    "remaining_downloads": t['remaining_downloads']
+                })
+            
+            return {
+                "success": True,
+                "templates": enhanced_templates,
+                "source": "database"
+            }
+        else:
+            return {
+                "success": True,
+                "templates": [],
+                "source": "database"
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting user downloadable templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# CSV DATA ENDPOINTS
+# ============================================================================
+
+@app.post("/upload-csv")
+async def upload_csv(
+    file: UploadFile = File(...),
+    data_type: str = Form(...)
+    # current_user: str = Depends(get_current_user)  # Disabled for now
+):
+    """Upload CSV data file"""
+    try:
+        if not file.filename.endswith('.csv'):
+            raise HTTPException(status_code=400, detail="Only .csv files are allowed")
+        
+        # Map data_type to filename
+        filename_map = {
+            "buyers_sellers": "buyers_sellers_data_220.csv",
+            "bank_accounts": "bank_accounts.csv",
+            "icpo": "icpo_section4_6_data_230.csv"
+        }
+        
+        filename = filename_map.get(data_type, f"{data_type}.csv")
+        file_path = os.path.join(DATA_DIR, filename)
+        
+        # Save file
+        with open(file_path, 'wb') as f:
+            content = await file.read()
+            f.write(content)
+        
+        logger.info(f"CSV uploaded: {filename}")
+        return {"success": True, "filename": filename, "data_type": data_type}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading CSV: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/data/all")
+async def get_all_data():
+    """Get status of all CSV data sources"""
+    try:
+        data_sources = {}
+        csv_files = {
+            "buyers_sellers": "buyers_sellers_data_220.csv",
+            "bank_accounts": "bank_accounts.csv",
+            "icpo": "icpo_section4_6_data_230.csv"
+        }
+        
+        for name, filename in csv_files.items():
+            file_path = os.path.join(DATA_DIR, filename)
+            exists = os.path.exists(file_path)
+            size = os.path.getsize(file_path) if exists else 0
+            
+            if exists:
+                # Count rows
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        row_count = sum(1 for _ in reader)
+                except:
+                    row_count = 0
+            else:
+                row_count = 0
+            
+            data_sources[name] = {
+                "filename": filename,
+                "exists": exists,
+                "size": size,
+                "row_count": row_count
+            }
+        
+        return {"success": True, "data_sources": data_sources}
+    except Exception as e:
+        logger.error(f"Error getting data sources: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/csv-files")
+async def get_csv_files():
+    """Get list of available CSV files"""
+    try:
+        csv_files = []
+        csv_mapping = {
+            "buyers_sellers": "buyers_sellers_data_220.csv",
+            "bank_accounts": "bank_accounts.csv",
+            "icpo": "icpo_section4_6_data_230.csv"
+        }
+        
+        for name, filename in csv_mapping.items():
+            file_path = os.path.join(DATA_DIR, filename)
+            if os.path.exists(file_path):
+                csv_files.append({
+                    "id": name,
+                    "filename": filename,
+                    "display_name": name.replace('_', ' ').title()
+                })
+        
+        return {"success": True, "csv_files": csv_files}
+    except Exception as e:
+        logger.error(f"Error getting CSV files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/csv-fields/{csv_id}")
+async def get_csv_fields(csv_id: str):
+    """Get columns/fields from a CSV file"""
+    try:
+        csv_mapping = {
+            "buyers_sellers": "buyers_sellers_data_220.csv",
+            "bank_accounts": "bank_accounts.csv",
+            "icpo": "icpo_section4_6_data_230.csv"
+        }
+        
+        filename = csv_mapping.get(csv_id)
+        if not filename:
+            raise HTTPException(status_code=404, detail="CSV file not found")
+        
+        file_path = os.path.join(DATA_DIR, filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"CSV file not found: {filename}")
+        
+        # Read CSV headers
+        with open(file_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fields = [{"name": field, "label": field.replace('_', ' ').title()} for field in reader.fieldnames]
+        
+        return {"success": True, "fields": fields}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting CSV fields: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/csv-rows/{csv_id}/{field_name}")
+async def get_csv_rows(csv_id: str, field_name: str):
+    """Get all unique rows for a specific field in a CSV file"""
+    try:
+        csv_mapping = {
+            "buyers_sellers": "buyers_sellers_data_220.csv",
+            "bank_accounts": "bank_accounts.csv",
+            "icpo": "icpo_section4_6_data_230.csv"
+        }
+        
+        filename = csv_mapping.get(csv_id)
+        if not filename:
+            raise HTTPException(status_code=404, detail="CSV file not found")
+        
+        file_path = os.path.join(DATA_DIR, filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"CSV file not found: {filename}")
+        
+        # Read CSV rows for the specific field
+        rows_data = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for idx, row in enumerate(reader):
+                if field_name in row and row[field_name]:
+                    rows_data.append({
+                        "row_index": idx,
+                        "value": row[field_name],
+                        "preview": row[field_name][:100] + "..." if len(str(row[field_name])) > 100 else row[field_name]
+                    })
+        
+        return {"success": True, "rows": rows_data[:100]}  # Limit to 100 rows
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting CSV rows: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
+    """Get data from a CSV file by row index"""
+    try:
+        csv_mapping = {
+            "buyers_sellers": "buyers_sellers_data_220.csv",
+            "bank_accounts": "bank_accounts.csv",
+            "icpo": "icpo_section4_6_data_230.csv"
+        }
+        
+        filename = csv_mapping.get(csv_id)
+        if not filename:
+            return None
+        
+        file_path = os.path.join(DATA_DIR, filename)
+        if not os.path.exists(file_path):
+            return None
+        
+        # Read CSV data
+        with open(file_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            
+            if row_index < len(rows):
+                return rows[row_index]
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error reading CSV data: {e}")
+        return None
+
+# ============================================================================
+# STEP 7: DOCUMENT GENERATION (with PDF export)
+# ============================================================================
+
+def get_vessel_data(imo: str) -> Optional[Dict]:
+    """Get vessel data from Supabase database using IMO number"""
+    if not imo:
+        logger.error("Vessel IMO is required but not provided")
+        raise ValueError("Vessel IMO is required")
+    
+    try:
+        if not supabase:
+            logger.warning(f"Supabase not available, returning minimal data for IMO: {imo}")
             return {
                 'imo': imo,
                 'name': f'Vessel {imo}',
@@ -89,112 +1651,277 @@ def get_vessel_data(imo: str) -> Optional[Dict]:
                 'gross_tonnage': '30000'
             }
         
-        vessel_data = {}
-        
-        # 1. Get vessel data from vessels table
+        logger.info(f"Fetching vessel data from database for IMO: {imo}")
         response = supabase.table('vessels').select('*').eq('imo', imo).execute()
-        if response.data:
-            vessel_data.update(response.data[0])
+        
+        if response.data and len(response.data) > 0:
+            vessel_data = response.data[0]
+            logger.info(f"Found vessel in database: {vessel_data.get('name', 'Unknown')} (IMO: {imo})")
+            # Ensure IMO is always in the returned data
+            vessel_data['imo'] = imo
+            return vessel_data
         else:
-            return None
-        
-        # 2. Get port data if vessel has port references
-        if vessel_data.get('loading_port_id'):
-            try:
-                port_response = supabase.table('ports').select('*').eq('id', vessel_data['loading_port_id']).execute()
-                if port_response.data:
-                    for key, value in port_response.data[0].items():
-                        vessel_data[f'loading_port_{key}'] = value
-            except Exception as e:
-                print(f"Error fetching loading port data: {e}")
-        
-        if vessel_data.get('destination_port_id'):
-            try:
-                port_response = supabase.table('ports').select('*').eq('id', vessel_data['destination_port_id']).execute()
-                if port_response.data:
-                    for key, value in port_response.data[0].items():
-                        vessel_data[f'destination_port_{key}'] = value
-            except Exception as e:
-                print(f"Error fetching destination port data: {e}")
-        
-        # 3. Get company data if vessel has company references
-        if vessel_data.get('owner_id'):
-            try:
-                company_response = supabase.table('companies').select('*').eq('id', vessel_data['owner_id']).execute()
-                if company_response.data:
-                    for key, value in company_response.data[0].items():
-                        vessel_data[f'owner_{key}'] = value
-            except Exception as e:
-                print(f"Error fetching owner company data: {e}")
-        
-        if vessel_data.get('operator_id'):
-            try:
-                company_response = supabase.table('companies').select('*').eq('id', vessel_data['operator_id']).execute()
-                if company_response.data:
-                    for key, value in company_response.data[0].items():
-                        vessel_data[f'operator_{key}'] = value
-            except Exception as e:
-                print(f"Error fetching operator company data: {e}")
-        
-        # 4. Get refinery data if available
-        if vessel_data.get('refinery_id'):
-            try:
-                refinery_response = supabase.table('refineries').select('*').eq('id', vessel_data['refinery_id']).execute()
-                if refinery_response.data:
-                    for key, value in refinery_response.data[0].items():
-                        vessel_data[f'refinery_{key}'] = value
-            except Exception as e:
-                print(f"Error fetching refinery data: {e}")
-        
-        print(f"DEBUG: Fetched comprehensive vessel data with {len(vessel_data)} fields")
-        return vessel_data
-        
+            logger.warning(f"Vessel with IMO {imo} not found in database, using fallback data")
+            # Return minimal data structure but log the issue
+            return {
+                'imo': imo,
+                'name': f'Vessel {imo}',
+                'vessel_type': 'Tanker',
+                'flag': 'Panama',
+            }
     except Exception as e:
-        print(f"Error fetching vessel data: {e}")
-        return None
+        logger.error(f"Error fetching vessel data for IMO {imo}: {e}")
+        # Return minimal data on error but always include the IMO
+        return {
+            'imo': imo,
+            'name': f'Vessel {imo}',
+            'vessel_type': 'Tanker',
+            'flag': 'Panama',
+        }
 
-def find_placeholders(text: str) -> List[str]:
-    """Find placeholders in text using various patterns"""
-    # Only look for properly formatted placeholders
-    patterns = [
-        r'\{\{([^}]+)\}\}',  # {{placeholder}}
-        r'\{([^}]+)\}',      # {placeholder} (but not malformed ones)
-        r'\[([^\]]+)\]',     # [placeholder]
-        r'\[\[([^\]]+)\]\]', # [[placeholder]]
-        r'%([^%]+)%',        # %placeholder%
-        r'<([^>]+)>',        # <placeholder>
-        r'__([^_]+)__',      # __placeholder__
-        r'##([^#]+)##',      # ##placeholder##
-    ]
+def _calculate_similarity(str1: str, str2: str) -> float:
+    """
+    Calculate similarity ratio between two strings using Levenshtein distance.
+    Returns a value between 0.0 (completely different) and 1.0 (identical).
+    """
+    if not str1 or not str2:
+        return 0.0
     
-    placeholders = []
-    for pattern in patterns:
-        matches = re.findall(pattern, text)
-        placeholders.extend(matches)
+    if str1 == str2:
+        return 1.0
     
-    # Clean up placeholders (remove extra spaces, normalize, but be more permissive)
-    cleaned_placeholders = []
-    for placeholder in placeholders:
-        cleaned = placeholder.strip().replace(' ', '_')
-        # Only filter out obviously bad placeholders
-        if (cleaned and 
-            cleaned not in cleaned_placeholders and 
-            len(cleaned) < 200 and  # Increased limit
-            len(cleaned) > 0 and
-            not cleaned.startswith('{') and  # Don't start with {
-            not cleaned.endswith('{') and    # Don't end with {
-            not cleaned.startswith('}') and  # Don't start with }
-            not cleaned.endswith('}')):      # Don't end with }
-            cleaned_placeholders.append(cleaned)
+    # Simple Levenshtein distance implementation
+    len1, len2 = len(str1), len(str2)
+    if len1 == 0:
+        return 0.0 if len2 > 0 else 1.0
+    if len2 == 0:
+        return 0.0
     
-    return cleaned_placeholders
+    # Create matrix
+    matrix = [[0] * (len2 + 1) for _ in range(len1 + 1)]
+    
+    # Initialize first row and column
+    for i in range(len1 + 1):
+        matrix[i][0] = i
+    for j in range(len2 + 1):
+        matrix[0][j] = j
+    
+    # Fill matrix
+    for i in range(1, len1 + 1):
+        for j in range(1, len2 + 1):
+            cost = 0 if str1[i-1] == str2[j-1] else 1
+            matrix[i][j] = min(
+                matrix[i-1][j] + 1,      # deletion
+                matrix[i][j-1] + 1,      # insertion
+                matrix[i-1][j-1] + cost  # substitution
+            )
+    
+    # Calculate similarity ratio
+    max_len = max(len1, len2)
+    distance = matrix[len1][len2]
+    similarity = 1.0 - (distance / max_len) if max_len > 0 else 1.0
+    return similarity
+
+def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
+    """
+    Intelligently match a placeholder name to a vessel database field with priority scoring.
+    Returns (matched_field_name, matched_value) or (None, None) if no match.
+    Uses multiple strategies with confidence scoring to find the best match.
+    """
+    if not vessel:
+        return (None, None)
+    
+    # Normalize placeholder name for matching
+    placeholder_clean = placeholder.strip()
+    placeholder_normalized = placeholder_clean.lower().replace('_', '').replace('-', '').replace(' ', '')
+    placeholder_words = set(re.findall(r'[a-z]+', placeholder_normalized))
+    
+    # Comprehensive field name mappings with priority
+    # Format: {normalized_placeholder: database_field}
+    field_mappings = {
+        # IMO related
+        'imonumber': 'imo', 'imo_number': 'imo', 'imono': 'imo', 'imo': 'imo',
+        
+        # Vessel identification
+        'vesselname': 'name', 'vessel_name': 'name', 'shipname': 'name',
+        'vesseltype': 'vessel_type', 'vessel_type': 'vessel_type', 'shiptype': 'vessel_type',
+        'flagstate': 'flag', 'flag_state': 'flag', 'flag': 'flag',
+        'mmsi': 'mmsi', 'mmsinumber': 'mmsi',
+        
+        # Dimensions
+        'lengthoverall': 'length', 'length_overall': 'length', 'loa': 'length',
+        'length': 'length', 'vessellength': 'length',
+        'width': 'width', 'beam': 'beam', 'breadth': 'beam',
+        'draft': 'draft', 'draught': 'draught', 'maxdraft': 'draft',
+        
+        # Tonnage
+        'deadweight': 'deadweight', 'dwt': 'deadweight', 'deadweighttonnage': 'deadweight',
+        'grosstonnage': 'gross_tonnage', 'gross_tonnage': 'gross_tonnage', 'grt': 'gross_tonnage',
+        'nettonnage': 'net_tonnage', 'net_tonnage': 'net_tonnage', 'nrt': 'net_tonnage',
+        
+        # Capacity
+        'cargocapacity': 'cargo_capacity', 'cargo_capacity': 'cargo_capacity',
+        'cargotanks': 'cargo_tanks', 'cargo_tanks': 'cargo_tanks',
+        'pumpingcapacity': 'pumping_capacity', 'pumping_capacity': 'pumping_capacity',
+        
+        # Performance
+        'speed': 'speed', 'cruisingspeed': 'speed', 'maxspeed': 'speed',
+        'enginetype': 'engine_power', 'engine_type': 'engine_power',
+        'enginepower': 'engine_power', 'engine_power': 'engine_power',
+        'fuelconsumption': 'fuel_consumption', 'fuel_consumption': 'fuel_consumption',
+        
+        # Ownership & Operations
+        'vesselowner': 'owner_name', 'vessel_owner': 'owner_name', 'owner': 'owner_name',
+        'ownername': 'owner_name', 'owner_name': 'owner_name',
+        'vesseloperator': 'operator_name', 'vessel_operator': 'operator_name',
+        'operator': 'operator_name', 'operatorname': 'operator_name', 'operator_name': 'operator_name',
+        'ismmanager': 'ism_manager', 'ism_manager': 'ism_manager',
+        'classsociety': 'class_society', 'class_society': 'class_society',
+        
+        # Communication
+        'callsign': 'callsign', 'call_sign': 'callsign', 'callsignnumber': 'callsign',
+        
+        # Dates
+        'yearbuilt': 'built', 'year_built': 'built', 'built': 'built',
+        'buildyear': 'built', 'constructionyear': 'built',
+        
+        # Location & Navigation
+        'registryport': 'registry_port', 'registry_port': 'registry_port',
+        'currentport': 'currentport', 'current_port': 'currentport',
+        'departureport': 'departure_port', 'departure_port': 'departure_port',
+        'destinationport': 'destination_port', 'destination_port': 'destination_port',
+        'loadingport': 'loading_port', 'loading_port': 'loading_port',
+        'currentregion': 'current_region', 'current_region': 'current_region',
+        'navstatus': 'nav_status', 'nav_status': 'nav_status', 'status': 'status',
+        'course': 'course',
+        
+        # Cargo
+        'cargotype': 'cargo_type', 'cargo_type': 'cargo_type',
+        'cargoquantity': 'cargo_quantity', 'cargo_quantity': 'cargo_quantity',
+        'quantity': 'quantity',
+        'oiltype': 'oil_type', 'oil_type': 'oil_type',
+        'oilsource': 'oil_source', 'oil_source': 'oil_source',
+        
+        # Commercial
+        'buyername': 'buyer_name', 'buyer_name': 'buyer_name',
+        'sellername': 'seller_name', 'seller_name': 'seller_name',
+        'price': 'price', 'marketprice': 'market_price', 'market_price': 'market_price',
+        'dealvalue': 'deal_value', 'deal_value': 'deal_value',
+        'sourcecompany': 'source_company', 'source_company': 'source_company',
+        'targetrefinery': 'target_refinery', 'target_refinery': 'target_refinery',
+        'shippingtype': 'shipping_type', 'shipping_type': 'shipping_type',
+        'routedistance': 'route_distance', 'route_distance': 'route_distance',
+        'routeinfo': 'route_info', 'route_info': 'route_info',
+        
+        # Crew
+        'crewsize': 'crew_size', 'crew_size': 'crew_size',
+    }
+    
+    # Strategy 1: Direct mapping (highest priority)
+    if placeholder_normalized in field_mappings:
+        mapped_field = field_mappings[placeholder_normalized]
+        if mapped_field in vessel:
+            value = vessel[mapped_field]
+            if value is not None and str(value).strip() != '':
+                logger.debug(f"  ✅ Direct mapping: '{placeholder}' -> '{mapped_field}'")
+                return (mapped_field, str(value).strip())
+    
+    # Strategy 2: Exact match after normalization (high priority)
+    best_match = None
+    best_score = 0.0
+    best_field = None
+    
+    for field_name, field_value in vessel.items():
+        if field_value is None or str(field_value).strip() == '':
+            continue
+        
+        field_normalized = field_name.lower().replace('_', '').replace('-', '').replace(' ', '')
+        
+        # Exact match after normalization
+        if placeholder_normalized == field_normalized:
+            logger.debug(f"  ✅ Exact normalized match: '{placeholder}' -> '{field_name}'")
+            return (field_name, str(field_value).strip())
+        
+        # Calculate similarity score
+        similarity = _calculate_similarity(placeholder_normalized, field_normalized)
+        
+        # Boost score for substring matches
+        if placeholder_normalized in field_normalized or field_normalized in placeholder_normalized:
+            similarity = max(similarity, 0.85)  # Boost substring matches
+        
+        # Word overlap bonus
+        field_words = set(re.findall(r'[a-z]+', field_normalized))
+        if placeholder_words and field_words:
+            common_words = placeholder_words.intersection(field_words)
+            if common_words:
+                meaningful_common = [w for w in common_words if len(w) >= 3]
+                if meaningful_common:
+                    # Calculate word overlap ratio
+                    overlap_ratio = len(meaningful_common) / max(len(placeholder_words), len(field_words))
+                    similarity = max(similarity, 0.7 + (overlap_ratio * 0.2))  # Boost by overlap
+        
+        # Track best match
+        if similarity > best_score:
+            best_score = similarity
+            best_field = field_name
+            best_match = str(field_value).strip()
+    
+    # Strategy 3: Use best match if confidence is high enough
+    if best_match and best_score >= 0.75:  # 75% similarity threshold
+        logger.debug(f"  ✅ High confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
+        return (best_field, best_match)
+    
+    # Strategy 4: Try partial word matching with lower threshold
+    if best_match and best_score >= 0.60:  # 60% similarity threshold
+        # Additional validation: check if key words match
+        key_words_placeholder = {w for w in placeholder_words if len(w) >= 4}
+        if key_words_placeholder:
+            best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
+            key_words_field = {w for w in best_field_words if len(w) >= 4}
+            if key_words_placeholder.intersection(key_words_field):
+                logger.debug(f"  ✅ Medium confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
+                return (best_field, best_match)
+    
+    # No match found
+    return (None, None)
+
+def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
+    """Generate realistic random data for placeholders"""
+    import random
+    import hashlib
+    
+    # Create unique seed for consistent data
+    if vessel_imo:
+        seed_input = f"{vessel_imo}_{placeholder.lower()}"
+        random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
+    
+    placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
+    
+    # Simple fallback data generation
+    if 'date' in placeholder_lower:
+        from datetime import timedelta
+        return (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
+    elif 'result' in placeholder_lower:
+        # Generate varied results
+        results = ['0.01%', '0.15%', '0.23%', '0.45%', '0.67%', '1.20%', '2.34%', '0.89%', '0.12%']
+        return random.choice(results)
+    elif 'email' in placeholder_lower:
+        return f"test{random.randint(100,999)}@example.com"
+    elif 'phone' in placeholder_lower or 'tel' in placeholder_lower:
+        return f"+{random.randint(1,99)} {random.randint(100,999)} {random.randint(100000,999999)}"
+    elif 'name' in placeholder_lower:
+        return f"Test Company {random.randint(1,100)}"
+    elif 'ref' in placeholder_lower or 'number' in placeholder_lower:
+        return f"REF-{random.randint(100000,999999)}"
+    else:
+        return f"Test_{placeholder}"
 
 def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
-    """Replace placeholders in a Word document"""
+    """Replace placeholders in a DOCX file"""
     try:
-        print(f"DEBUG: Starting replacement with {len(data)} mappings")
+        logger.info(f"Starting replacement with {len(data)} mappings")
         for key, value in data.items():
-            print(f"DEBUG: Will replace {key} -> {value}")
+            logger.debug(f"Will replace {key} -> {value}")
         
         # Load the document
         doc = Document(docx_path)
@@ -220,7 +1947,7 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                     if fmt in paragraph.text:
                         paragraph.text = paragraph.text.replace(fmt, str(value))
                         replacements_made += 1
-                        print(f"DEBUG: Replaced '{fmt}' with '{value}' in paragraph")
+                        logger.debug(f"Replaced '{fmt}' with '{value}' in paragraph")
         
         # Replace in tables
         for table in doc.tables:
@@ -243,9 +1970,9 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                                 if fmt in paragraph.text:
                                     paragraph.text = paragraph.text.replace(fmt, str(value))
                                     replacements_made += 1
-                                    print(f"DEBUG: Replaced '{fmt}' with '{value}' in table cell")
+                                    logger.debug(f"Replaced '{fmt}' with '{value}' in table cell")
         
-        print(f"DEBUG: Total replacements made: {replacements_made}")
+        logger.info(f"Total replacements made: {replacements_made}")
         
         # Save the modified document
         output_path = os.path.join(TEMP_DIR, f"processed_{uuid.uuid4().hex}.docx")
@@ -253,1169 +1980,375 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
         return output_path
         
     except Exception as e:
-        print(f"Error processing document: {e}")
+        logger.error(f"Error processing document: {e}")
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
 
 def convert_docx_to_pdf(docx_path: str) -> str:
-    """Convert DOCX to PDF using LibreOffice headless mode"""
+    """Convert DOCX to PDF using docx2pdf"""
     try:
-        import subprocess
-        
         pdf_path = os.path.join(TEMP_DIR, f"output_{uuid.uuid4().hex}.pdf")
         
-        # Try different LibreOffice paths
+        # Try docx2pdf first (pure Python, no external dependencies on Windows)
+        try:
+            from docx2pdf import convert
+            logger.info(f"Converting DOCX to PDF using docx2pdf: {docx_path}")
+            convert(docx_path, pdf_path)
+            
+            if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+                logger.info(f"Successfully converted to PDF: {pdf_path}")
+                return pdf_path
+            else:
+                logger.warning("docx2pdf created empty PDF")
+        except ImportError:
+            logger.warning("docx2pdf not installed, trying LibreOffice fallback")
+        except Exception as e:
+            logger.warning(f"docx2pdf failed: {e}, trying LibreOffice fallback")
+        
+        # Fallback: Try LibreOffice on Windows
+        import subprocess
         libreoffice_paths = [
-            '/usr/bin/libreoffice',
-            '/usr/local/bin/libreoffice',
-            '/opt/libreoffice/program/soffice',
-            'libreoffice'  # fallback to PATH
+            r'C:\Program Files\LibreOffice\program\soffice.exe',
+            r'C:\Program Files (x86)\LibreOffice\program\soffice.exe',
+            'soffice',  # fallback
         ]
         
-        libreoffice_found = None
         for path in libreoffice_paths:
             try:
-                # Test if LibreOffice is available
                 result = subprocess.run([path, '--version'], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
-                    print(f"Found LibreOffice at: {path}")
                     libreoffice_found = path
-                    break
+                    cmd = [
+                        libreoffice_found,
+                        '--headless',
+                        '--convert-to', 'pdf',
+                        '--outdir', TEMP_DIR,
+                        docx_path
+                    ]
+                    subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    
+                    # Get generated PDF
+                    expected_pdf = os.path.join(
+                        TEMP_DIR, 
+                        os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
+                    )
+                    if os.path.exists(expected_pdf):
+                        os.rename(expected_pdf, pdf_path)
+                        return pdf_path
             except:
                 continue
         
-        if not libreoffice_found:
-            print("LibreOffice not found, trying docx2pdf fallback...")
-            # Fallback to docx2pdf
-            try:
-                from docx2pdf import convert
-                convert(docx_path, pdf_path)
-                return pdf_path
-            except Exception as e:
-                print(f"docx2pdf fallback failed: {e}")
-                # Final fallback: return the DOCX file
-                return docx_path
-        
-        # Convert using LibreOffice
-        cmd = [
-            libreoffice_found,
-            '--headless',
-            '--convert-to', 'pdf',
-            '--outdir', os.path.dirname(pdf_path),
-            docx_path
-        ]
-        
-        print(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        
-        if result.returncode == 0:
-            print("PDF conversion successful")
-            # LibreOffice creates PDF with same name as DOCX
-            expected_pdf = os.path.join(os.path.dirname(pdf_path), 
-                                      os.path.splitext(os.path.basename(docx_path))[0] + '.pdf')
-            if os.path.exists(expected_pdf):
-                # Rename to our expected name
-                os.rename(expected_pdf, pdf_path)
-            return pdf_path
-        else:
-            print(f"LibreOffice error: {result.stderr}")
-            # Fallback to docx2pdf
-            print("Falling back to docx2pdf...")
-            try:
-                from docx2pdf import convert
-                convert(docx_path, pdf_path)
-                return pdf_path
-            except Exception as e:
-                print(f"docx2pdf fallback failed: {e}")
-                # Final fallback: return the DOCX file
-                return docx_path
-            
+        # If no PDF conversion, return DOCX
+        logger.warning("All PDF conversion methods failed, returning DOCX")
+        return docx_path
     except Exception as e:
-        print(f"PDF conversion failed: {e}")
-        # Final fallback: return the DOCX file
+        logger.warning(f"PDF conversion failed: {e}, returning DOCX")
         return docx_path
 
+@app.options("/generate-document")
+async def options_generate_document():
+    """Handle CORS preflight for generate-document endpoint"""
+    return Response(status_code=200)
 
-def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
-    """Generate highly realistic, varied random data for oil trading documents with real professional data"""
-    import random
-    import hashlib
-    
-    # Create unique seed for each entity type to ensure different data for different people/companies
-    if vessel_imo:
-        # Create different seeds for different entity types
-        entity_type = placeholder.lower().replace('_', '').replace(' ', '')
-        if 'buyer' in entity_type:
-            seed_input = f"{vessel_imo}_buyer"
-        elif 'seller' in entity_type:
-            seed_input = f"{vessel_imo}_seller"
-        elif 'bank' in entity_type or 'financial' in entity_type:
-            seed_input = f"{vessel_imo}_bank"
-        elif 'principal' in entity_type:
-            seed_input = f"{vessel_imo}_principal"
-        elif 'logistics' in entity_type:
-            seed_input = f"{vessel_imo}_logistics"
-        elif 'authorized' in entity_type or 'signatory' in entity_type:
-            seed_input = f"{vessel_imo}_signatory"
-        else:
-            seed_input = f"{vessel_imo}_{entity_type}"
-        
-        random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
-    
-    # REALISTIC BUYERS - ENHANCED WITH REAL EMAILS AND PHONES
-    real_buyers = [
-        {"name": "Shell International Trading and Shipping Company Ltd", "email": "trading@shell.com", "phone": "+44 20 7934 1234", "address": "1 Shell Centre, London SE1 7NA, UK"},
-        {"name": "BP International Ltd", "email": "operations@bp.com", "phone": "+44 20 7623 4567", "address": "1 St James's Square, London SW1Y 4PD, UK"},
-        {"name": "TotalEnergies Trading SA", "email": "commercial@totalenergies.com", "phone": "+33 1 40 14 45 46", "address": "2 Place Jean Millier, 92078 Paris La Défense, France"},
-        {"name": "Vitol Group", "email": "info@vitol.com", "phone": "+44 20 7283 7890", "address": "10 Upper Bank Street, London E14 5JJ, UK"},
-        {"name": "Trafigura Group Pte Ltd", "email": "info@trafigura.com", "phone": "+65 6221 1234", "address": "1 HarbourFront Avenue, #18-01 Keppel Bay Tower, Singapore 098632"},
-        {"name": "Glencore Energy UK Ltd", "email": "trading@glencore.com", "phone": "+44 20 7747 1000", "address": "20 Fenchurch Street, London EC3M 3BY, UK"},
-        {"name": "Mercuria Energy Trading SA", "email": "contact@mercuria.com", "phone": "+41 22 319 90 00", "address": "Route de Florissant 13, 1206 Geneva, Switzerland"},
-        {"name": "ExxonMobil Global Trading Company", "email": "trading@exxonmobil.com", "phone": "+1 713 546 1234", "address": "600 Travis Street, Suite 1900, Houston, TX 77002, USA"},
-        {"name": "Chevron Global Energy Inc", "email": "energy@chevron.com", "phone": "+1 713 546 5678", "address": "1000 Main Street, Houston, TX 77002, USA"},
-        {"name": "Gunvor Group Ltd", "email": "trading@gunvor.com", "phone": "+41 22 319 90 00", "address": "Route de Florissant 13, 1206 Geneva, Switzerland"},
-        {"name": "Koch Supply & Trading LP", "email": "trading@kochind.com", "phone": "+1 713 546 9012", "address": "1500 Louisiana Street, Houston, TX 77002, USA"},
-        {"name": "Castleton Commodities International LLC", "email": "info@castletoncommodities.com", "phone": "+1 212 270 6000", "address": "383 Madison Avenue, New York, NY 10017, USA"},
-        {"name": "Freepoint Commodities LLC", "email": "trading@freepoint.com", "phone": "+1 212 270 6000", "address": "383 Madison Avenue, New York, NY 10017, USA"},
-        {"name": "Hartree Partners LP", "email": "info@hartreepartners.com", "phone": "+1 212 270 6000", "address": "383 Madison Avenue, New York, NY 10017, USA"},
-        {"name": "BB Energy Trading Ltd", "email": "trading@bbenergy.com", "phone": "+44 20 7000 7000", "address": "1 Canada Square, Canary Wharf, London E14 5AB, UK"},
-        {"name": "ConocoPhillips Global Trading", "email": "trading@conocophillips.com", "phone": "+1 713 546 3456", "address": "1100 Louisiana Street, Houston, TX 77002, USA"},
-        {"name": "Eni Trading & Shipping SpA", "email": "trading@eni.com", "phone": "+39 06 59821", "address": "Piazzale Enrico Mattei 1, 00144 Rome, Italy"},
-        {"name": "Repsol Trading SA", "email": "trading@repsol.com", "phone": "+34 91 348 81 00", "address": "Calle Méndez Álvaro 44, 28045 Madrid, Spain"},
-        {"name": "Equinor ASA Trading", "email": "trading@equinor.com", "phone": "+47 51 99 00 00", "address": "Forusbeen 50, 4035 Stavanger, Norway"},
-        {"name": "PetroChina International Company Ltd", "email": "trading@petrochina.com.cn", "phone": "+86 10 5998 6000", "address": "9 Dongzhimen North Street, Dongcheng District, Beijing 100007, China"}
-    ]
-    
-    # REALISTIC SELLERS - ENHANCED WITH REAL EMAILS AND PHONES
-    real_sellers = [
-        {"name": "Saudi Aramco Trading Company", "email": "marketing@aramco.com", "phone": "+966 11 402 9000", "address": "King Fahd Road, Riyadh 11564, Saudi Arabia"},
-        {"name": "ADNOC Global Trading", "email": "trading@adnoc.ae", "phone": "+971 2 707 0000", "address": "Sheikh Zayed Road, Abu Dhabi, UAE"},
-        {"name": "Qatar Energy Trading LLC", "email": "export@qatarenergy.qa", "phone": "+974 4407 0000", "address": "QNB Tower, West Bay, Doha, Qatar"},
-        {"name": "Kuwait Petroleum Corporation", "email": "export@kpc.com.kw", "phone": "+965 1 888 888", "address": "Abdullah Al-Mubarak Street, Kuwait City, Kuwait"},
-        {"name": "Sonatrach Trading Ltd", "email": "export@sonatrach.dz", "phone": "+213 21 54 11 11", "address": "80 Avenue Ahmed Ghermoul, Algiers, Algeria"},
-        {"name": "Gazprom Marketing & Trading Ltd", "email": "trading@gazprom.com", "phone": "+7 495 719 30 00", "address": "Nametkina Street 16, 117420 Moscow, Russia"},
-        {"name": "Petrobras Global Trading BV", "email": "trading@petrobras.com", "phone": "+55 21 3224 1000", "address": "Avenida República do Chile 65, Rio de Janeiro, RJ 20031-170, Brazil"},
-        {"name": "Pemex Trading International Inc", "email": "trading@pemex.com", "phone": "+52 55 1944 2500", "address": "Marina Nacional 329, Col. Huasteca, Miguel Hidalgo, 11311 Mexico City, Mexico"},
-        {"name": "Nigerian National Petroleum Corporation", "email": "trading@nnpcgroup.com", "phone": "+234 9 234 0000", "address": "NNPC Towers, Herbert Macaulay Way, Central Business District, Abuja, Nigeria"},
-        {"name": "Petronas Trading Corporation Sdn Bhd", "email": "trading@petronas.com.my", "phone": "+60 3 2051 5000", "address": "Tower 1, Petronas Twin Towers, Kuala Lumpur City Centre, 50088 Kuala Lumpur, Malaysia"},
-        {"name": "Rosneft Trading SA", "email": "trading@rosneft.com", "phone": "+7 495 777 44 22", "address": "Sofiyskaya Embankment 26/1, 115035 Moscow, Russia"},
-        {"name": "Lukoil Trading & Supply", "email": "trading@lukoil.com", "phone": "+7 495 627 44 44", "address": "Sretensky Boulevard 11, 101000 Moscow, Russia"},
-        {"name": "Tatneft Trading", "email": "trading@tatneft.ru", "phone": "+7 8553 37 11 11", "address": "75 Lenin Street, 423450 Almetyevsk, Tatarstan, Russia"},
-        {"name": "Surgutneftegas Trading", "email": "trading@surgutneftegas.ru", "phone": "+7 3462 42 00 00", "address": "Lenin Avenue 1, 628415 Surgut, Russia"},
-        {"name": "Bashneft Trading", "email": "trading@bashneft.ru", "phone": "+7 347 279 00 00", "address": "Karl Marx Street 30, 450077 Ufa, Russia"},
-        {"name": "NOVATEK Trading", "email": "trading@novatek.ru", "phone": "+7 495 730 60 00", "address": "2 Udaltsova Street, 119415 Moscow, Russia"},
-        {"name": "Irkutsk Oil Company", "email": "trading@irkutskoil.com", "phone": "+7 3952 25 00 00", "address": "Lenin Street 1, 664003 Irkutsk, Russia"},
-        {"name": "Zarubezhneft Trading", "email": "trading@zarubezhneft.ru", "phone": "+7 495 232 00 00", "address": "Bolshaya Ordynka Street 24/26, 119017 Moscow, Russia"},
-        {"name": "Russneft Trading", "email": "trading@russneft.ru", "phone": "+7 495 232 00 00", "address": "Bolshaya Ordynka Street 24/26, 119017 Moscow, Russia"},
-        {"name": "TNK-BP Trading", "email": "trading@tnk-bp.com", "phone": "+7 495 363 11 11", "address": "Arbat Street 1, 119019 Moscow, Russia"}
-    ]
-    
-    # REAL BANK NAMES WITH COMPLETE DETAILS
-    banks = {
-        'international': [
-            {'name': 'JPMorgan Chase Bank NA', 'swift': 'CHASUS33', 'address': '383 Madison Avenue, New York, NY 10017, USA', 'phone': '+1 212 270 6000'},
-            {'name': 'HSBC Bank plc', 'swift': 'HBUKGB4B', 'address': '1 Centenary Square, Birmingham B1 1HQ, UK', 'phone': '+44 20 7991 8888'},
-            {'name': 'Standard Chartered Bank', 'swift': 'SCBLUS33', 'address': '1095 Avenue of the Americas, New York, NY 10036, USA', 'phone': '+1 212 667 7000'},
-            {'name': 'Deutsche Bank AG', 'swift': 'DEUTDEFF', 'address': 'Taunusanlage 12, 60325 Frankfurt am Main, Germany', 'phone': '+49 69 910 00'},
-            {'name': 'BNP Paribas SA', 'swift': 'BNPAFRPP', 'address': '16 Boulevard des Italiens, 75009 Paris, France', 'phone': '+33 1 40 14 45 46'},
-            {'name': 'Societe Generale SA', 'swift': 'SOGEFRPP', 'address': '29 Boulevard Haussmann, 75009 Paris, France', 'phone': '+33 1 42 14 20 00'},
-            {'name': 'Credit Suisse AG', 'swift': 'CRESCHZZ', 'address': 'Paradeplatz 8, 8001 Zurich, Switzerland', 'phone': '+41 44 333 11 11'},
-            {'name': 'UBS AG', 'swift': 'UBSWCHZH', 'address': 'Bahnhofstrasse 45, 8001 Zurich, Switzerland', 'phone': '+41 44 234 11 11'},
-            {'name': 'Barclays Bank plc', 'swift': 'BARCGB22', 'address': '1 Churchill Place, London E14 5HP, UK', 'phone': '+44 20 7116 1000'},
-            {'name': 'Citibank NA', 'swift': 'CITIUS33', 'address': '388 Greenwich Street, New York, NY 10013, USA', 'phone': '+1 212 559 1000'}
-        ],
-        'energy_specialists': [
-            {'name': 'ING Bank NV', 'swift': 'INGBNL2A', 'address': 'Bijlmerplein 888, 1102 MG Amsterdam, Netherlands', 'phone': '+31 20 563 9111'},
-            {'name': 'ABN AMRO Bank NV', 'swift': 'ABNANL2A', 'address': 'Gustav Mahlerlaan 10, 1082 PP Amsterdam, Netherlands', 'phone': '+31 20 343 3433'},
-            {'name': 'Natixis SA', 'swift': 'NATXFRPP', 'address': '30 Avenue Pierre Mendes France, 75013 Paris, France', 'phone': '+33 1 58 19 40 00'},
-            {'name': 'Credit Agricole CIB', 'swift': 'AGRIFRPP', 'address': '12 Place des Etats-Unis, 92127 Montrouge, France', 'phone': '+33 1 41 89 20 00'},
-            {'name': 'Mizuho Bank Ltd', 'swift': 'MHCBJPJT', 'address': '1-5-5 Otemachi, Chiyoda-ku, Tokyo 100-8176, Japan', 'phone': '+81 3 5224 1111'},
-            {'name': 'Sumitomo Mitsui Banking Corporation', 'swift': 'SMBCJPJT', 'address': '1-1-2 Marunouchi, Chiyoda-ku, Tokyo 100-0005, Japan', 'phone': '+81 3 3287 0111'},
-            {'name': 'Bank of China Ltd', 'swift': 'BKCHCNBJ', 'address': '1 Fuxingmen Nei Dajie, Xicheng District, Beijing 100818, China', 'phone': '+86 10 6659 6688'},
-            {'name': 'Industrial and Commercial Bank of China', 'swift': 'ICBKCNBJ', 'address': '55 Fuxingmen Nei Street, Xicheng District, Beijing 100032, China', 'phone': '+86 10 6610 6114'},
-            {'name': 'Wells Fargo Bank NA', 'swift': 'WFBIUS6S', 'address': '420 Montgomery Street, San Francisco, CA 94104, USA', 'phone': '+1 415 396 0123'},
-            {'name': 'Bank of America NA', 'swift': 'BOFAUS3N', 'address': '100 North Tryon Street, Charlotte, NC 28255, USA', 'phone': '+1 704 386 5681'}
-        ],
-        'regional': [
-            {'name': 'First Abu Dhabi Bank PJSC', 'swift': 'NBADAEAA', 'address': 'Sheikh Zayed Road, Abu Dhabi, UAE', 'phone': '+971 2 681 0000'},
-            {'name': 'Emirates NBD Bank PJSC', 'swift': 'EBILAEAD', 'address': 'Baniyas Road, Deira, Dubai, UAE', 'phone': '+971 4 609 2222'},
-            {'name': 'National Bank of Kuwait SAK', 'swift': 'NBOKKWKW', 'address': 'Abdullah Al-Mubarak Street, Kuwait City, Kuwait', 'phone': '+965 1 888 888'},
-            {'name': 'Qatar National Bank SAQ', 'swift': 'QNBAQAQA', 'address': 'QNB Tower, West Bay, Doha, Qatar', 'phone': '+974 4407 0000'},
-            {'name': 'Saudi National Bank', 'swift': 'NCBKSAJE', 'address': 'King Fahd Road, Riyadh 11564, Saudi Arabia', 'phone': '+966 11 402 9000'},
-            {'name': 'Banco do Brasil SA', 'swift': 'BRASBRRJ', 'address': 'Setor Bancario Sul, Quadra 1, Brasilia, DF 70073-900, Brazil', 'phone': '+55 61 3214 2000'},
-            {'name': 'Banco Santander SA', 'swift': 'BSCHESMM', 'address': 'Paseo de Pereda 9-12, 39004 Santander, Spain', 'phone': '+34 942 20 61 00'},
-            {'name': 'UniCredit Bank AG', 'swift': 'UNCRITMM', 'address': 'Piazza Gae Aulenti 3, 20154 Milan, Italy', 'phone': '+39 02 8862 1'},
-            {'name': 'Intesa Sanpaolo SpA', 'swift': 'BCITITMM', 'address': 'Piazza San Carlo 156, 10121 Turin, Italy', 'phone': '+39 011 555 1'},
-            {'name': 'Nordea Bank Abp', 'swift': 'NDEAFIHH', 'address': 'Satamaradankatu 5, 00020 Helsinki, Finland', 'phone': '+358 9 1651'}
-        ]
-    }
-    
-    # REAL OIL TYPES & SPECIFICATIONS
-    oil_types = {
-        'crude_oils': [
-            'Brent Crude Oil (API 38.3°, Sulfur 0.37%)',
-            'WTI Crude Oil (API 39.6°, Sulfur 0.24%)',
-            'Arabian Light Crude (API 33.4°, Sulfur 1.77%)',
-            'Urals Crude Oil (API 31.8°, Sulfur 1.35%)',
-            'Bonny Light Crude (API 35.1°, Sulfur 0.14%)',
-            'Forties Crude Oil (API 40.3°, Sulfur 0.56%)',
-            'Oman Crude Oil (API 34.0°, Sulfur 0.94%)',
-            'Dubai Crude Oil (API 31.0°, Sulfur 2.04%)',
-            'Basrah Light Crude (API 33.7°, Sulfur 2.85%)',
-            'Maya Crude Oil (API 22.2°, Sulfur 3.30%)'
-        ],
-        'refined_products': [
-            'Gasoline 95 RON (Euro 5)',
-            'Diesel EN590 (Ultra Low Sulfur)',
-            'Jet Fuel A-1 (ASTM D1655)',
-            'Heavy Fuel Oil 380 CST',
-            'Marine Gas Oil (MGO)',
-            'Naphtha Light Straight Run',
-            'Kerosene JP-54',
-            'Bunker Fuel Oil 180 CST',
-            'LPG Propane/Butane Mix',
-            'Bitumen 60/70 Penetration'
-        ]
-    }
-    
-    # REAL PORTS & TERMINALS
-    ports = {
-        'loading_ports': [
-            'Rotterdam Europoort (Netherlands)',
-            'Singapore Jurong Island (Singapore)',
-            'Houston Ship Channel (USA)',
-            'Ras Tanura Terminal (Saudi Arabia)',
-            'Fujairah Port (UAE)',
-            'Antwerp Port (Belgium)',
-            'Hamburg Port (Germany)',
-            'Los Angeles Port (USA)',
-            'Shanghai Yangshan Port (China)',
-            'Yokohama Port (Japan)'
-        ],
-        'discharge_ports': [
-            'Rotterdam Europoort (Netherlands)',
-            'Singapore Jurong Island (Singapore)',
-            'New York Harbor (USA)',
-            'Genoa Port (Italy)',
-            'Barcelona Port (Spain)',
-            'Marseille Port (France)',
-            'Southampton Port (UK)',
-            'Hamburg Port (Germany)',
-            'Amsterdam Port (Netherlands)',
-            'Le Havre Port (France)'
-        ]
-    }
-    
-    # REAL VESSEL NAMES & SPECIFICATIONS
-    vessel_data = {
-        'names': [
-            'MT Atlantic Pioneer', 'MT Pacific Navigator', 'MT Ocean Explorer',
-            'MT Maritime Star', 'MT Sea Voyager', 'MT Global Trader',
-            'MT Energy Carrier', 'MT Oil Express', 'MT Crude Master',
-            'MT Petroleum Queen', 'MT Liquid Gold', 'MT Black Diamond',
-            'MT Energy Phoenix', 'MT Ocean Breeze', 'MT Trade Wind',
-            'MT Commercial Spirit', 'MT Industrial Pride', 'MT Global Energy',
-            'MT Maritime Legend', 'MT Ocean Warrior'
-        ],
-        'types': [
-            'VLCC (Very Large Crude Carrier)',
-            'Suezmax Tanker',
-            'Aframax Tanker',
-            'Panamax Tanker',
-            'Handymax Tanker',
-            'Product Tanker',
-            'Chemical Tanker',
-            'LNG Carrier',
-            'LPG Carrier',
-            'Bulk Carrier'
-        ],
-        'flags': [
-            'Panama', 'Liberia', 'Marshall Islands', 'Singapore', 'Malta',
-            'Cyprus', 'Bahamas', 'Bermuda', 'Isle of Man', 'Gibraltar'
-        ]
-    }
-    
-    # REAL PROFESSIONAL EMAIL DOMAINS
-    professional_domains = [
-        'shell.com', 'exxonmobil.com', 'bp.com', 'chevron.com', 'totalenergies.com',
-        'vitol.com', 'trafigura.com', 'glencore.com', 'mercuria.com', 'gunvor.com',
-        'aramco.com', 'gazprom.com', 'petrobras.com', 'pemex.com', 'adnoc.ae',
-        'kpc.com.kw', 'qatarpetroleum.qa', 'sonatrach.dz', 'nnpcgroup.com', 'petronas.com.my',
-        'jpmorgan.com', 'hsbc.com', 'standardchartered.com', 'deutsche-bank.com', 'bnpparibas.com',
-        'societegenerale.com', 'credit-suisse.com', 'ubs.com', 'barclays.com', 'citi.com'
-    ]
-    
-    # REAL ADDRESSES BY MAJOR OIL TRADING CITIES
-    real_addresses = {
-        'london': [
-            '1 Shell Centre, London SE1 7NA, UK',
-            '25 North Colonnade, Canary Wharf, London E14 5HS, UK',
-            '10 Upper Bank Street, London E14 5JJ, UK',
-            '20 Fenchurch Street, London EC3M 3BY, UK',
-            '1 Canada Square, Canary Wharf, London E14 5AB, UK'
-        ],
-        'singapore': [
-            '1 HarbourFront Avenue, #18-01 Keppel Bay Tower, Singapore 098632',
-            '8 Marina Boulevard, #05-01 Marina Bay Financial Centre, Singapore 018981',
-            '1 Raffles Place, #44-01 One Raffles Place, Singapore 048616',
-            '6 Battery Road, #01-01, Singapore 049909',
-            '9 Raffles Place, #50-01 Republic Plaza, Singapore 048619'
-        ],
-        'houston': [
-            '600 Travis Street, Suite 1900, Houston, TX 77002, USA',
-            '1000 Main Street, Houston, TX 77002, USA',
-            '1500 Louisiana Street, Houston, TX 77002, USA',
-            '1100 Louisiana Street, Houston, TX 77002, USA',
-            '1200 Smith Street, Houston, TX 77002, USA'
-        ],
-        'rotterdam': [
-            'Wilhelminakade 123, 3072 AP Rotterdam, Netherlands',
-            'Boompjes 40, 3011 XB Rotterdam, Netherlands',
-            'Coolsingel 40, 3011 AD Rotterdam, Netherlands',
-            'Weena 700, 3013 DA Rotterdam, Netherlands',
-            'Kruisplein 1, 3012 CC Rotterdam, Netherlands'
-        ],
-        'dubai': [
-            'Sheikh Zayed Road, Emirates Towers, Dubai, UAE',
-            'Dubai International Financial Centre, Dubai, UAE',
-            'Burj Khalifa, Downtown Dubai, UAE',
-            'Dubai Marina, Dubai, UAE',
-            'Jumeirah Lake Towers, Dubai, UAE'
-        ]
-    }
-    
-    # REAL PHONE NUMBERS BY REGION
-    real_phone_numbers = {
-        'london': ['+44 20 7934 1234', '+44 20 7623 4567', '+44 20 7283 7890', '+44 20 7747 1000', '+44 20 7000 7000'],
-        'singapore': ['+65 6221 1234', '+65 6222 5678', '+65 6223 9012', '+65 6224 3456', '+65 6225 7890'],
-        'houston': ['+1 713 546 1234', '+1 713 546 5678', '+1 713 546 9012', '+1 713 546 3456', '+1 713 546 7890'],
-        'rotterdam': ['+31 10 400 1234', '+31 10 400 5678', '+31 10 400 9012', '+31 10 400 3456', '+31 10 400 7890'],
-        'dubai': ['+971 4 123 4567', '+971 4 123 5678', '+971 4 123 6789', '+971 4 123 7890', '+971 4 123 8901']
-    }
-    
-    # REAL PERSON NAMES BY REGION
-    names = {
-        'western': [
-            'James Richardson', 'Michael Thompson', 'David Anderson', 'Robert Wilson',
-            'Christopher Brown', 'Daniel Davis', 'Matthew Miller', 'Anthony Garcia',
-            'Mark Martinez', 'Donald Rodriguez', 'Steven Lewis', 'Paul Lee',
-            'Andrew Walker', 'Joshua Hall', 'Kenneth Allen', 'Kevin Young',
-            'Brian King', 'George Wright', 'Edward Lopez', 'Ronald Hill'
-        ],
-        'middle_eastern': [
-            'Ahmed Al-Rashid', 'Mohammed Al-Zahra', 'Omar Al-Mansouri', 'Hassan Al-Kuwaiti',
-            'Yusuf Al-Dubai', 'Khalid Al-Riyadh', 'Tariq Al-Qatar', 'Nasser Al-Bahrain',
-            'Faisal Al-Oman', 'Saeed Al-Abu Dhabi', 'Rashid Al-Sharjah', 'Majid Al-Ajman',
-            'Sultan Al-Fujairah', 'Hamdan Al-Ras Al Khaimah', 'Zayed Al-Umm Al Quwain',
-            'Mansour Al-Doha', 'Abdullah Al-Kuwait', 'Ibrahim Al-Manama', 'Yousef Al-Muscat'
-        ],
-        'asian': [
-            'Li Wei', 'Zhang Ming', 'Wang Lei', 'Chen Hao', 'Liu Jian',
-            'Yang Xin', 'Huang Wei', 'Zhou Min', 'Wu Gang', 'Xu Feng',
-            'Yuki Tanaka', 'Hiroshi Sato', 'Takeshi Yamamoto', 'Kenji Nakamura',
-            'Raj Patel', 'Amit Kumar', 'Vikram Singh', 'Arjun Sharma', 'Ravi Gupta',
-            'Suresh Mehta', 'Park Min-ho', 'Kim Jong-hyun', 'Lee Sang-woo', 'Choi Hyun-jin'
-        ]
-    }
-    
-    # REAL TRADING TERMS & CONTRACTS
-    trading_terms = {
-        'incoterms': ['FOB (Free On Board)', 'CIF (Cost, Insurance & Freight)', 'CFR (Cost & Freight)',
-                     'EXW (Ex Works)', 'DDP (Delivered Duty Paid)', 'FAS (Free Alongside Ship)',
-                     'CPT (Carriage Paid To)', 'CIP (Carriage & Insurance Paid To)'],
-        'payment_terms': ['LC at Sight', 'LC 30 Days', 'LC 60 Days', 'LC 90 Days',
-                         'TT in Advance', 'TT on Delivery', 'Open Account 30 Days',
-                         'Open Account 60 Days', 'Cash Against Documents', 'Documentary Collection'],
-        'quality_standards': ['API 38.3°', 'Sulfur 0.37%', 'ASTM D4052', 'ASTM D4294',
-                             'ISO 8217', 'EN 590', 'ASTM D1655', 'ASTM D975']
-    }
-    
-    # Generate consistent data based on placeholder type
-    placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '')
-    
-    # Bank names - ensure different banks for different entities with complete details (PRIORITY)
-    if any(word in placeholder_lower for word in ['bank', 'financial', 'credit']):
-        if 'buyer' in placeholder_lower:
-            # Buyer banks - international and energy specialists
-            bank_data = random.choice(banks['international'] + banks['energy_specialists'])
-        elif 'seller' in placeholder_lower:
-            # Seller banks - regional and energy specialists
-            bank_data = random.choice(banks['regional'] + banks['energy_specialists'])
-        else:
-            # Default bank selection
-            bank_data = random.choice(banks['international'] + banks['energy_specialists'])
-        
-        # Return appropriate bank detail based on placeholder
-        if 'swift' in placeholder_lower:
-            return bank_data['swift']
-        elif 'address' in placeholder_lower:
-            return bank_data['address']
-        elif 'phone' in placeholder_lower or 'tel' in placeholder_lower:
-            return bank_data['phone']
-        else:
-            return bank_data['name']
-    
-    # Company/Buyer/Seller names - use simplified realistic data (AFTER bank logic)
-    elif any(word in placeholder_lower for word in ['company', 'buyer', 'seller', 'principal']):
-        if 'buyer' in placeholder_lower:
-            buyer = random.choice(real_buyers)
-            if 'email' in placeholder_lower:
-                return buyer["email"]
-            elif 'phone' in placeholder_lower or 'tel' in placeholder_lower or 'mobile' in placeholder_lower:
-                return buyer["phone"]
-            elif 'address' in placeholder_lower:
-                return buyer["address"]
-            else:
-                return buyer["name"]
-        elif 'seller' in placeholder_lower:
-            seller = random.choice(real_sellers)
-            if 'email' in placeholder_lower:
-                return seller["email"]
-            elif 'phone' in placeholder_lower or 'tel' in placeholder_lower or 'mobile' in placeholder_lower:
-                return seller["phone"]
-            elif 'address' in placeholder_lower:
-                return seller["address"]
-            else:
-                return seller["name"]
-        elif 'principal' in placeholder_lower:
-            buyer = random.choice(real_buyers)
-            return buyer["name"]
-        else:
-            # Default to buyer
-            buyer = random.choice(real_buyers)
-            return buyer["name"]
-    
-    # Oil types and products
-    elif any(word in placeholder_lower for word in ['oil', 'product', 'cargo', 'commodity']):
-        if 'crude' in placeholder_lower:
-            return random.choice(oil_types['crude_oils'])
-        else:
-            return random.choice(oil_types['refined_products'])
-    
-    # Ports
-    elif any(word in placeholder_lower for word in ['port', 'terminal', 'loading', 'discharge']):
-        if 'loading' in placeholder_lower:
-            return random.choice(ports['loading_ports'])
-        elif 'discharge' in placeholder_lower:
-            return random.choice(ports['discharge_ports'])
-        else:
-            return random.choice(ports['loading_ports'] + ports['discharge_ports'])
-    
-    # Vessel data
-    elif any(word in placeholder_lower for word in ['vessel', 'ship', 'tanker']):
-        if 'name' in placeholder_lower:
-            return random.choice(vessel_data['names'])
-        elif 'type' in placeholder_lower:
-            return random.choice(vessel_data['types'])
-        elif 'flag' in placeholder_lower:
-            return random.choice(vessel_data['flags'])
-    
-    # Email addresses - handled above in buyer/seller logic
-    elif any(word in placeholder_lower for word in ['email', 'mail', 'e-mail', 'e_mail', 'contact']):
-        # Default email if not buyer/seller specific
-        buyer = random.choice(real_buyers)
-        return buyer["email"]
-    
-    # Addresses - handled above in buyer/seller logic  
-    elif any(word in placeholder_lower for word in ['address', 'location', 'street']):
-        # Default address if not buyer/seller specific
-        buyer = random.choice(real_buyers)
-        return buyer["address"]
-    
-    # Phone numbers - handled above in buyer/seller logic
-    elif any(word in placeholder_lower for word in ['phone', 'tel', 'mobile', 'contact']):
-        # Default phone if not buyer/seller specific
-        buyer = random.choice(real_buyers)
-        return buyer["phone"]
-    
-    # Person names - handled above in buyer/seller logic
-    elif any(word in placeholder_lower for word in ['name', 'person', 'signatory', 'authorized']):
-        # Default name if not buyer/seller specific
-        buyer = random.choice(real_buyers)
-        return buyer["name"]
-    
-    # Trading terms
-    elif any(word in placeholder_lower for word in ['incoterm', 'payment', 'terms']):
-        if 'payment' in placeholder_lower:
-            return random.choice(trading_terms['payment_terms'])
-        elif 'incoterm' in placeholder_lower:
-            return random.choice(trading_terms['incoterms'])
-        else:
-            return random.choice(trading_terms['incoterms'] + trading_terms['payment_terms'])
-    
-    # Quality specifications
-    elif any(word in placeholder_lower for word in ['quality', 'spec', 'standard', 'api', 'sulfur']):
-        return random.choice(trading_terms['quality_standards'])
-    
-    # Numeric data with realistic ranges
-    elif any(word in placeholder_lower for word in ['price', 'value', 'amount', 'cost']):
-        if 'price' in placeholder_lower and 'oil' in placeholder_lower:
-            return f"${random.uniform(45.50, 95.75):.2f}/bbl"
-        elif 'value' in placeholder_lower or 'amount' in placeholder_lower:
-            return f"${random.randint(5000000, 50000000):,}"
-        else:
-            return f"${random.randint(100000, 5000000):,}"
-    
-    elif any(word in placeholder_lower for word in ['quantity', 'volume', 'capacity', 'tonnage']):
-        if 'quantity' in placeholder_lower:
-            return f"{random.randint(50000, 300000):,} MT"
-        elif 'capacity' in placeholder_lower:
-            return f"{random.randint(80000, 320000):,} DWT"
-        else:
-            return f"{random.randint(10000, 100000):,}"
-    
-    # Dates - all dates 2 weeks before today
-    elif any(word in placeholder_lower for word in ['date', 'time', 'eta', 'etd']):
-        from datetime import timedelta
-        date_result = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
-        print(f"DEBUG: Processing date placeholder: {placeholder} -> {date_result}")
-        return date_result
-    
-    # Reference numbers
-    elif any(word in placeholder_lower for word in ['ref', 'number', 'id', 'code']):
-        prefixes = ['REF', 'PO', 'SO', 'INV', 'LC', 'BL', 'COA', 'SGS']
-        prefix = random.choice(prefixes)
-        number = random.randint(100000, 999999)
-        return f"{prefix}-{number}"
-    
-    # Default fallback - handle special cases
-    else:
-        # Check if it's an email-related placeholder that didn't match above
-        if any(word in placeholder_lower for word in ['email', 'mail', 'e-mail', 'e_mail', 'contact']):
-            buyer = random.choice(real_buyers)
-            return buyer["email"]
-        # Check if it's a date-related placeholder that didn't match above
-        elif 'date' in placeholder_lower or 'time' in placeholder_lower:
-            from datetime import timedelta
-            return (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
-        else:
-            return f"Sample {placeholder.replace('_', ' ').title()}"
-
-# Keep the old function name for backward compatibility
-def generate_random_data(placeholder: str) -> str:
-    """Backward compatibility wrapper"""
-    return generate_realistic_random_data(placeholder)
-
-@app.get("/")
-async def root():
-    return {"message": "Document Processing API is running!"}
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint with detailed status information"""
-    template_files = [f for f in os.listdir(TEMPLATES_DIR) if f.endswith('.docx')]
-    
-    return {
-        "status": "healthy",
-        "database": "connected" if supabase else "disconnected",
-        "supabase_url": SUPABASE_URL,
-        "templates_count": len(template_files),
-        "templates": template_files,
-        "temp_dir_exists": os.path.exists(TEMP_DIR),
-        "templates_dir_exists": os.path.exists(TEMPLATES_DIR),
-        "timestamp": datetime.now().isoformat(),
-        "version": "1.0.0"
-    }
-
-@app.get("/templates")
-async def get_templates():
-    """Get list of available templates"""
+@app.post("/generate-document")
+async def generate_document(request: Request):
+    """Generate a document from template"""
+    template_temp_path: Optional[str] = None
+    template_record: Optional[Dict] = None
     try:
-        templates = []
-        for filename in os.listdir(TEMPLATES_DIR):
-            if filename.lower().endswith('.docx'):
-                file_path = os.path.join(TEMPLATES_DIR, filename)
-                file_size = os.path.getsize(file_path)
-                
-                # Extract placeholders
-                doc = Document(file_path)
-                full_text = ""
-                for paragraph in doc.paragraphs:
-                    full_text += paragraph.text + "\n"
-                
-                placeholders = find_placeholders(full_text)
-                
-                template = {
-                    "id": str(uuid.uuid4()),
-                    "name": filename.replace('.docx', ''),
-                    "description": f"Template: {filename}",
-                    "file_name": filename,
-                    "file_size": file_size,
-                    "placeholders": placeholders,
-                    "is_active": True,
-                    "created_at": datetime.now().isoformat()
-                }
-                templates.append(template)
+        body = await request.json()
+        template_name = body.get('template_name')
+        vessel_imo = body.get('vessel_imo')
+        user_id = body.get('user_id')  # Optional: for permission checking
         
-        return {"success": True, "templates": templates, "count": len(templates)}
+        # Validate required fields
+        if not template_name:
+            raise HTTPException(status_code=422, detail="template_name is required")
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch templates: {str(e)}")
+        if not vessel_imo:
+            raise HTTPException(status_code=422, detail="vessel_imo is required. Please provide the IMO number of the vessel.")
+        
+        # Log the vessel IMO being used - CRITICAL for debugging
+        logger.info("=" * 80)
+        logger.info(f"🚢 GENERATING DOCUMENT")
+        logger.info(f"   Template: {template_name}")
+        logger.info(f"   Vessel IMO: {vessel_imo} (from vessel detail page)")
+        logger.info(f"   User ID: {user_id}")
+        logger.info("=" * 80)
+        
+        effective_template_name = template_name
+        template_settings: Dict[str, Dict] = {}
+        template_temp_path: Optional[str] = None
+        template_record: Optional[Dict] = None
 
-@app.get("/vessels")
-async def get_vessels():
-    """Get list of vessels"""
-    try:
-        response = supabase.table('vessels').select('id, name, imo, vessel_type, flag').limit(50).execute()
-        return {"success": True, "vessels": response.data, "count": len(response.data)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch vessels: {str(e)}")
+        if SUPABASE_ENABLED:
+            template_record = resolve_template_record(template_name)
+            if not template_record:
+                raise HTTPException(status_code=404, detail=f"Template not found: {template_name}")
 
-@app.get("/vessel/{imo}")
-async def get_vessel(imo: str):
-    """Get vessel by IMO"""
-    vessel = get_vessel_data(imo)
-    if not vessel:
-        raise HTTPException(status_code=404, detail=f"Vessel with IMO {imo} not found")
-    return {"success": True, "vessel": vessel}
+            template_settings = fetch_template_placeholders(template_record['id'])
 
-@app.post("/process-document")
-async def process_document(request: Request):
-    """Process a document template with vessel data"""
-    try:
-        # Add debug logging
-        print(f"DEBUG: Received request from {request.client.host}")
-        print(f"DEBUG: Content-Type: {request.headers.get('content-type')}")
-        print(f"DEBUG: Content-Length: {request.headers.get('content-length')}")
-        
-        # Handle both JSON and FormData requests
-        content_type = request.headers.get('content-type', '')
-        
-        if 'application/json' in content_type:
-            # Parse JSON request
-            body = await request.json()
-            print(f"DEBUG: Parsed JSON: {body}")
-            template_name = body.get('template_name')
-            vessel_imo = body.get('vessel_imo')
-        elif 'multipart/form-data' in content_type:
-            # Parse FormData request
-            form = await request.form()
-            print(f"DEBUG: Parsed FormData: {dict(form)}")
-            template_name = form.get('template_name')
-            vessel_imo = form.get('vessel_imo')
+            file_record = fetch_template_file_record(template_record['id'], include_data=True)
+            if not file_record:
+                raise HTTPException(status_code=404, detail=f"Template file missing for: {template_name}")
+
+            template_temp_path = write_temp_docx_from_record(file_record)
+            template_path = template_temp_path
+            effective_template_name = template_record.get('file_name') or template_name
         else:
-            raise HTTPException(status_code=400, detail="Unsupported content type")
-        
-        if not template_name or not vessel_imo:
-            raise HTTPException(status_code=422, detail="template_name and vessel_imo are required")
-        
-        print(f"Processing document: {template_name}")
-        print(f"Vessel IMO: {vessel_imo}")
-        
-        # Find template file - try with .docx extension if not found
-        template_path = os.path.join(TEMPLATES_DIR, template_name)
-        if not os.path.exists(template_path):
-            # Try with .docx extension
-            template_path = os.path.join(TEMPLATES_DIR, f"{template_name}.docx")
+            # Handle template name with/without extension for legacy file storage
+            if not effective_template_name.endswith('.docx'):
+                effective_template_name += '.docx'
+            
+            template_path = os.path.join(TEMPLATES_DIR, effective_template_name)
             if not os.path.exists(template_path):
-                raise HTTPException(status_code=404, detail=f"Template file not found: {template_name}")
+                raise HTTPException(status_code=404, detail=f"Template not found: {effective_template_name}")
+            
+            placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+            template_settings = placeholder_settings.get(effective_template_name, {})
+            
+            if not template_settings:
+                template_name_no_ext = effective_template_name.replace('.docx', '')
+                template_settings = placeholder_settings.get(template_name_no_ext, {})
+                if template_settings:
+                    logger.info(f"Found settings using template name without extension: {template_name_no_ext}")
+            
+            if not template_settings and not effective_template_name.endswith('.docx'):
+                template_settings = placeholder_settings.get(effective_template_name + '.docx', {})
+                if template_settings:
+                    logger.info(f"Found settings using template name with extension: {effective_template_name + '.docx'}")
+
+        logger.info(f"Loaded {len(template_settings)} placeholder settings for {effective_template_name}")
+        if template_settings:
+            logger.info(f"Template settings keys: {list(template_settings.keys())[:5]}...")  # Show first 5 placeholders
         
-        # Get vessel data
+        # Get vessel data from database using the provided IMO
+        logger.info(f"📊 Fetching vessel data from database for IMO: {vessel_imo}")
         vessel = get_vessel_data(vessel_imo)
-        if not vessel:
-            raise HTTPException(status_code=404, detail=f"Vessel with IMO {vessel_imo} not found")
         
-        # Extract placeholders from template
-        doc = Document(template_path)
-        full_text = ""
-        for paragraph in doc.paragraphs:
-            full_text += paragraph.text + "\n"
-
-        # Also check tables - THIS WAS MISSING!
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for paragraph in cell.paragraphs:
-                        full_text += paragraph.text + "\n"
-
-        print(f"DEBUG: Template {template_name} - USING ENHANCED REALISTIC DATA WITH REAL EMAILS & PHONES")
-        print(f"DEBUG: Full text length: {len(full_text)}")
-        print(f"DEBUG: First 500 characters: {full_text[:500]}")
+        if vessel:
+            vessel_name = vessel.get('name', 'Unknown')
+            logger.info(f"✅ Vessel found: {vessel_name} (IMO: {vessel_imo})")
+            logger.info(f"   Vessel data fields: {list(vessel.keys())}")
+        else:
+            logger.error(f"❌ Vessel NOT FOUND in database for IMO: {vessel_imo}")
+            vessel = {'imo': vessel_imo, 'name': f'Vessel {vessel_imo}'}
         
-        placeholders = find_placeholders(full_text)
-        print(f"DEBUG: Found {len(placeholders)} placeholders: {placeholders}")
+        # CRITICAL: Always ensure the vessel IMO from the page is in the vessel data
+        # This ensures IMO placeholders always get the correct IMO from the vessel page
+        vessel['imo'] = vessel_imo
+        logger.info(f"🔑 Set vessel['imo'] = '{vessel_imo}' (from vessel detail page)")
+        logger.info(f"   Final vessel data: {dict(list(vessel.items())[:10])}...")  # Show first 10 fields
         
-        # Create comprehensive data mapping
+        # Extract placeholders
+        placeholders = extract_placeholders_from_docx(template_path)
+        
+        # Generate data for each placeholder
         data_mapping = {}
+        logger.info(f"📝 Processing {len(placeholders)} placeholders from document")
+        logger.info(f"⚙️  Template has {len(template_settings)} configured placeholders in CMS")
         
-        # COMPREHENSIVE MAPPING FOR ALL YOUR TEMPLATE PLACEHOLDERS
-        vessel_mapping = {
-            # === VESSEL BASIC INFO ===
-            'vessel_name': vessel.get('name', ''),
-            'name': vessel.get('name', ''),
-            'imo': vessel.get('imo', ''),
-            'imo_number': vessel.get('imo', ''),
-            'vessel_type': vessel.get('vessel_type', ''),
-            'type': vessel.get('vessel_type', ''),
-            'flag': vessel.get('flag', ''),
-            'flag_state': vessel.get('flag', ''),
-            'mmsi': vessel.get('mmsi', ''),
-            'callsign': vessel.get('callsign', ''),
-            'call_sign': vessel.get('callsign', ''),
-            'built': str(vessel.get('built', '')),
-            'year_built': str(vessel.get('built', '')),
-            'deadweight': str(vessel.get('deadweight', '')),
-            'cargo_capacity': str(vessel.get('cargo_capacity', '')),
-            'length': str(vessel.get('length', '')),
-            'length_overall': str(vessel.get('length', '')),
-            'width': str(vessel.get('width', '')),
-            'beam': str(vessel.get('beam', '')),
-            'draught': str(vessel.get('draught', '')),
-            'draft': str(vessel.get('draught', '')),
-            'gross_tonnage': str(vessel.get('gross_tonnage', '')),
-            'net_tonnage': str(int(float(vessel.get('gross_tonnage', 0)) * 0.7) if vessel.get('gross_tonnage') else ''),
-            'engine_power': str(vessel.get('engine_power', '')),
-            'engine_type': 'Diesel Engine',
-            'crew_size': str(vessel.get('crew_size', '')),
-            'speed': str(vessel.get('speed', '')),
-            'course': str(vessel.get('course', '')),
-            'status': vessel.get('status', ''),
-            'current_region': vessel.get('current_region', ''),
-            'region': vessel.get('current_region', ''),
-            
-            # === COMMERCIAL PARTIES ===
-            'owner_name': vessel.get('owner_name', ''),
-            'owner': vessel.get('owner_name', ''),
-            'vessel_owner': vessel.get('owner_name', ''),
-            'operator_name': vessel.get('operator_name', ''),
-            'operator': vessel.get('operator_name', ''),
-            'vessel_operator': vessel.get('operator_name', ''),
-            'buyer_name': generate_realistic_random_data('buyer_name', vessel_imo),
-            'buyer': generate_realistic_random_data('buyer_name', vessel_imo),
-            'seller_name': generate_realistic_random_data('seller_name', vessel_imo),
-            'seller': generate_realistic_random_data('seller_name', vessel_imo),
-            'company_name': vessel.get('owner_name', ''),
-            
-            # === CARGO INFORMATION ===
-            'cargo_type': vessel.get('cargo_type', ''),
-            'cargo': vessel.get('cargo_type', ''),
-            'cargo_quantity': str(vessel.get('cargo_quantity', '')),
-            'quantity': str(vessel.get('cargo_quantity', '')),
-            'oil_type': vessel.get('oil_type', ''),
-            'oil_source': vessel.get('oil_source', ''),
-            'commodity': vessel.get('cargo_type', ''),
-            'product_name': vessel.get('cargo_type', ''),
-            'product_description': (vessel.get('cargo_type', '') or 'Crude Oil') + ' - ' + (vessel.get('oil_type', '') or 'Brent Quality'),
-            
-            # === PORTS AND NAVIGATION ===
-            'departure_port': vessel.get('departure_port_name', ''),
-            'departure_port_name': vessel.get('departure_port_name', ''),
-            'destination_port': vessel.get('destination_port_name', ''),
-            'destination_port_name': vessel.get('destination_port_name', ''),
-            'loading_port': vessel.get('loading_port_name', ''),
-            'loading_port_name': vessel.get('loading_port_name', ''),
-            'port_loading': vessel.get('loading_port_name', ''),
-            'port_discharge': vessel.get('destination_port_name', ''),
-            'departure_date': vessel.get('departure_date', ''),
-            'arrival_date': vessel.get('arrival_date', ''),
-            'eta': vessel.get('eta', ''),
-            'registry_port': vessel.get('flag', ''),
-            
-            # === FINANCIAL ===
-            'deal_value': str(vessel.get('deal_value', '')),
-            'price': str(vessel.get('price', '')),
-            'market_price': str(vessel.get('market_price', '')),
-            'total_quantity': str(vessel.get('cargo_quantity', '')),
-            'contract_quantity': str(vessel.get('cargo_quantity', '')),
-            'contract_value': str(vessel.get('deal_value', '')),
-            'total_amount': str(vessel.get('deal_value', '')),
-            'total_amount_due': str(vessel.get('deal_value', '')),
-            'unit_price': str(vessel.get('price', '')),
-            'unit_price2': str(vessel.get('price', '')),
-            'unit_price3': str(vessel.get('price', '')),
-            'amount2': str(int(float(vessel.get('deal_value', 0)) * 0.3) if vessel.get('deal_value') else ''),
-            'amount3': str(int(float(vessel.get('deal_value', 0)) * 0.2) if vessel.get('deal_value') else ''),
-            'amount_in_words': 'As per contract',
-            
-            # === TECHNICAL SPECIFICATIONS ===
-            'cargo_tanks': '12',
-            'pumping_capacity': '5000',
-            'class_society': 'Lloyd\'s Register',
-            'ism_manager': vessel.get('operator_name', ''),
-            
-            # === DATES AND REFERENCES ===
-            'date': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
-            'issued_date': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
-            'issue_date': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
-            'date_of_issue': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
-            'issued_date': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
-            'validity': '30 days',
-            'valid_until': (datetime.now().replace(day=datetime.now().day + 30) if datetime.now().day <= 1 else datetime.now().replace(month=datetime.now().month + 1, day=1)).strftime('%Y-%m-%d'),
-            'contract_duration': '12 months',
-            'pop_reference': f"POP-{vessel.get('imo', '') or 'UNKNOWN'}-{datetime.now().strftime('%Y%m%d')}",
-            'document_number': f"DOC-{vessel.get('imo', '') or 'UNKNOWN'}-{datetime.now().strftime('%Y%m%d')}",
-            'commercial_invoice_no': f"INV-{vessel.get('imo', '') or 'UNKNOWN'}-{datetime.now().strftime('%Y%m%d')}",
-            'proforma_invoice_no': f"PRO-{vessel.get('imo', '') or 'UNKNOWN'}-{datetime.now().strftime('%Y%m%d')}",
-            'invoice_no': f"INV-{vessel.get('imo', '') or 'UNKNOWN'}-{datetime.now().strftime('%Y%m%d')}",
-            
-            # === BUYER INFORMATION ===
-            'principal_buyer_name': generate_realistic_random_data('buyer_name', vessel_imo),
-            'buyer_logistics_name': generate_realistic_random_data('buyer_name', vessel_imo),
-            'principal_buyer_designation': 'Procurement Manager',
-            'buyer_logistics_designation': 'Logistics Coordinator',
-            'principal_buyer_company': generate_realistic_random_data('buyer_company', vessel_imo),
-            'buyer_logistics_company': generate_realistic_random_data('buyer_company', vessel_imo),
-            'buyer_company_name': generate_realistic_random_data('buyer_company', vessel_imo),
-            'buyer_company_name2': generate_realistic_random_data('buyer_company', vessel_imo),
-            'authorized_person_name': generate_realistic_random_data('buyer_name', vessel_imo),
-            'buyer_name': generate_realistic_random_data('buyer_name', vessel_imo),
-            'buyer_company': generate_realistic_random_data('buyer_company', vessel_imo),
-            'buyer_address': generate_realistic_random_data('buyer_address', vessel_imo),
-            'buyer_city_country': generate_realistic_random_data('buyer_address', vessel_imo).split(',')[-2].strip() + ', ' + generate_realistic_random_data('buyer_address', vessel_imo).split(',')[-1].strip(),
-            'buyer_email': generate_realistic_random_data('buyer_email', vessel_imo),
-            'buyer_emails': generate_realistic_random_data('buyer_email', vessel_imo),
-            'buyer_contact_email': generate_realistic_random_data('buyer_email', vessel_imo),
-            'buyer_representative_email': generate_realistic_random_data('buyer_email', vessel_imo),
-            'buyer_fax': generate_realistic_random_data('buyer_phone', vessel_imo),
-            'buyer_mobile': generate_realistic_random_data('buyer_phone', vessel_imo),
-            'buyer_office_tel': generate_realistic_random_data('buyer_phone', vessel_imo),
-            'buyer_position': 'Procurement Manager',
-            'buyer_registration': 'NL123456789',
-            'buyer_representative': generate_realistic_random_data('buyer_name', vessel_imo),
-            'buyer_signatory_name': generate_realistic_random_data('buyer_name', vessel_imo),
-            'buyer_signatory_position': 'Authorized Signatory',
-            'buyer_signatory_date': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
-            'buyer_signature': 'Digital Signature',
-            'buyer_attention': 'Procurement Department',
-            'buyer_attention2': 'Logistics Department',
-            'buyer_bin': 'BIN123456789',
-            'buyer_bank_address': generate_realistic_random_data('buyer_bank_address', vessel_imo),
-            'buyer_bank_name': generate_realistic_random_data('buyer_bank_name', vessel_imo),
-            'buyer_bank_website': 'www.bank.com',
-            'buyer_swift': generate_realistic_random_data('buyer_bank_swift', vessel_imo),
-            'buyer_telfax': generate_realistic_random_data('buyer_phone', vessel_imo),
-            'buyer_account_name': generate_realistic_random_data('buyer_name', vessel_imo),
-            'buyer_account_no': 'NL91ABNA0417164300',
-            'buyer_passport_no': 'P123456789',
-            
-            # === SELLER INFORMATION ===
-            'seller_name': generate_realistic_random_data('seller_name', vessel_imo),
-            'seller_designation': 'Sales Director',
-            'seller_company': generate_realistic_random_data('seller_company', vessel_imo),
-            'seller_signature': 'Authorized Signature',
-            'seller_signatory': generate_realistic_random_data('seller_name', vessel_imo),
-            'seller_title': 'Sales Director',
-            'seller_address': generate_realistic_random_data('seller_address', vessel_imo),
-            'seller_address2': generate_realistic_random_data('seller_address', vessel_imo),
-            'seller_company_no': 'REG123456789',
-            'seller_company_reg': 'Registered in Oil Country',
-            'seller_emails': generate_realistic_random_data('seller_email', vessel_imo),
-            'seller_passport_no': 'P987654321',
-            'seller_refinery': 'Oil Refinery Complex',
-            'seller_representative': generate_realistic_random_data('seller_name', vessel_imo),
-            'seller_swift': generate_realistic_random_data('seller_bank_swift', vessel_imo),
-            'seller_bank_address': generate_realistic_random_data('seller_bank_address', vessel_imo),
-            'seller_bank_iban': 'NL91OILN0417164300',
-            'seller_bank_name': generate_realistic_random_data('seller_bank_name', vessel_imo),
-            'seller_beneficiary_address': generate_realistic_random_data('seller_address', vessel_imo),
-            'seller_bank_account_name': generate_realistic_random_data('seller_name', vessel_imo),
-            'seller_bank_account_no': 'NL91OILN0417164300',
-            'seller_bank_officer_mobile': generate_realistic_random_data('seller_phone', vessel_imo),
-            'seller_bank_officer_name': 'Bank Officer',
-            'seller_bank_swift': generate_realistic_random_data('seller_bank_swift', vessel_imo),
-            'seller_tel': generate_realistic_random_data('seller_phone', vessel_imo),
-            'seller_email': generate_realistic_random_data('seller_email', vessel_imo),
-            'seller_contact_email': generate_realistic_random_data('seller_email', vessel_imo),
-            'seller_representative_email': generate_realistic_random_data('seller_email', vessel_imo),
-            'seller_company_email': generate_realistic_random_data('seller_email', vessel_imo),
-            'seller_registration': 'OIL123456789',
-            
-            # === PRODUCT SPECIFICATIONS ===
-            'country_of_origin': 'Saudi Arabia',
-            'origin': 'Saudi Arabia',
-            'delivery_port': vessel.get('destination_port_name', ''),
-            'final_delivery_place': vessel.get('destination_port_name', ''),
-            'place_of_destination': vessel.get('destination_port_name', ''),
-            'port_of_loading': vessel.get('loading_port_name', ''),
-            'port_of_discharge': vessel.get('destination_port_name', ''),
-            'specification': 'As per contract specifications',
-            'quality': 'Premium Grade',
-            'inspection': 'SGS Inspection',
-            'insurance': 'All Risks Coverage',
-            'shipping_terms': 'FOB',
-            'terms_of_delivery': 'FOB Loading Port',
-            'payment_terms': 'LC at Sight',
-            'shipping_documents': 'Bill of Lading, Certificate of Origin',
-            'performance_bond': '2% of contract value',
-            'partial_shipment': 'Allowed',
-            'transshipment': 'Not Allowed',
-            'monthly_delivery': 'As per schedule',
-            'total_containers': '1',
-            'total_gross': str(vessel.get('cargo_quantity', '')),
-            'total_weight': str(vessel.get('cargo_quantity', '')),
-            'transaction_currency': 'USD',
-            'shipping_charges': 'As per contract',
-            'discount': '0%',
-            'other_expenditures': 'As per contract',
-            'via_name': 'Direct',
-            'through_name': 'Direct',
-            'consignment2': 'As per contract',
-            'consignment33': 'As per contract',
-            'item2': 'Additional Item',
-            'item3': 'Additional Item',
-            'quantity2': str(int(float(vessel.get('cargo_quantity', 0)) * 0.3) if vessel.get('cargo_quantity') else ''),
-            'quantity3': str(int(float(vessel.get('cargo_quantity', 0)) * 0.2) if vessel.get('cargo_quantity') else ''),
-            'shipment_date2': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
-            'shipment_date3': (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d'),
-            'goods_details': 'As per specification',
-            'position_title': 'Authorized Signatory',
-            'signatory_name': vessel.get('seller_name', ''),
-            
-            # === BANKING INFORMATION ===
-            'confirming_bank_account_name': 'Confirming Bank Account',
-            'confirming_bank_account_number': 'NL91CONF0417164300',
-            'confirming_bank_address': 'Bank Street, Financial District',
-            'confirming_bank_name': 'Confirming Bank International',
-            'confirming_bank_officer': 'Bank Officer',
-            'confirming_bank_officer_contact': '+31-20-111-2222',
-            'confirming_bank_swift': 'CONFNL2A',
-            'confirming_bank_tel': '+31-20-111-2222',
-            'issuing_bank_account_name': 'Issuing Bank Account',
-            'issuing_bank_account_number': 'NL91ISSU0417164300',
-            'issuing_bank_address': 'Issuing Bank Street',
-            'issuing_bank_name': 'Issuing Bank International',
-            'issuing_bank_officer': 'Issuing Officer',
-            'issuing_bank_officer_contact': '+31-20-333-4444',
-            'issuing_bank_swift': 'ISSUENL2A',
-            'issuing_bank_tel': '+31-20-333-4444',
-            'notary_number': 'NOT123456789',
-            
-            # === TECHNICAL SPECIFICATIONS (OIL/PRODUCT) ===
-            'api_gravity': '35.5',
-            'density': '0.845',
-            'specific_gravity': '0.845',
-            'sulfur': '0.5%',
-            'water_content': '0.1%',
-            'ash_content': '0.01%',
-            'carbon_residue': '0.1%',
-            'flash_point': '65°C',
-            'pour_point': '-15°C',
-            'cloud_point': '-10°C',
-            'cfpp': '-12°C',
-            'cetane_number': '52',
-            'octane_number': '95',
-            'viscosity_40': '2.5',
-            'viscosity_100': '1.2',
-            'viscosity_index': '95',
-            'lubricity': '460',
-            'calorific_value': '42.5',
-            'dist_ibp': '35°C',
-            'dist_10': '65°C',
-            'dist_50': '180°C',
-            'dist_90': '350°C',
-            'dist_fbp': '380°C',
-            'dist_residue': '2%',
-            'aromatics': '25%',
-            'olefins': '5%',
-            'oxygenates': '0%',
-            'nickel': '5 ppm',
-            'vanadium': '10 ppm',
-            'sodium': '2 ppm',
-            'nitrogen': '0.1%',
-            'sediment': '0.01%',
-            'smoke_point': '25mm',
-            'free_fatty_acid': '0.1%',
-            'iodine_value': '85',
-            'slip_melting_point': '35°C',
-            'moisture_impurities': '0.1%',
-            'colour': 'Light Yellow',
-            'cloud_point': '-10°C',
-            
-            # === TEST RESULTS ===
-            'result_ash': '0.01%',
-            'result_aspect': 'Clear',
-            'result_cfpp_summer': '-8°C',
-            'result_cfpp_winter': '-15°C',
-            'result_cetaneindex': '52',
-            'result_cetanenumber': '52',
-            'result_color': 'Light Yellow',
-            'result_density': '0.845',
-            'result_distillation': 'As per spec',
-            'result_lubricity': '460',
-            'result_oxidation': 'Pass',
-            'result_pah': '0.1%',
-            'result_sulfur': '0.5%',
-            'result_viscosity': '2.5',
-            
-            # === MAX/MIN SPECIFICATIONS ===
-            'max_acidity': '0.1%',
-            'max_aspect': 'Clear',
-            'max_cfpp_summer': '-5°C',
-            'max_cloud_winter': '-8°C',
-            'max_color': 'Light Yellow',
-            'max_density': '0.850',
-            'max_distillation': 'As per spec',
-            'max_pah': '0.2%',
-            'max_viscosity': '3.0',
-            'min_acidity': '0.05%',
-            'min_ash': '0.005%',
-            'min_cfpp_summer': '-10°C',
-            'min_cloud_winter': '-12°C',
-            'min_viscosity': '2.0',
-            
-            # === ADDITIONAL FIELDS ===
-            'optional': 'N/A',
-            'to': 'To:',
-            'via': 'Via:',
-            'tel': '+31-20-123-4567',
-            'email': 'info@company.com',
-            'address': '123 Business Street',
-            'bin': 'BIN123456789',
-            'okpo': 'OKPO123456789',
-            'designations': 'Authorized Signatory',
-            'position': 'Manager',
-        }
+        if template_settings:
+            logger.info(f"   Configured placeholders: {list(template_settings.keys())[:10]}...")
         
-        # Process each placeholder with improved matching logic
-        print(f"Processing {len(placeholders)} placeholders: {placeholders}")
         for placeholder in placeholders:
-            placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
-            
-            # Try to find exact match first
             found = False
-            replacement_value = None
             
-            # 1. Exact match (most precise)
-            for key, value in vessel_mapping.items():
-                key_lower = key.lower().replace('_', '').replace(' ', '').replace('-', '')
+            # IMPORTANT: Only use database data if explicitly configured in CMS
+            # Priority 1: Check if placeholder has custom settings configured in CMS
+            if placeholder in template_settings:
+                logger.info(f"\n🔍 Processing placeholder: '{placeholder}'")
+                setting = template_settings[placeholder]
+                source = setting.get('source', 'random')
+                logger.info(f"Processing placeholder '{placeholder}': source={source}, full setting={setting}")
                 
-                if key_lower == placeholder_lower:
-                    replacement_value = value if value else generate_realistic_random_data(placeholder, vessel_imo)
-                    data_mapping[placeholder] = replacement_value
-                    print(f"  {placeholder} -> {replacement_value} (exact match with {key})")
-                    found = True
-                    break
-            
-            # 2. Smart partial match (only for specific cases to avoid wrong matches)
-            if not found:
-                for key, value in vessel_mapping.items():
-                    key_lower = key.lower().replace('_', '').replace(' ', '').replace('-', '')
+                if source == 'custom':
+                    # Use custom value from CMS
+                    custom_value = setting.get('customValue', '')
+                    if custom_value:
+                        data_mapping[placeholder] = custom_value
+                        found = True
+                        logger.info(f"{placeholder} -> {custom_value} (CMS custom value)")
+                elif source == 'database':
+                    # Use database field - try explicit field first, then intelligent matching
+                    # This uses the vessel data from the vessel detail page (vessel_imo)
+                    database_field = setting.get('databaseField', '').strip()
+                    logger.info(f"  🗄️  DATABASE source configured for '{placeholder}'")
+                    logger.info(f"     databaseField='{database_field}'")
+                    logger.info(f"     vessel_imo='{vessel_imo}' (from page)")
                     
-                    # Only allow partial matches for specific safe cases
-                    if (placeholder_lower in key_lower and len(placeholder_lower) >= 4) or \
-                       (key_lower in placeholder_lower and len(key_lower) >= 4):
-                        # Additional safety checks to avoid wrong matches
-                        if not any(conflict in placeholder_lower for conflict in ['bank', 'company', 'name', 'address']) or \
-                           any(conflict in key_lower for conflict in ['bank', 'company', 'name', 'address']):
-                            replacement_value = value if value else generate_realistic_random_data(placeholder, vessel_imo)
-                            data_mapping[placeholder] = replacement_value
-                            print(f"  {placeholder} -> {replacement_value} (smart partial match with {key})")
+                    # Vessel data is already fetched and vessel['imo'] is already set
+                    logger.info(f"  📋 Available vessel fields: {list(vessel.keys())}")
+                    
+                    matched_field = None
+                    matched_value = None
+                    
+                    # Strategy 1: If databaseField is explicitly set, use it
+                    if database_field:
+                        # Try exact match first
+                        if database_field in vessel:
+                            value = vessel[database_field]
+                            if value is not None and str(value).strip() != '':
+                                matched_field = database_field
+                                matched_value = str(value).strip()
+                                logger.info(f"  ✅ Exact match found: '{database_field}'")
+                        else:
+                            # Try case-insensitive matching
+                            database_field_lower = database_field.lower()
+                            for key, value in vessel.items():
+                                if key.lower() == database_field_lower:
+                                    if value is not None and str(value).strip() != '':
+                                        matched_field = key
+                                        matched_value = str(value).strip()
+                                        logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}'")
+                                        break
+                    
+                    # Strategy 2: If no explicit match and databaseField is empty, try intelligent matching
+                    if not matched_field and not database_field:
+                        logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
+                        matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+                        if matched_field:
+                            logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}'")
+                    
+                    # Strategy 3: If still no match but databaseField was set, try intelligent matching as fallback
+                    if not matched_field and database_field:
+                        logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")
+                        matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+                        if matched_field:
+                            logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}'")
+                    
+                    # Use the matched value if found
+                    if matched_field and matched_value:
+                        data_mapping[placeholder] = matched_value
+                        found = True
+                        logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}'")
+                        logger.info(f"     ✓ Used database field '{matched_field}' from vessel IMO {vessel_imo}")
+                    else:
+                        logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any vessel field!")
+                        if database_field:
+                            logger.error(f"  ❌ Explicit field '{database_field}' not found in vessel data")
+                        logger.error(f"  ❌ Available fields: {list(vessel.keys())}")
+                        logger.error(f"  ❌ This will use RANDOM data!")
+                elif source == 'csv':
+                    # Use CSV data if explicitly configured in CMS
+                    csv_id = setting.get('csvId', '')
+                    csv_field = setting.get('csvField', '')
+                    csv_row = setting.get('csvRow', 0)
+                    
+                    if csv_id and csv_field:
+                        csv_data = get_csv_data(csv_id, csv_row)
+                        if csv_data and csv_field in csv_data and csv_data[csv_field]:
+                            data_mapping[placeholder] = str(csv_data[csv_field])
                             found = True
-                            break
+                            logger.info(f"{placeholder} -> {csv_data[csv_field]} (CMS configured CSV: {csv_id}[{csv_row}].{csv_field})")
+                    else:
+                        logger.warning(f"{placeholder}: CSV source selected but csvId or csvField missing in CMS")
             
-            # 3. If no match found, generate realistic random data
+            # Priority 2: Generate random data if not found or not configured in CMS
+            # NOTE: We do NOT automatically match vessel data - only if CMS explicitly configures it
             if not found:
-                replacement_value = generate_realistic_random_data(placeholder, vessel_imo)
-                data_mapping[placeholder] = replacement_value
-                print(f"  {placeholder} -> {replacement_value} (realistic random data)")
-        
-        print(f"Final data mapping: {data_mapping}")
-        
-        # Process the document
-        processed_docx_path = replace_placeholders_in_docx(template_path, data_mapping)
-        
-        # Convert DOCX to PDF using LibreOffice
-        try:
-            pdf_path = convert_docx_to_pdf(processed_docx_path)
-            
-            if pdf_path.endswith('.pdf'):
-                print(f"Successfully converted DOCX to PDF: {pdf_path}")
+                # Check random option from settings if placeholder was configured, otherwise use default
+                if placeholder in template_settings:
+                    setting = template_settings[placeholder]
+                    random_option = setting.get('randomOption', 'auto')
+                    source = setting.get('source', 'random')
+                    logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
+                else:
+                    random_option = 'auto'  # Default for non-configured placeholders
+                    logger.info(f"  {placeholder}: Not configured in CMS, using random data (mode: {random_option})")
                 
-                # Read PDF content
-                with open(pdf_path, 'rb') as f:
-                    pdf_content = f.read()
-                
-                # Clean up temp files
-                try:
-                    os.remove(processed_docx_path)
-                    os.remove(pdf_path)
-                except:
-                    pass  # Ignore cleanup errors
-                
-                # Return PDF file
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                filename = f"processed_{vessel_imo}_{timestamp}.pdf"
-                
-                return Response(
-                    content=pdf_content,
-                    media_type="application/pdf",
-                    headers={"Content-Disposition": f"attachment; filename={filename}"}
-                )
+                seed_imo = None if random_option == 'fixed' else vessel_imo
+                data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo)
+                logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
             else:
-                print("PDF conversion failed, falling back to DOCX output...")
-                raise Exception("PDF conversion failed")
-            
-        except Exception as pdf_error:
-            print(f"PDF conversion failed: {pdf_error}")
-            print("Falling back to DOCX output...")
-            
-            # Fallback: return DOCX if PDF conversion fails
-            with open(processed_docx_path, 'rb') as f:
-                docx_content = f.read()
-            
-            # Clean up temp files
-            try:
-                os.remove(processed_docx_path)
-            except:
-                pass  # Ignore cleanup errors
-            
-            # Return DOCX file as fallback
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"processed_{vessel_imo}_{timestamp}.docx"
-            
-            return Response(
-                content=docx_content,
-                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
-            )
+                logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
+        logger.info(f"Generated data mapping for {len(data_mapping)} placeholders")
+        
+        # Replace placeholders
+        processed_docx = replace_placeholders_in_docx(template_path, data_mapping)
+        
+        # Convert to PDF
+        pdf_path = convert_docx_to_pdf(processed_docx)
+        
+        # Read file content
+        if pdf_path.endswith('.pdf'):
+            with open(pdf_path, 'rb') as f:
+                file_content = f.read()
+            media_type = "application/pdf"
+            filename = f"generated_{template_name.replace('.docx', '')}_{vessel_imo}.pdf"
+        else:
+            with open(processed_docx, 'rb') as f:
+                file_content = f.read()
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            filename = f"generated_{template_name.replace('.docx', '')}_{vessel_imo}.docx"
+        
+        # Track download if user_id is provided and Supabase is available
+        if user_id and supabase:
+            try:
+                template_id = None
+                if template_record:
+                    template_id = template_record.get('id')
+                else:
+                    lookup_names = [template_name]
+                    if not template_name.endswith('.docx'):
+                        lookup_names.append(f"{template_name}.docx")
+                    else:
+                        lookup_names.append(template_name.replace('.docx', ''))
+
+                    template_res = supabase.table('document_templates').select('id').in_('file_name', lookup_names).eq('is_active', True).limit(1).execute()
+                    if template_res.data:
+                        template_id = template_res.data[0]['id']
+
+                if template_id:
+                    download_record = {
+                        'user_id': user_id,
+                        'template_id': template_id,
+                        'vessel_imo': vessel_imo,
+                        'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
+                        'file_size': len(file_content)
+                    }
+                    supabase.table('user_document_downloads').insert(download_record).execute()
+                    logger.info(f"Recorded download for user {user_id}, template {template_id}")
+            except Exception as e:
+                logger.warning(f"Failed to record download: {e}")
+        
+        # Clean up temp files
+        try:
+            if os.path.exists(processed_docx):
+                os.remove(processed_docx)
+            if pdf_path.endswith('.pdf') and pdf_path != processed_docx and os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            if template_temp_path and os.path.exists(template_temp_path):
+                os.remove(template_temp_path)
+        except Exception as cleanup_error:
+            logger.debug(f"Cleanup warning: {cleanup_error}")
+        
+        # Return file
+        return Response(
+            content=file_content,
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        logger.error(f"Error generating document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if template_temp_path and os.path.exists(template_temp_path):
+            try:
+                os.remove(template_temp_path)
+            except Exception as cleanup_error:
+                logger.debug(f"Template temp cleanup warning: {cleanup_error}")
 
-@app.post("/upload-template")
-async def upload_template(
-    name: str = Form(...),
-    description: str = Form(...),
-    template_file: UploadFile = File(...)
-):
-    """Upload a new template"""
-    try:
-        if not template_file.filename.lower().endswith('.docx'):
-            raise HTTPException(status_code=400, detail="Only .docx files are allowed")
-        
-        # Save file
-        file_path = os.path.join(TEMPLATES_DIR, template_file.filename)
-        with open(file_path, 'wb') as f:
-            content = await template_file.read()
-            f.write(content)
-        
-        return {
-            "success": True,
-            "message": "Template uploaded successfully",
-            "template": {
-                "name": name,
-                "description": description,
-                "file_name": template_file.filename,
-                "file_size": len(content)
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+# ============================================================================
+# STARTUP
+# ============================================================================
 
 if __name__ == "__main__":
     import uvicorn
-    
-    # Simple HTTP server for VPS deployment
-    port = int(os.environ.get('FASTAPI_PORT', 8000))
-    host = os.environ.get('FASTAPI_HOST', '0.0.0.0')
-    
-    logger.info("🚀 Starting Document Processing API...")
-    logger.info(f"🌐 Server running on: http://{host}:{port}")
-    logger.info(f"📁 Templates directory: {os.path.join(os.getcwd(), 'templates')}")
-    logger.info(f"📁 Temp directory: {os.path.join(os.getcwd(), 'temp')}")
-    logger.info("🔧 Ready for VPS deployment!")
-    
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    logger.info("Starting Document Processing API v2.0...")
+    logger.info(f"Templates directory: {TEMPLATES_DIR}")
+    logger.info(f"Storage directory: {STORAGE_DIR}")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

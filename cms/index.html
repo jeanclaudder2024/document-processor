@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Processor CMS</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: #f8f9fa;
+        }
+        .navbar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .card {
+            border: none;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 10px;
+        }
+        .upload-area {
+            border: 2px dashed #dee2e6;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .upload-area:hover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+        .template-card {
+            border-left: 4px solid #667eea;
+            transition: all 0.3s;
+        }
+        .template-card:hover {
+            transform: translateX(5px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+        }
+        .placeholder-badge {
+            background: #e9ecef;
+            color: #495057;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin: 2px;
+            display: inline-block;
+        }
+        .status-online { color: #28a745; }
+        .status-offline { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h4">
+                <i class="fas fa-cogs me-2"></i>Document Processor CMS
+            </span>
+            <div class="d-flex align-items-center">
+                <span class="text-white me-3">Administrator</span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container-fluid mt-4">
+        <!-- Tabs Navigation -->
+        <ul class="nav nav-tabs mb-4" role="tablist">
+            <li class="nav-item">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#templates" type="button">
+                    <i class="fas fa-file-word me-2"></i>Templates
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#data" type="button">
+                    <i class="fas fa-database me-2"></i>Data Sources
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#plans" type="button">
+                    <i class="fas fa-shield-alt me-2"></i>Plans
+                </button>
+            </li>
+        </ul>
+
+        <!-- Tab Content -->
+        <div class="tab-content">
+            <!-- Templates Tab -->
+            <div class="tab-pane fade show active" id="templates" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="card mb-4">
+                            <div class="card-header bg-primary text-white">
+                                <h5 class="mb-0"><i class="fas fa-upload me-2"></i>Upload Template</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="upload-area" id="uploadArea" onclick="document.getElementById('templateFile').click()">
+                                    <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
+                                    <h5>Drop DOCX file here</h5>
+                                    <p class="text-muted mb-0">or click to browse</p>
+                                    <input type="file" id="templateFile" accept=".docx" style="display: none;" onchange="cms.handleFileSelect(event)">
+                                </div>
+                                <button class="btn btn-primary w-100 mt-3" id="uploadBtn" onclick="cms.uploadTemplate()">
+                                    <i class="fas fa-upload me-2"></i>Upload Template
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0"><i class="fas fa-info-circle me-2"></i>API Status</h6>
+                            </div>
+                            <div class="card-body">
+                                <div id="apiStatus" class="status-offline">
+                                    <i class="fas fa-circle me-2"></i>Checking...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0"><i class="fas fa-list me-2"></i>Templates</h5>
+                                <button class="btn btn-sm btn-outline-primary" onclick="cms.loadTemplates()">
+                                    <i class="fas fa-sync me-1"></i>Refresh
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div id="templatesList">
+                                    <div class="text-center text-muted py-4">
+                                        <i class="fas fa-spinner fa-spin me-2"></i>Loading templates...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Sources Tab -->
+            <div class="tab-pane fade" id="data" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="card mb-4">
+                            <div class="card-header bg-success text-white">
+                                <h5 class="mb-0"><i class="fas fa-upload me-2"></i>Upload CSV Data</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Data Type</label>
+                                    <select class="form-select" id="csvDataType">
+                                        <option value="buyers_sellers">Buyers & Sellers</option>
+                                        <option value="bank_accounts">Bank Accounts</option>
+                                        <option value="icpo">ICPO Data</option>
+                                    </select>
+                                </div>
+                                <div class="upload-area" id="csvUploadArea" onclick="document.getElementById('csvFile').click()">
+                                    <i class="fas fa-file-csv fa-3x text-muted mb-3"></i>
+                                    <h5>Drop CSV file here</h5>
+                                    <p class="text-muted mb-0">or click to browse</p>
+                                    <input type="file" id="csvFile" accept=".csv" style="display: none;" onchange="cms.handleCSVSelect(event)">
+                                </div>
+                                <button class="btn btn-success w-100 mt-3" onclick="cms.uploadCSV()">
+                                    <i class="fas fa-upload me-2"></i>Upload CSV
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0"><i class="fas fa-database me-2"></i>Data Sources</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="dataSourcesList">
+                                    <div class="text-muted">Loading data sources...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Plans Tab -->
+            <div class="tab-pane fade" id="plans" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0"><i class="fas fa-shield-alt me-2"></i>Subscription Plans</h5>
+                                <button class="btn btn-sm btn-outline-primary" onclick="cms.loadPlans()">
+                                    <i class="fas fa-sync me-1"></i>Refresh
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div id="plansList">
+                                    <div class="text-muted">Loading plans...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card mb-3">
+                            <div class="card-header">
+                                <h6 class="mb-0"><i class="fas fa-user-check me-2"></i>Test Permission</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label">User ID</label>
+                                    <input type="text" class="form-control" id="testUserId" value="basic" placeholder="basic/premium/enterprise">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Template Name</label>
+                                    <input type="text" class="form-control" id="testTemplate" placeholder="template.docx">
+                                </div>
+                                <button class="btn btn-primary w-100" onclick="cms.testPermission()">
+                                    <i class="fas fa-search me-2"></i>Check Permission
+                                </button>
+                                <div id="permissionResult" class="mt-3"></div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0"><i class="fas fa-info-circle me-2"></i>Quick Info</h6>
+                            </div>
+                            <div class="card-body">
+                                <p class="mb-2"><strong>Plans:</strong></p>
+                                <ul class="small mb-0">
+                                    <li><strong>Basic:</strong> Limited templates</li>
+                                    <li><strong>Premium:</strong> More templates</li>
+                                    <li><strong>Enterprise:</strong> All templates (*)</li>
+                                </ul>
+                                <hr>
+                                <p class="mb-2"><strong>Features:</strong></p>
+                                <ul class="small mb-0">
+                                    <li>Edit template permissions</li>
+                                    <li>Set download limits</li>
+                                    <li>Manage access per plan</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="toast" class="toast" role="alert">
+            <div class="toast-header">
+                <strong class="me-auto" id="toastTitle">Notification</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastMessage"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="cms.js"></script>
+</body>
+</html>
+
+
+

@@ -1,0 +1,46 @@
+{
+  "basic": {
+    "can_download": [
+      "Proof_of_Product_Template.docx"
+    ],
+    "max_downloads_per_month": 15,
+    "features": [
+      "Feature 1",
+      "Feature 2"
+    ],
+    "name": "Basic Plan",
+    "description": "Perfect for newcomers and small brokers stepping into global oil trading",
+    "monthly_price": 69.99,
+    "annual_price": 399.99,
+    "plan_tier": "basic"
+  },
+  "premium": {
+    "name": "Premium Plan",
+    "can_view_all": true,
+    "can_download": [
+      "ANALYSIS SGS.docx",
+      "ICPO TEMPLATE.docx",
+      "Commercial_Invoice_Batys_Final.docx",
+      "PERFORMA INVOICE.docx"
+    ],
+    "max_downloads_per_month": 100,
+    "features": [
+      "All downloads",
+      "Priority generation"
+    ]
+  },
+  "enterprise": {
+    "can_download": [
+      "ANALYSIS SGS.docx",
+      "Commercial_Invoice_Batys_Final.docx",
+      "ICPO TEMPLATE.docx",
+      "PERFORMA INVOICE.docx"
+    ],
+    "max_downloads_per_month": 12,
+    "features": [
+      "Unlimited",
+      "SLA"
+    ],
+    "name": "Enterprise Plan"
+  }
+}
