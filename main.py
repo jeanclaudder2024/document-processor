@@ -15,6 +15,7 @@ from typing import List, Dict, Optional
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from docx import Document
@@ -80,11 +81,14 @@ TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
 TEMP_DIR = os.path.join(BASE_DIR, 'temp')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 STORAGE_DIR = os.path.join(BASE_DIR, 'storage')
+CMS_DIR = os.path.join(BASE_DIR, 'cms')
 
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(STORAGE_DIR, exist_ok=True)
+if os.path.isdir(CMS_DIR):
+    app.mount("/cms", StaticFiles(directory=CMS_DIR, html=True), name="cms")
 
 # Storage paths
 PLACEHOLDER_SETTINGS_PATH = os.path.join(STORAGE_DIR, 'placeholder_settings.json')
@@ -2341,6 +2345,16 @@ async def generate_document(request: Request):
                 os.remove(template_temp_path)
             except Exception as cleanup_error:
                 logger.debug(f"Template temp cleanup warning: {cleanup_error}")
+
+@app.options("/process-document")
+async def options_process_document():
+    """Handle CORS preflight for legacy process-document endpoint"""
+    return Response(status_code=200)
+
+@app.post("/process-document")
+async def process_document_legacy(request: Request):
+    """Legacy route that proxies to generate-document for backward compatibility"""
+    return await generate_document(request)
 
 # ============================================================================
 # STARTUP
