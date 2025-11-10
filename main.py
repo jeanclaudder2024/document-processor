@@ -249,8 +249,8 @@ def fetch_template_file_record(template_id: str, include_data: bool = False) -> 
             return response.data[0]
     except Exception as exc:
         logger.error(f"Failed to fetch template file for {template_id}: {exc}")
-            return None
-        
+        return None
+
 def write_temp_docx_from_record(file_record: Dict) -> str:
     """Persist a template file from Supabase to a temporary DOCX path"""
     doc_bytes = decode_bytea(file_record.get('file_data'))
@@ -272,7 +272,7 @@ def read_json_file(path: str, default=None):
     try:
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
-            except Exception as e:
+    except Exception as e:
         logger.warning(f"Error reading {path}: {e}")
         return default if default is not None else {}
 
@@ -283,7 +283,7 @@ def write_json_atomic(path: str, data) -> None:
         with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, path)
-            except Exception as e:
+    except Exception as e:
         logger.error(f"Error writing {path}: {e}")
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -383,7 +383,7 @@ async def auth_login(request: Request):
         return response
     except HTTPException:
         raise
-            except Exception as e:
+    except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
@@ -400,7 +400,7 @@ async def auth_logout(request: Request):
         response = Response(content=json.dumps({"success": True}), media_type="application/json")
         response.delete_cookie('session')
         return response
-            except Exception as e:
+    except Exception as e:
         logger.error(f"Logout error: {e}")
         raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
 
@@ -460,7 +460,7 @@ async def get_vessels():
             "vessels": response.data or [],
             "count": len(response.data) if response.data else 0
         }
-            except Exception as e:
+    except Exception as e:
         logger.error(f"Error fetching vessels: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch vessels: {str(e)}")
 
@@ -1282,7 +1282,7 @@ async def update_plan(request: Request):
             elif isinstance(can_download, list):
                 # Remove .docx extension from template names for consistency
                 updated_plan['can_download'] = [t.replace('.docx', '').strip() if isinstance(t, str) else t for t in can_download if t]
-    else:
+            else:
                 updated_plan['can_download'] = can_download
         
         if 'max_downloads_per_month' in plan_data:
@@ -1342,7 +1342,7 @@ async def check_download_permission_db(request: Request):
         }).execute()
         
         if permission_res.data:
-    return {
+            return {
                 "success": True,
                 **permission_res.data
             }
@@ -1375,11 +1375,11 @@ async def get_user_downloadable_templates(request: Request):
         
         if not supabase:
             # Fallback to JSON-based templates
-        templates = []
-        for filename in os.listdir(TEMPLATES_DIR):
+            templates = []
+            for filename in os.listdir(TEMPLATES_DIR):
                 if filename.endswith('.docx'):
-                file_path = os.path.join(TEMPLATES_DIR, filename)
-                file_size = os.path.getsize(file_path)
+                    file_path = os.path.join(TEMPLATES_DIR, filename)
+                    file_size = os.path.getsize(file_path)
                     created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
                     placeholders = extract_placeholders_from_docx(file_path)
                     
@@ -1747,7 +1747,7 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     Returns (matched_field_name, matched_value) or (None, None) if no match.
     Uses multiple strategies with confidence scoring to find the best match.
     """
-        if not vessel:
+    if not vessel:
         return (None, None)
     
     # Normalize placeholder name for matching
@@ -2191,8 +2191,8 @@ async def generate_document(request: Request):
                     custom_value = setting.get('customValue', '')
                     if custom_value:
                         data_mapping[placeholder] = custom_value
-                    found = True
                         logger.info(f"{placeholder} -> {custom_value} (CMS custom value)")
+                    found = True
                 elif source == 'database':
                     # Use database field - try explicit field first, then intelligent matching
                     # This uses the vessel data from the vessel detail page (vessel_imo)
@@ -2244,7 +2244,7 @@ async def generate_document(request: Request):
                     # Use the matched value if found
                     if matched_field and matched_value:
                         data_mapping[placeholder] = matched_value
-                            found = True
+                        found = True
                         logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}'")
                         logger.info(f"     ✓ Used database field '{matched_field}' from vessel IMO {vessel_imo}")
                     else:
@@ -2297,7 +2297,7 @@ async def generate_document(request: Request):
         
         # Read file content
         if pdf_path.endswith('.pdf'):
-                with open(pdf_path, 'rb') as f:
+            with open(pdf_path, 'rb') as f:
                 file_content = f.read()
             media_type = "application/pdf"
             filename = f"generated_{template_name.replace('.docx', '')}_{vessel_imo}.pdf"
@@ -2313,7 +2313,7 @@ async def generate_document(request: Request):
                 template_id = None
                 if template_record:
                     template_id = template_record.get('id')
-            else:
+                else:
                     lookup_names = [template_name]
                     if not template_name.endswith('.docx'):
                         lookup_names.append(f"{template_name}.docx")
@@ -2336,9 +2336,9 @@ async def generate_document(request: Request):
                     logger.info(f"Recorded download for user {user_id}, template {template_id}")
             except Exception as e:
                 logger.warning(f"Failed to record download: {e}")
-            
-            # Clean up temp files
-            try:
+        
+        # Clean up temp files
+        try:
             if os.path.exists(processed_docx):
                 os.remove(processed_docx)
             if pdf_path.endswith('.pdf') and pdf_path != processed_docx and os.path.exists(pdf_path):
@@ -2349,11 +2349,11 @@ async def generate_document(request: Request):
             logger.debug(f"Cleanup warning: {cleanup_error}")
         
         # Return file
-            return Response(
+        return Response(
             content=file_content,
             media_type=media_type,
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
-            )
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
     except HTTPException:
         raise
     except Exception as e:
