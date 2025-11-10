@@ -32,7 +32,7 @@ app = FastAPI(title="Document Processing API", version="2.0.0")
 
 # Load environment variables
 try:
-    load_dotenv()
+load_dotenv()
 except Exception as e:
     logger.warning(f"Could not load .env file: {e}")
 
@@ -60,6 +60,9 @@ ALLOWED_ORIGINS = [
     "http://10.237.133.72:8080",
     "http://10.237.133.72:8081",
     "http://10.237.133.72:3000",
+    "https://petrodealhub.com",
+    "https://www.petrodealhub.com",
+    "https://control.petrodealhub.com",
 ]
 
 ALLOWED_ORIGIN_REGEX = r"http://(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}|172\\.(1[6-9]|2[0-9]|3[0-1])\\.\\d{1,3}\\.\\d{1,3}):\\d+"
@@ -247,8 +250,8 @@ def fetch_template_file_record(template_id: str, include_data: bool = False) -> 
             return response.data[0]
     except Exception as exc:
         logger.error(f"Failed to fetch template file for {template_id}: {exc}")
-    return None
-
+            return None
+        
 def write_temp_docx_from_record(file_record: Dict) -> str:
     """Persist a template file from Supabase to a temporary DOCX path"""
     doc_bytes = decode_bytea(file_record.get('file_data'))
@@ -270,7 +273,7 @@ def read_json_file(path: str, default=None):
     try:
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except Exception as e:
+            except Exception as e:
         logger.warning(f"Error reading {path}: {e}")
         return default if default is not None else {}
 
@@ -281,7 +284,7 @@ def write_json_atomic(path: str, data) -> None:
         with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, path)
-    except Exception as e:
+            except Exception as e:
         logger.error(f"Error writing {path}: {e}")
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -381,7 +384,7 @@ async def auth_login(request: Request):
         return response
     except HTTPException:
         raise
-    except Exception as e:
+            except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
@@ -398,7 +401,7 @@ async def auth_logout(request: Request):
         response = Response(content=json.dumps({"success": True}), media_type="application/json")
         response.delete_cookie('session')
         return response
-    except Exception as e:
+            except Exception as e:
         logger.error(f"Logout error: {e}")
         raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
 
@@ -458,7 +461,7 @@ async def get_vessels():
             "vessels": response.data or [],
             "count": len(response.data) if response.data else 0
         }
-    except Exception as e:
+            except Exception as e:
         logger.error(f"Error fetching vessels: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch vessels: {str(e)}")
 
@@ -598,15 +601,29 @@ def extract_placeholders_from_docx(file_path: str) -> List[str]:
 # STEP 4: TEMPLATES API (upload, list, get, delete)
 # ============================================================================
 
+def _cors_preflight_headers(request: Request, allowed_methods: str) -> Dict[str, str]:
+    origin = request.headers.get("origin", "")
+    headers: Dict[str, str] = {
+        "Access-Control-Allow-Methods": allowed_methods,
+        "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*"),
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "600",
+    }
+    if origin and origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+    else:
+        # Fall back to first configured origin if available
+        if ALLOWED_ORIGINS:
+            headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
+        else:
+            headers["Access-Control-Allow-Origin"] = ""
+    return headers
+
+
 @app.options("/templates")
-async def options_templates():
+async def options_templates(request: Request):
     """Handle CORS preflight for templates endpoint"""
-    return Response(status_code=200, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "*",
-        "Access-Control-Max-Age": "600"
-    })
+    return Response(status_code=200, headers=_cors_preflight_headers(request, "GET, POST, OPTIONS"))
 
 @app.get("/templates")
 async def get_templates():
@@ -767,8 +784,8 @@ async def get_plans_db():
         try:
             plans = read_json_file(PLANS_PATH, {})
             return {"success": True, "plans": plans, "source": "json_error_fallback"}
-        except:
-            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as final_exc:
+            raise HTTPException(status_code=500, detail=str(final_exc))
 
 @app.get("/templates/{template_name}")
 async def get_template(template_name: str):
@@ -1267,7 +1284,7 @@ async def update_plan(request: Request):
             elif isinstance(can_download, list):
                 # Remove .docx extension from template names for consistency
                 updated_plan['can_download'] = [t.replace('.docx', '').strip() if isinstance(t, str) else t for t in can_download if t]
-            else:
+    else:
                 updated_plan['can_download'] = can_download
         
         if 'max_downloads_per_month' in plan_data:
@@ -1327,7 +1344,7 @@ async def check_download_permission_db(request: Request):
         }).execute()
         
         if permission_res.data:
-            return {
+    return {
                 "success": True,
                 **permission_res.data
             }
@@ -1344,9 +1361,9 @@ async def check_download_permission_db(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.options("/user-downloadable-templates")
-async def options_user_downloadable_templates():
+async def options_user_downloadable_templates(request: Request):
     """Handle CORS preflight for user-downloadable-templates endpoint"""
-    return Response(status_code=200)
+    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
 @app.post("/user-downloadable-templates")
 async def get_user_downloadable_templates(request: Request):
@@ -1360,11 +1377,11 @@ async def get_user_downloadable_templates(request: Request):
         
         if not supabase:
             # Fallback to JSON-based templates
-            templates = []
-            for filename in os.listdir(TEMPLATES_DIR):
+        templates = []
+        for filename in os.listdir(TEMPLATES_DIR):
                 if filename.endswith('.docx'):
-                    file_path = os.path.join(TEMPLATES_DIR, filename)
-                    file_size = os.path.getsize(file_path)
+                file_path = os.path.join(TEMPLATES_DIR, filename)
+                file_size = os.path.getsize(file_path)
                     created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
                     placeholders = extract_placeholders_from_docx(file_path)
                     
@@ -1732,7 +1749,7 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     Returns (matched_field_name, matched_value) or (None, None) if no match.
     Uses multiple strategies with confidence scoring to find the best match.
     """
-    if not vessel:
+        if not vessel:
         return (None, None)
     
     # Normalize placeholder name for matching
@@ -2050,9 +2067,9 @@ def convert_docx_to_pdf(docx_path: str) -> str:
         return docx_path
 
 @app.options("/generate-document")
-async def options_generate_document():
+async def options_generate_document(request: Request):
     """Handle CORS preflight for generate-document endpoint"""
-    return Response(status_code=200)
+    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
 @app.post("/generate-document")
 async def generate_document(request: Request):
@@ -2095,6 +2112,11 @@ async def generate_document(request: Request):
             file_record = fetch_template_file_record(template_record['id'], include_data=True)
             if not file_record:
                 raise HTTPException(status_code=404, detail=f"Template file missing for: {template_name}")
+
+            file_data = file_record.get("file_data")
+            if not file_data:
+                logger.error(f"Template file missing data for template_id={template_record['id']}")
+                raise HTTPException(status_code=404, detail="Template file not found")
 
             template_temp_path = write_temp_docx_from_record(file_record)
             template_path = template_temp_path
@@ -2171,7 +2193,7 @@ async def generate_document(request: Request):
                     custom_value = setting.get('customValue', '')
                     if custom_value:
                         data_mapping[placeholder] = custom_value
-                        found = True
+                    found = True
                         logger.info(f"{placeholder} -> {custom_value} (CMS custom value)")
                 elif source == 'database':
                     # Use database field - try explicit field first, then intelligent matching
@@ -2205,8 +2227,8 @@ async def generate_document(request: Request):
                                         matched_field = key
                                         matched_value = str(value).strip()
                                         logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}'")
-                                        break
-                    
+                    break
+            
                     # Strategy 2: If no explicit match and databaseField is empty, try intelligent matching
                     if not matched_field and not database_field:
                         logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
@@ -2224,7 +2246,7 @@ async def generate_document(request: Request):
                     # Use the matched value if found
                     if matched_field and matched_value:
                         data_mapping[placeholder] = matched_value
-                        found = True
+                            found = True
                         logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}'")
                         logger.info(f"     ✓ Used database field '{matched_field}' from vessel IMO {vessel_imo}")
                     else:
@@ -2277,7 +2299,7 @@ async def generate_document(request: Request):
         
         # Read file content
         if pdf_path.endswith('.pdf'):
-            with open(pdf_path, 'rb') as f:
+                with open(pdf_path, 'rb') as f:
                 file_content = f.read()
             media_type = "application/pdf"
             filename = f"generated_{template_name.replace('.docx', '')}_{vessel_imo}.pdf"
@@ -2293,7 +2315,7 @@ async def generate_document(request: Request):
                 template_id = None
                 if template_record:
                     template_id = template_record.get('id')
-                else:
+            else:
                     lookup_names = [template_name]
                     if not template_name.endswith('.docx'):
                         lookup_names.append(f"{template_name}.docx")
@@ -2316,9 +2338,9 @@ async def generate_document(request: Request):
                     logger.info(f"Recorded download for user {user_id}, template {template_id}")
             except Exception as e:
                 logger.warning(f"Failed to record download: {e}")
-        
-        # Clean up temp files
-        try:
+            
+            # Clean up temp files
+            try:
             if os.path.exists(processed_docx):
                 os.remove(processed_docx)
             if pdf_path.endswith('.pdf') and pdf_path != processed_docx and os.path.exists(pdf_path):
@@ -2329,11 +2351,11 @@ async def generate_document(request: Request):
             logger.debug(f"Cleanup warning: {cleanup_error}")
         
         # Return file
-        return Response(
+            return Response(
             content=file_content,
             media_type=media_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -2347,9 +2369,9 @@ async def generate_document(request: Request):
                 logger.debug(f"Template temp cleanup warning: {cleanup_error}")
 
 @app.options("/process-document")
-async def options_process_document():
+async def options_process_document(request: Request):
     """Handle CORS preflight for legacy process-document endpoint"""
-    return Response(status_code=200)
+    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
 @app.post("/process-document")
 async def process_document_legacy(request: Request):

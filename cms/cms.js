@@ -1,7 +1,21 @@
 // Document Processor CMS - Clean Frontend
 class DocumentCMS {
     constructor() {
-        this.apiBaseUrl = 'http://localhost:8000';
+        const origin = window.location.origin || '';
+        const hostname = window.location.hostname || '';
+        let apiBase = 'http://localhost:8000';
+
+        if (window.__CMS_API_BASE__) {
+            apiBase = window.__CMS_API_BASE__;
+        } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
+            apiBase = 'http://localhost:8000';
+        } else if (hostname === 'control.petrodealhub.com') {
+            apiBase = 'https://petrodealhub.com/api';
+        } else if (origin && origin.startsWith('http')) {
+            apiBase = `${origin.replace(/\/$/, '')}/api`;
+        }
+
+        this.apiBaseUrl = apiBase;
         this.selectedFile = null;
         this.selectedCSV = null;
         this.init();
