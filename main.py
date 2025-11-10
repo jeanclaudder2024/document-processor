@@ -32,7 +32,7 @@ app = FastAPI(title="Document Processing API", version="2.0.0")
 
 # Load environment variables
 try:
-load_dotenv()
+    load_dotenv()
 except Exception as e:
     logger.warning(f"Could not load .env file: {e}")
 
