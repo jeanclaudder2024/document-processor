@@ -2108,17 +2108,33 @@ async def generate_document(request: Request):
             template_settings = fetch_template_placeholders(template_record['id'])
 
             file_record = fetch_template_file_record(template_record['id'], include_data=True)
-            if not file_record:
-                raise HTTPException(status_code=404, detail=f"Template file missing for: {template_name}")
+            fallback_checked = False
+            template_path = None
 
-            file_data = file_record.get("file_data")
-            if not file_data:
-                logger.error(f"Template file missing data for template_id={template_record['id']}")
-                raise HTTPException(status_code=404, detail="Template file not found")
+            if file_record:
+                file_data = file_record.get("file_data")
+                if file_data:
+                    template_temp_path = write_temp_docx_from_record(file_record)
+                    template_path = template_temp_path
+                    effective_template_name = template_record.get('file_name') or template_name
+                else:
+                    logger.error(f"Template file missing data for template_id={template_record['id']}")
+                    fallback_checked = True
+            else:
+                fallback_checked = True
 
-            template_temp_path = write_temp_docx_from_record(file_record)
-            template_path = template_temp_path
-            effective_template_name = template_record.get('file_name') or template_name
+            if fallback_checked:
+                logger.warning(f"Template file missing in Supabase for '{template_name}', attempting filesystem fallback")
+                fallback_name = template_record.get('file_name') or template_name
+                if not fallback_name.endswith('.docx'):
+                    fallback_name = f"{fallback_name}.docx"
+
+                fallback_path = os.path.join(TEMPLATES_DIR, fallback_name)
+                if os.path.exists(fallback_path):
+                    template_path = fallback_path
+                    effective_template_name = fallback_name
+                else:
+                    raise HTTPException(status_code=404, detail=f"Template file missing for: {template_name}")
         else:
             # Handle template name with/without extension for legacy file storage
             if not effective_template_name.endswith('.docx'):
