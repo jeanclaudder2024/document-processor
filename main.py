@@ -608,15 +608,14 @@ def _cors_preflight_headers(request: Request, allowed_methods: str) -> Dict[str,
         "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*"),
         "Access-Control-Allow-Credentials": "true",
         "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
     }
-    if origin and origin in ALLOWED_ORIGINS:
+    if origin:
         headers["Access-Control-Allow-Origin"] = origin
+    elif ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
     else:
-        # Fall back to first configured origin if available
-        if ALLOWED_ORIGINS:
-            headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
-        else:
-            headers["Access-Control-Allow-Origin"] = ""
+        headers["Access-Control-Allow-Origin"] = "*"
     return headers
 
 
