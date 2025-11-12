@@ -18,7 +18,124 @@ class DocumentCMS {
         this.apiBaseUrl = apiBase;
         this.selectedFile = null;
         this.selectedCSV = null;
+        this.templates = [];
+        this.allTemplates = [];
+        this.activeTemplateMetadata = null;
         this.init();
+    }
+
+    findTemplateByName(name) {
+        if (!this.templates) return null;
+        return this.templates.find(t => t.name === name);
+    }
+
+    viewPlaceholders(templateName) {
+        const template = this.findTemplateByName(templateName);
+        const modalEl = document.getElementById('placeholdersModal');
+        const listEl = document.getElementById('placeholderList');
+        const titleEl = document.getElementById('placeholderTemplateName');
+
+        if (!modalEl || !listEl || !titleEl) {
+            console.warn('Placeholder modal elements missing');
+            return;
+        }
+
+        const placeholders = template?.placeholders || [];
+        titleEl.textContent = template?.metadata?.display_name || template?.title || templateName;
+
+        if (placeholders.length === 0) {
+            listEl.innerHTML = '<div class="text-muted small">No placeholders detected in this template.</div>';
+        } else {
+            listEl.innerHTML = placeholders.map((ph, index) => `
+                <div class="d-flex justify-content-between align-items-center border-bottom py-1">
+                    <code>${ph}</code>
+                    <span class="text-muted small">#${index + 1}</span>
+                </div>
+            `).join('');
+        }
+
+        const modal = new bootstrap.Modal(modalEl);
+        modalEl.addEventListener('hidden.bs.modal', () => {
+            this.activeTemplateMetadata = null;
+        }, { once: true });
+        modal.show();
+    }
+
+    openMetadataModal(templateName) {
+        const template = this.findTemplateByName(templateName);
+        if (!template) {
+            this.showToast('error', 'Not Found', 'Template metadata could not be loaded');
+            return;
+        }
+
+        this.activeTemplateMetadata = templateName;
+        const meta = template.metadata || {};
+        const modalEl = document.getElementById('templateMetaModal');
+        const displayInput = document.getElementById('metaDisplayName');
+        const descriptionInput = document.getElementById('metaDescription');
+        const fontFamilyInput = document.getElementById('metaFontFamily');
+        const fontSizeInput = document.getElementById('metaFontSize');
+
+        if (displayInput) displayInput.value = meta.display_name || template.title || template.name;
+        if (descriptionInput) descriptionInput.value = meta.description || template.description || '';
+        if (fontFamilyInput) fontFamilyInput.value = meta.font_family || '';
+        if (fontSizeInput) fontSizeInput.value = meta.font_size || '';
+
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+    }
+
+    async saveTemplateMetadata() {
+        if (!this.activeTemplateMetadata) {
+            this.showToast('error', 'Error', 'No template selected');
+            return;
+        }
+
+        const displayInput = document.getElementById('metaDisplayName');
+        const descriptionInput = document.getElementById('metaDescription');
+        const fontFamilyInput = document.getElementById('metaFontFamily');
+        const fontSizeInput = document.getElementById('metaFontSize');
+
+        const payload = {
+            display_name: displayInput ? displayInput.value : '',
+            description: descriptionInput ? descriptionInput.value : '',
+            font_family: fontFamilyInput ? fontFamilyInput.value : '',
+            font_size: fontSizeInput ? fontSizeInput.value : ''
+        };
+
+        try {
+            const data = await this.apiJson(`/templates/${encodeURIComponent(this.activeTemplateMetadata)}/metadata`, {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+
+            if (data && data.success) {
+                const template = this.findTemplateByName(this.activeTemplateMetadata);
+                if (template) {
+                    template.metadata = template.metadata || {};
+                    Object.assign(template.metadata, data.metadata || {});
+                    if (data.metadata?.display_name) {
+                        template.title = data.metadata.display_name;
+                    }
+                    if (data.metadata?.description) {
+                        template.description = data.metadata.description;
+                    }
+                }
+
+                this.displayTemplates(this.templates);
+                this.showToast('success', 'Metadata Saved', 'Template details updated successfully');
+
+                const modalEl = document.getElementById('templateMetaModal');
+                if (modalEl) {
+                    const modal = bootstrap.Modal.getInstance(modalEl);
+                    if (modal) modal.hide();
+                }
+            }
+        } catch (error) {
+            this.showToast('error', 'Save Failed', error.message);
+        } finally {
+            this.activeTemplateMetadata = null;
+        }
     }
 
     init() {
@@ -192,26 +309,29 @@ class DocumentCMS {
         try {
             const data = await this.apiJson('/templates');
             if (data && data.templates) {
-                this.templates = data.templates;
-                // Build template name list for plan editing - use file_name (without .docx) for consistency
-                this.allTemplates = data.templates.map(t => {
+                this.templates = data.templates.slice().sort((a, b) => {
+                    const nameA = (a.metadata?.display_name || a.title || a.name || '').toLowerCase();
+                    const nameB = (b.metadata?.display_name || b.title || b.name || '').toLowerCase();
+                    return nameA.localeCompare(nameB);
+                });
+                // Build template name list for plan editing - use canonical names
+                this.allTemplates = this.templates.map(t => {
                     if (typeof t === 'string') {
-                        // If it's a string, remove .docx extension if present
-                        return t.replace(/\.docx$/i, '');
+                        return t.endsWith('.docx') ? t : `${t}.docx`;
                     }
-                    // Prefer file_name (without extension) for plan permissions
-                    if (t.file_name) {
-                        return t.file_name;
-                    }
-                    // Fallback to name with .docx removed
                     if (t.name) {
-                        return t.name.replace(/\.docx$/i, '');
+                        return t.name;
                     }
-                    // Other fallbacks
-                    return t.title || String(t);
+                    if (t.file_with_extension) {
+                        return t.file_with_extension;
+                    }
+                    if (t.file_name) {
+                        return t.file_name.endsWith('.docx') ? t.file_name : `${t.file_name}.docx`;
+                    }
+                    return t.title ? `${t.title}.docx` : '';
                 }).filter(t => t && t.trim() !== ''); // Remove empty values
                 console.log('Loaded templates:', this.allTemplates.length, 'templates:', this.allTemplates);
-                this.displayTemplates(data.templates);
+                this.displayTemplates(this.templates);
             } else {
                 this.templates = [];
                 this.allTemplates = [];
@@ -227,46 +347,65 @@ class DocumentCMS {
     displayTemplates(templates) {
         const container = document.getElementById('templatesList');
         
-        if (templates.length === 0) {
+        if (!Array.isArray(templates) || templates.length === 0) {
             container.innerHTML = '<div class="text-center text-muted py-4">No templates found</div>';
             return;
         }
         
-        container.innerHTML = templates.map(template => `
-            <div class="template-card card mb-3">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start">
-                        <div class="flex-grow-1">
-                            <h5 class="mb-2">
-                                <i class="fas fa-file-word text-primary me-2"></i>
-                                ${template.name}
-                            </h5>
-                            <div class="text-muted small mb-2">
-                                <i class="fas fa-file me-1"></i>${this.formatBytes(template.size)} | 
-                                <i class="fas fa-tags me-1"></i>${template.placeholder_count} placeholders
+        container.innerHTML = templates.map(template => {
+            const meta = template.metadata || {};
+            const placeholderList = template.placeholders || [];
+            const preview = placeholderList.slice(0, 12).map(p => `<span class="placeholder-badge">${p}</span>`).join('');
+            const extraCount = Math.max(0, placeholderList.length - 12);
+            const description = meta.description || template.description || 'No description provided';
+            const fontFamily = meta.font_family || 'Default';
+            const fontSize = meta.font_size ? `${meta.font_size}pt` : '';
+            const fontSummary = fontSize ? `${fontFamily} · ${fontSize}` : fontFamily;
+
+            return `
+                <div class="template-card card mb-3">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div class="flex-grow-1 me-3">
+                                <h5 class="mb-1 d-flex align-items-center">
+                                    <i class="fas fa-file-word text-primary me-2"></i>
+                                    ${meta.display_name || template.title || template.name}
+                                </h5>
+                                <div class="text-muted small mb-2">
+                                    <i class="fas fa-file me-1"></i>${this.formatBytes(template.size || 0)} · 
+                                    <i class="fas fa-tags me-1"></i>${placeholderList.length} placeholders
+                                </div>
+                                <p class="text-muted mb-2 small">${description}</p>
+                                <div class="text-muted small mb-2">
+                                    <i class="fas fa-font me-1"></i>${fontSummary}
+                                </div>
+                                <div class="mb-2">
+                                    ${preview}
+                                    ${extraCount > 0 ? `<span class="text-muted">+${extraCount} more</span>` : ''}
+                                </div>
                             </div>
-                            <div class="mb-2">
-                                ${template.placeholders.slice(0, 10).map(p => 
-                                    `<span class="placeholder-badge">${p}</span>`
-                                ).join('')}
-                                ${template.placeholders.length > 10 ? `<span class="text-muted">+${template.placeholders.length - 10} more</span>` : ''}
+                            <div class="d-flex flex-column align-items-end gap-2">
+                                <button class="btn btn-sm btn-success w-100" onclick="cms.testGenerateDocument('${template.name}')">
+                                    <i class="fas fa-vial me-1"></i>Test
+                                </button>
+                                <button class="btn btn-sm btn-primary w-100" onclick="window.open('editor.html?template=${encodeURIComponent(template.name)}', '_blank')">
+                                    <i class="fas fa-edit me-1"></i>Edit Rules
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary w-100" onclick="cms.viewPlaceholders('${template.name}')">
+                                    <i class="fas fa-list me-1"></i>Placeholders
+                                </button>
+                                <button class="btn btn-sm btn-outline-primary w-100" onclick="cms.openMetadataModal('${template.name}')">
+                                    <i class="fas fa-pen me-1"></i>Metadata
+                                </button>
+                                <button class="btn btn-sm btn-danger w-100" onclick="cms.deleteTemplate('${template.name}')">
+                                    <i class="fas fa-trash me-1"></i>Delete
+                                </button>
                             </div>
-                        </div>
-                        <div>
-                            <button class="btn btn-sm btn-success me-2" onclick="cms.testGenerateDocument('${template.name}')">
-                                <i class="fas fa-vial me-1"></i>Test
-                            </button>
-                            <button class="btn btn-sm btn-primary me-2" onclick="window.open('editor.html?template=${encodeURIComponent(template.name)}', '_blank')">
-                                <i class="fas fa-edit me-1"></i>Edit
-                            </button>
-                            <button class="btn btn-sm btn-danger" onclick="cms.deleteTemplate('${template.name}')">
-                                <i class="fas fa-trash me-1"></i>Delete
-                            </button>
                         </div>
                     </div>
                 </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
     }
 
     handleFileSelect(event) {
@@ -289,7 +428,24 @@ class DocumentCMS {
         }
 
         const formData = new FormData();
+        const displayNameInput = document.getElementById('templateNameInput');
+        const descriptionInput = document.getElementById('templateDescriptionInput');
+        const fontFamilySelect = document.getElementById('templateFontFamily');
+        const fontSizeInput = document.getElementById('templateFontSize');
+
         formData.append('file', this.selectedFile);
+        if (displayNameInput && displayNameInput.value) {
+            formData.append('name', displayNameInput.value);
+        }
+        if (descriptionInput && descriptionInput.value) {
+            formData.append('description', descriptionInput.value);
+        }
+        if (fontFamilySelect && fontFamilySelect.value) {
+            formData.append('font_family', fontFamilySelect.value);
+        }
+        if (fontSizeInput && fontSizeInput.value) {
+            formData.append('font_size', fontSizeInput.value);
+        }
 
         // Show loading state
         const uploadBtn = document.getElementById('uploadBtn');
@@ -314,6 +470,10 @@ class DocumentCMS {
 
             if (response && response.ok) {
                 const data = await response.json();
+                const warningMessages = Array.isArray(data.warnings) ? data.warnings : [];
+                if (warningMessages.length) {
+                    warningMessages.forEach(msg => this.showToast('warning', 'Upload Warning', msg));
+                }
                 this.showToast('success', 'Upload Success', `Template "${data.filename}" uploaded with ${data.placeholder_count} placeholders`);
                 this.selectedFile = null;
                 const uploadArea = document.getElementById('uploadArea');
@@ -326,6 +486,11 @@ class DocumentCMS {
                 }
                 const fileInput = document.getElementById('templateFile');
                 if (fileInput) fileInput.value = '';
+                if (displayNameInput) displayNameInput.value = '';
+                if (descriptionInput) descriptionInput.value = '';
+                if (fontFamilySelect) fontFamilySelect.value = '';
+                if (fontSizeInput) fontSizeInput.value = '';
+
                 this.loadTemplates();
             } else {
                 const statusText = response?.statusText || 'Unknown error';
@@ -395,14 +560,23 @@ class DocumentCMS {
         container.innerHTML = Object.entries(sources).map(([name, source]) => `
             <div class="card mb-3">
                 <div class="card-body">
-                    <h6 class="mb-2">
-                        <i class="fas fa-database me-2"></i>${name.replace('_', ' ').toUpperCase()}
-                    </h6>
-                    <div class="small">
-                        <div><strong>File:</strong> ${source.filename}</div>
-                        <div><strong>Status:</strong> ${source.exists ? '<span class="text-success">✓ Available</span>' : '<span class="text-danger">✗ Missing</span>'}</div>
-                        ${source.exists ? `<div><strong>Size:</strong> ${this.formatBytes(source.size)}</div>` : ''}
-                        ${source.exists ? `<div><strong>Rows:</strong> ${source.row_count}</div>` : ''}
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <h6 class="mb-2">
+                                <i class="fas fa-database me-2"></i>${name.replace('_', ' ').toUpperCase()}
+                            </h6>
+                            <div class="small">
+                                <div><strong>File:</strong> ${source.filename}</div>
+                                <div><strong>Status:</strong> ${source.exists ? '<span class="text-success">✓ Available</span>' : '<span class="text-danger">✗ Missing</span>'}</div>
+                                ${source.exists ? `<div><strong>Size:</strong> ${this.formatBytes(source.size)}</div>` : ''}
+                                ${source.exists ? `<div><strong>Rows:</strong> ${source.row_count}</div>` : ''}
+                            </div>
+                        </div>
+                        <div>
+                            ${source.exists ? `<button class="btn btn-sm btn-outline-danger" onclick="cms.deleteCSV('${name}')">
+                                <i class="fas fa-trash me-1"></i>Delete
+                            </button>` : ''}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -457,6 +631,28 @@ class DocumentCMS {
             }
         } catch (error) {
             this.showToast('error', 'Upload Failed', error.message);
+        }
+    }
+
+    async deleteCSV(csvId) {
+        if (!csvId) return;
+        if (!confirm('Delete this CSV file?')) return;
+
+        try {
+            const response = await this.apiFetch(`/csv-files/${encodeURIComponent(csvId)}`, {
+                method: 'DELETE'
+            });
+
+            if (response && response.ok) {
+                const data = await response.json();
+                this.showToast('success', 'Deleted', `CSV "${data.filename}" deleted`);
+                this.loadDataSources();
+            } else {
+                const error = await response.json().catch(() => ({ detail: 'Delete failed' }));
+                throw new Error(error.detail || 'Delete failed');
+            }
+        } catch (error) {
+            this.showToast('error', 'Delete Failed', error.message);
         }
     }
 
@@ -530,10 +726,10 @@ class DocumentCMS {
                         <strong>Download Allowed:</strong>
                         ${isAllTemplates ? 
                             '<span class="badge bg-success ms-2">All templates (*)</span>' : 
-                            `<span class="badge bg-info ms-2">${canDownloadList.length} templates</span>`
+                            `<span class="badge bg-info ms-2">${canDownloadList.length} template${canDownloadList.length === 1 ? '' : 's'}</span>`
                         }
                         ${!isAllTemplates && canDownloadList.length > 0 ? 
-                            `<ul class="mb-0 mt-2"><li><small>${canDownloadList.map(t => t.replace('.docx', '')).join('</small></li><li><small>')}</small></li></ul>` : ''
+                            `<ul class="mb-0 mt-2"><li><small>${canDownloadList.map(t => this.formatTemplateLabel(t)).join('</small></li><li><small>')}</small></li></ul>` : ''
                         }
                     </div>
                     <div class="mb-2">
@@ -964,6 +1160,12 @@ class DocumentCMS {
         const sizes = ['Bytes', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    }
+
+    formatTemplateLabel(name) {
+        if (!name) return '';
+        if (name === '*') return 'All templates';
+        return name.replace(/\.docx$/i, '');
     }
 
     showToast(type, title, message) {

@@ -12,7 +12,7 @@ import logging
 import csv
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -96,6 +96,7 @@ if os.path.isdir(CMS_DIR):
 PLACEHOLDER_SETTINGS_PATH = os.path.join(STORAGE_DIR, 'placeholder_settings.json')
 PLANS_PATH = os.path.join(STORAGE_DIR, 'plans.json')
 USERS_PATH = os.path.join(STORAGE_DIR, 'users.json')
+TEMPLATE_METADATA_PATH = os.path.join(STORAGE_DIR, 'template_metadata.json')
 
 # Supabase client
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
@@ -181,10 +182,12 @@ def resolve_template_record(template_name: str) -> Optional[Dict]:
 
     return None
 
-def fetch_template_placeholders(template_id: str) -> Dict[str, Dict[str, Optional[str]]]:
+def fetch_template_placeholders(template_id: str, template_hint: Optional[str] = None) -> Dict[str, Dict[str, Optional[str]]]:
     """Fetch placeholder configuration for a template"""
+    disk_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+
     if not SUPABASE_ENABLED:
-        return {}
+        return _lookup_placeholder_settings_from_disk(disk_settings, template_id, template_hint)
 
     try:
         response = supabase.table('template_placeholders').select(
@@ -201,34 +204,67 @@ def fetch_template_placeholders(template_id: str) -> Dict[str, Dict[str, Optiona
                 'csvRow': row['csv_row'] if row.get('csv_row') is not None else 0,
                 'randomOption': row.get('random_option', 'auto') or 'auto'
             }
-        return settings
+        if settings:
+            return settings
     except Exception as exc:
         logger.error(f"Failed to fetch template placeholders for {template_id}: {exc}")
-        return {}
+    return _lookup_placeholder_settings_from_disk(disk_settings, template_id, template_hint)
 
-def upsert_template_placeholders(template_id: str, settings: Dict[str, Dict]) -> None:
+def _lookup_placeholder_settings_from_disk(disk_settings: Dict[str, Dict], template_id: str, template_hint: Optional[str]) -> Dict[str, Dict[str, Optional[str]]]:
+    """Internal helper to find placeholder config from disk storage."""
+    candidates = []
+    if template_hint:
+        candidates.extend([
+            template_hint,
+            ensure_docx_filename(template_hint),
+            normalise_template_key(template_hint),
+        ])
+    if template_id:
+        candidates.append(str(template_id))
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if candidate in disk_settings:
+            return disk_settings[candidate]
+        if ensure_docx_filename(candidate) in disk_settings:
+            return disk_settings[ensure_docx_filename(candidate)]
+        normalised = normalise_template_key(candidate)
+        for key in disk_settings.keys():
+            if normalise_template_key(key) == normalised:
+                return disk_settings[key]
+    return {}
+
+
+def upsert_template_placeholders(template_id: str, settings: Dict[str, Dict], template_hint: Optional[str] = None) -> None:
     """Upsert placeholder settings into Supabase"""
-    if not SUPABASE_ENABLED or not settings:
-        return
+    if SUPABASE_ENABLED and settings:
+        rows = []
+        for placeholder, cfg in settings.items():
+            rows.append({
+                'template_id': template_id,
+                'placeholder': placeholder,
+                'source': cfg.get('source', 'random'),
+                'custom_value': cfg.get('customValue'),
+                'database_field': cfg.get('databaseField'),
+                'csv_id': cfg.get('csvId'),
+                'csv_field': cfg.get('csvField'),
+                'csv_row': cfg.get('csvRow'),
+                'random_option': cfg.get('randomOption', 'auto')
+            })
 
-    rows = []
-    for placeholder, cfg in settings.items():
-        rows.append({
-            'template_id': template_id,
-            'placeholder': placeholder,
-            'source': cfg.get('source', 'random'),
-            'custom_value': cfg.get('customValue'),
-            'database_field': cfg.get('databaseField'),
-            'csv_id': cfg.get('csvId'),
-            'csv_field': cfg.get('csvField'),
-            'csv_row': cfg.get('csvRow'),
-            'random_option': cfg.get('randomOption', 'auto')
-        })
+        try:
+            response = supabase.table('template_placeholders').upsert(rows, on_conflict='template_id,placeholder').execute()
+            if getattr(response, "error", None):
+                logger.error(f"Supabase error upserting placeholders for {template_id}: {response.error}")
+        except Exception as exc:
+            logger.error(f"Failed to upsert placeholder settings: {exc}")
 
-    try:
-        supabase.table('template_placeholders').upsert(rows, on_conflict='template_id,placeholder').execute()
-    except Exception as exc:
-        logger.error(f"Failed to upsert placeholder settings: {exc}")
+    # Persist to disk as reliable fallback
+    placeholder_key = ensure_docx_filename(template_hint) if template_hint else str(template_id)
+    placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+    placeholder_settings[placeholder_key] = settings
+    write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
 
 def fetch_template_file_record(template_id: str, include_data: bool = False) -> Optional[Dict]:
     """Get the latest template file record from Supabase"""
@@ -249,7 +285,7 @@ def fetch_template_file_record(template_id: str, include_data: bool = False) -> 
             return response.data[0]
     except Exception as exc:
         logger.error(f"Failed to fetch template file for {template_id}: {exc}")
-        return None
+    return None
 
 def write_temp_docx_from_record(file_record: Dict) -> str:
     """Persist a template file from Supabase to a temporary DOCX path"""
@@ -323,8 +359,51 @@ def ensure_storage():
             "sessions": {}
         })
 
+    if not os.path.exists(TEMPLATE_METADATA_PATH):
+        write_json_atomic(TEMPLATE_METADATA_PATH, {})
+
 # Initialize storage on startup
 ensure_storage()
+
+# Metadata helpers
+def load_template_metadata() -> Dict[str, Dict]:
+    """Load template metadata JSON with safe fallback."""
+    metadata = read_json_file(TEMPLATE_METADATA_PATH, {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def save_template_metadata(metadata: Dict[str, Dict]) -> None:
+    """Persist template metadata to disk."""
+    write_json_atomic(TEMPLATE_METADATA_PATH, metadata)
+
+
+def update_template_metadata_entry(template_key: str, updates: Dict) -> Dict[str, Dict]:
+    """Merge updates into template metadata entry and persist."""
+    metadata = load_template_metadata()
+    entry = metadata.get(template_key, {})
+    entry.update({k: v for k, v in updates.items() if v is not None})
+    metadata[template_key] = entry
+    save_template_metadata(metadata)
+    return metadata
+
+
+def normalise_template_key(value: Optional[str]) -> str:
+    """Normalise template identifiers to a consistent filesystem key."""
+    if not value:
+        return ""
+    name = value.strip()
+    name = os.path.basename(name)
+    if name.lower().endswith('.docx'):
+        name = name[:-5]
+    return name.strip().lower()
+
+
+def ensure_docx_filename(value: str) -> str:
+    """Ensure filename ends with .docx"""
+    if not value:
+        return value
+    return value if value.lower().endswith('.docx') else f"{value}.docx"
+
 
 # ============================================================================
 # STEP 2: AUTHENTICATION (Simple login with HttpOnly cookies)
@@ -628,6 +707,8 @@ async def get_templates():
     """List all available templates with placeholders"""
     try:
         templates = []
+        templates_by_key: Dict[str, Dict] = {}
+        metadata_map = load_template_metadata()
 
         if SUPABASE_ENABLED:
             try:
@@ -644,52 +725,75 @@ async def get_templates():
                     created_at = (file_meta or {}).get('uploaded_at') or record.get('created_at')
 
                     # Normalise names for the frontend
-                    file_name = record.get('file_name') or (record.get('title') or 'template')
-                    if not file_name.endswith('.docx'):
-                        file_name = f"{file_name}.docx"
+                    file_name = ensure_docx_filename(record.get('file_name') or record.get('title') or 'template')
 
                     display_name = record.get('title') or file_name.replace('.docx', '')
+                    metadata_entry = metadata_map.get(file_name, {})
 
-                    templates.append({
+                    template_payload = {
                         "id": str(template_id),
                         "name": file_name,
                         "title": display_name,
                         "file_name": file_name.replace('.docx', ''),
                         "file_with_extension": file_name,
-                        "description": record.get('description') or '',
+                        "description": metadata_entry.get('description') or record.get('description') or '',
+                        "metadata": {
+                            "display_name": metadata_entry.get('display_name', display_name),
+                            "description": metadata_entry.get('description') or record.get('description') or '',
+                            "font_family": metadata_entry.get('font_family'),
+                            "font_size": metadata_entry.get('font_size')
+                        },
                         "size": size or 0,
                         "created_at": created_at,
                         "placeholders": placeholders,
                         "placeholder_count": len(placeholders),
                         "is_active": record.get('is_active', True)
-                    })
+                    }
+                    templates.append(template_payload)
+                    templates_by_key[file_name] = template_payload
             except Exception as exc:
                 logger.error(f"Failed to load templates from Supabase: {exc}")
 
-        if not templates and not SUPABASE_ENABLED:
-            # Fallback to legacy file-system templates if Supabase is unavailable
-            for filename in os.listdir(TEMPLATES_DIR):
-                if filename.endswith('.docx'):
-                    file_path = os.path.join(TEMPLATES_DIR, filename)
-                    file_size = os.path.getsize(file_path)
-                    created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
-                    placeholders = extract_placeholders_from_docx(file_path)
+        # Include local filesystem templates as fallback / supplement
+        for filename in os.listdir(TEMPLATES_DIR):
+            if not filename.lower().endswith('.docx'):
+                continue
+        
+            file_name = ensure_docx_filename(filename)
+            if file_name in templates_by_key:
+                continue
 
-                    template_id = hashlib.md5(filename.encode()).hexdigest()[:12]
+            file_path = os.path.join(TEMPLATES_DIR, file_name)
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError:
+                file_size = 0
+            created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
+            placeholders = extract_placeholders_from_docx(file_path)
+            metadata_entry = metadata_map.get(file_name, {})
 
-                    templates.append({
-                        "id": template_id,
-                        "name": filename,
-                        "title": filename.replace('.docx', ''),
-                        "file_name": filename.replace('.docx', ''),
-                        "file_with_extension": filename,
-                        "description": f"Template: {filename.replace('.docx', '')}",
-                        "size": file_size,
-                        "created_at": created_at,
-                        "placeholders": placeholders,
-                        "placeholder_count": len(placeholders),
-                        "is_active": True
-                    })
+            template_id = hashlib.md5(file_name.encode()).hexdigest()[:12]
+            template_payload = {
+                "id": template_id,
+                "name": file_name,
+                "title": metadata_entry.get('display_name') or file_name.replace('.docx', ''),
+                "file_name": file_name.replace('.docx', ''),
+                "file_with_extension": file_name,
+                "description": metadata_entry.get('description') or f"Template: {file_name.replace('.docx', '')}",
+                "metadata": {
+                    "display_name": metadata_entry.get('display_name') or file_name.replace('.docx', ''),
+                    "description": metadata_entry.get('description'),
+                    "font_family": metadata_entry.get('font_family'),
+                    "font_size": metadata_entry.get('font_size')
+                },
+                "size": file_size,
+                "created_at": created_at,
+                "placeholders": placeholders,
+                "placeholder_count": len(placeholders),
+                "is_active": True
+            }
+            templates.append(template_payload)
+            templates_by_key[file_name] = template_payload
 
         return {"templates": templates}
     except Exception as e:
@@ -752,8 +856,10 @@ async def get_plans_db():
                 normalized_templates = []
                 if allowed_templates:
                     for t in allowed_templates:
-                        if isinstance(t, str):
-                            normalized_templates.append(t.replace('.docx', '').strip())
+                        if t == '*':
+                            normalized_templates.append('*')
+                        elif isinstance(t, str):
+                            normalized_templates.append(ensure_docx_filename(t))
                         else:
                             normalized_templates.append(str(t))
                 
@@ -789,74 +895,143 @@ async def get_plans_db():
 async def get_template(template_name: str):
     """Get details for a specific template"""
     try:
+        metadata_map = load_template_metadata()
+        docx_name = ensure_docx_filename(template_name)
+
         if SUPABASE_ENABLED:
             template_record = resolve_template_record(template_name)
-            if not template_record:
-                raise HTTPException(status_code=404, detail="Template not found in Supabase")
+            if template_record:
+                docx_name = ensure_docx_filename(template_record.get('file_name') or template_name)
+                placeholders = template_record.get('placeholders') or []
+                placeholder_settings = fetch_template_placeholders(template_record['id'], docx_name)
+                file_meta = fetch_template_file_record(template_record['id']) or {}
+                metadata_entry = metadata_map.get(docx_name, {})
 
-            placeholders = template_record.get('placeholders') or []
-            placeholder_settings = fetch_template_placeholders(template_record['id'])
+                response = {
+                    "id": str(template_record['id']),
+                    "name": docx_name,
+                    "title": metadata_entry.get('display_name') or template_record.get('title') or docx_name.replace('.docx', ''),
+                    "file_name": docx_name.replace('.docx', ''),
+                    "file_with_extension": docx_name,
+                    "size": file_meta.get('file_size', 0),
+                    "created_at": file_meta.get('uploaded_at') or template_record.get('created_at'),
+                    "placeholders": placeholders,
+                    "placeholder_count": len(placeholders),
+                    "settings": placeholder_settings,
+                    "metadata": {
+                        "display_name": metadata_entry.get('display_name') or template_record.get('title'),
+                        "description": metadata_entry.get('description') or template_record.get('description'),
+                        "font_family": metadata_entry.get('font_family'),
+                        "font_size": metadata_entry.get('font_size')
+                    }
+                }
+                return response
 
-            file_meta = fetch_template_file_record(template_record['id']) or {}
+        # Filesystem fallback
+        file_path = os.path.join(TEMPLATES_DIR, docx_name)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Template not found")
 
-            file_name = template_record.get('file_name') or template_name
-            if not file_name.endswith('.docx'):
-                file_name = f"{file_name}.docx"
+        file_size = os.path.getsize(file_path)
+        created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
+        placeholders = extract_placeholders_from_docx(file_path)
+        metadata_entry = metadata_map.get(docx_name, {})
+        placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {}).get(docx_name, {})
 
-            return {
-                "id": str(template_record['id']),
-                "name": file_name,
-                "title": template_record.get('title') or file_name.replace('.docx', ''),
-                "file_name": file_name.replace('.docx', ''),
-                "file_with_extension": file_name,
-                "size": file_meta.get('file_size', 0),
-                "created_at": file_meta.get('uploaded_at') or template_record.get('created_at'),
-                "placeholders": placeholders,
-                "placeholder_count": len(placeholders),
-                "settings": placeholder_settings
+        return {
+            "name": docx_name,
+            "title": metadata_entry.get('display_name') or docx_name.replace('.docx', ''),
+            "file_name": docx_name.replace('.docx', ''),
+            "file_with_extension": docx_name,
+            "size": file_size,
+            "created_at": created_at,
+            "placeholders": placeholders,
+            "placeholder_count": len(placeholders),
+            "settings": placeholder_settings,
+            "metadata": {
+                "display_name": metadata_entry.get('display_name') or docx_name.replace('.docx', ''),
+                "description": metadata_entry.get('description'),
+                "font_family": metadata_entry.get('font_family'),
+                "font_size": metadata_entry.get('font_size')
             }
-
-        if not SUPABASE_ENABLED:
-            # Legacy file-system fallback
-            if not template_name.endswith('.docx'):
-                template_name += '.docx'
-
-            file_path = os.path.join(TEMPLATES_DIR, template_name)
-            if not os.path.exists(file_path):
-                raise HTTPException(status_code=404, detail="Template not found")
-
-            file_size = os.path.getsize(file_path)
-            created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
-            placeholders = extract_placeholders_from_docx(file_path)
-
-            return {
-                "name": template_name,
-                "title": template_name.replace('.docx', ''),
-                "file_name": template_name.replace('.docx', ''),
-                "file_with_extension": template_name,
-                "size": file_size,
-                "created_at": created_at,
-                "placeholders": placeholders,
-                "placeholder_count": len(placeholders)
-            }
-
-        raise HTTPException(status_code=404, detail="Template not found")
+        }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting template: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/templates/{template_name}/metadata")
+async def update_template_metadata(
+    template_name: str,
+    payload: Dict = Body(...)
+):
+    """Update template metadata (display name, description, fonts)."""
+    try:
+        docx_name = ensure_docx_filename(template_name)
+        display_name = (payload.get('display_name') or "").strip()
+        description = (payload.get('description') or "").strip()
+        font_family = (payload.get('font_family') or "").strip() or None
+        font_size_raw = payload.get('font_size')
+        font_size = None
+        if font_size_raw not in (None, ""):
+            try:
+                font_size = int(font_size_raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="font_size must be an integer")
+
+        # Update Supabase metadata when available
+        if SUPABASE_ENABLED:
+            template_record = resolve_template_record(docx_name)
+            if template_record:
+                update_data = {}
+                if display_name:
+                    update_data['title'] = display_name
+                if description:
+                    update_data['description'] = description
+                if update_data:
+                    try:
+                        supabase.table('document_templates').update(update_data).eq('id', template_record['id']).execute()
+                    except Exception as exc:
+                        logger.error(f"Failed to update template metadata in Supabase: {exc}")
+
+        metadata_updates = {
+            "display_name": display_name or None,
+            "description": description or None,
+            "font_family": font_family,
+            "font_size": font_size,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
+
+        return {
+            "success": True,
+            "template": docx_name,
+            "metadata": {
+                "display_name": display_name or None,
+                "description": description or None,
+                "font_family": font_family,
+                "font_size": font_size
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error updating template metadata: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
 @app.post("/upload-template")
 async def upload_template(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
-    description: Optional[str] = Form(None)
+    description: Optional[str] = Form(None),
+    font_family: Optional[str] = Form(None),
+    font_size: Optional[str] = Form(None)
     # current_user: str = Depends(get_current_user)  # Disabled for now
 ):
     """Upload a new template"""
     try:
-        if not file.filename.endswith('.docx'):
+        if not file.filename.lower().endswith('.docx'):
             raise HTTPException(status_code=400, detail="Only .docx files are allowed")
         
         file_bytes = await file.read()
@@ -874,24 +1049,37 @@ async def upload_template(
 
         logger.info(f"Template uploaded: {file.filename} ({len(placeholders)} placeholders)")
 
+        warnings: List[str] = []
+        safe_filename = os.path.basename(file.filename)
+        docx_filename = ensure_docx_filename(safe_filename)
+        inferred_title = docx_filename[:-5]
+        title_value = (name or "").strip() or inferred_title
+        description_value = (description or "").strip() or f"Template: {title_value}"
+
+        # Persist a local copy as authoritative fallback
+        file_path = os.path.join(TEMPLATES_DIR, docx_filename)
+        try:
+            with open(file_path, 'wb') as f:
+                f.write(file_bytes)
+        except Exception as exc:
+            logger.error(f"Failed to write template to disk: {exc}")
+            raise HTTPException(status_code=500, detail="Failed to write template to disk")
+
+        template_id = None
+        template_record = None
+
         if SUPABASE_ENABLED:
-            base_name = file.filename
-            inferred_title = base_name[:-5] if base_name.endswith('.docx') else base_name
-            existing_record = resolve_template_record(base_name)
-
-            title_value = name.strip() if name else (existing_record.get('title') if existing_record and existing_record.get('title') else inferred_title)
-            description_value = (description.strip() if description and description.strip() else (existing_record.get('description') if existing_record and existing_record.get('description') else f"Template: {title_value}"))
-
-            template_payload = {
-                'title': title_value,
-                'description': description_value,
-                'file_name': base_name,
-                'placeholders': placeholders,
-                'is_active': True,
-                'updated_at': datetime.utcnow().isoformat()
-            }
-
             try:
+                existing_record = resolve_template_record(docx_filename)
+                template_payload = {
+                    'title': title_value,
+                    'description': description_value,
+                    'file_name': docx_filename,
+                    'placeholders': placeholders,
+                    'is_active': True,
+                    'updated_at': datetime.utcnow().isoformat()
+                }
+
                 upsert_response = supabase.table('document_templates').upsert(
                     template_payload,
                     on_conflict='file_name',
@@ -900,67 +1088,102 @@ async def upload_template(
 
                 if upsert_response.data:
                     template_record = upsert_response.data[0]
+                elif existing_record:
+                    template_record = existing_record
                 else:
-                    template_record = resolve_template_record(base_name)
+                    template_record = resolve_template_record(docx_filename)
 
-                if not template_record:
-                    raise HTTPException(status_code=500, detail="Failed to persist template metadata")
+                if template_record:
+                    template_id = template_record['id']
+                    file_payload = {
+                        'template_id': template_id,
+                        'filename': docx_filename,
+                        'mime_type': file.content_type or 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        'file_size': len(file_bytes),
+                        'file_data': encode_bytea(file_bytes),
+                        'sha256': hashlib.sha256(file_bytes).hexdigest(),
+                        'uploaded_at': datetime.utcnow().isoformat()
+                    }
+                    file_response = supabase.table('template_files').upsert(file_payload, on_conflict='template_id').execute()
+                    if getattr(file_response, "error", None):
+                        warnings.append("Supabase file storage error; using local copy")
+                        logger.error(f"Supabase file upsert error: {file_response.error}")
 
-                template_id = template_record['id']
-
-                file_payload = {
-                    'template_id': template_id,
-                    'filename': base_name,
-                    'mime_type': file.content_type or 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    'file_size': len(file_bytes),
-                    'file_data': encode_bytea(file_bytes),
-                    'sha256': hashlib.sha256(file_bytes).hexdigest(),
-                    'uploaded_at': datetime.utcnow().isoformat()
-                }
-
-                supabase.table('template_files').upsert(
-                    file_payload,
-                    on_conflict='template_id'
-                ).execute()
-
-                # Ensure placeholder settings rows exist (defaults to random)
-                existing_settings = fetch_template_placeholders(template_id)
-                new_rows = []
-                for placeholder in placeholders:
-                    if placeholder not in existing_settings:
-                        new_rows.append({
+                    existing_settings = fetch_template_placeholders(template_id, template_record.get('file_name'))
+                    missing_placeholders = [
+                        {
                             'template_id': template_id,
                             'placeholder': placeholder,
                             'source': 'random',
                             'random_option': 'auto'
-                        })
-                if new_rows:
-                    supabase.table('template_placeholders').insert(new_rows).execute()
-
-                return {
-                    "success": True,
-                    "template_id": str(template_id),
-                    "filename": base_name,
-                    "placeholders": placeholders,
-                    "placeholder_count": len(placeholders)
-                }
-            except HTTPException:
-                raise
+                        }
+                        for placeholder in placeholders
+                        if placeholder not in existing_settings
+                    ]
+                    if missing_placeholders:
+                        placeholders_response = supabase.table('template_placeholders').insert(missing_placeholders).execute()
+                        if getattr(placeholders_response, "error", None):
+                            warnings.append("Supabase placeholder sync error; using local settings")
+                            logger.error(f"Supabase placeholder insert error: {placeholders_response.error}")
+                else:
+                    warnings.append("Supabase metadata sync failed; template served from local storage")
+                    logger.warning("Unable to retrieve template metadata after Supabase upsert")
             except Exception as exc:
+                warnings.append("Supabase sync failed; template available locally")
                 logger.error(f"Failed to store template in Supabase: {exc}")
-                raise HTTPException(status_code=500, detail="Failed to store template in Supabase")
-        
-        # Legacy behaviour (no Supabase available)
-        file_path = os.path.join(TEMPLATES_DIR, file.filename)
-        with open(file_path, 'wb') as f:
-            f.write(file_bytes)
 
-        return {
-            "success": True,
-            "filename": file.filename,
-            "placeholders": placeholders,
-            "placeholder_count": len(placeholders)
+        # Persist placeholder defaults locally (and optionally to Supabase)
+        default_settings: Dict[str, Dict] = {}
+        existing_local_settings = fetch_template_placeholders(template_id or docx_filename, docx_filename)
+        for placeholder in placeholders:
+            default_settings[placeholder] = existing_local_settings.get(placeholder, {
+                'source': 'random',
+                'customValue': '',
+                'databaseField': '',
+                'csvId': '',
+                'csvField': '',
+                'csvRow': 0,
+                'randomOption': 'auto'
+            })
+
+        upsert_template_placeholders(template_id or docx_filename, default_settings, docx_filename)
+
+        # Persist metadata locally
+        font_family_value = (font_family or "").strip() or None
+        font_size_value: Optional[int] = None
+        if font_size is not None and font_size != "":
+            try:
+                font_size_value = int(font_size)
+            except ValueError:
+                warnings.append("Invalid font size value; ignored")
+
+        metadata_payload = {
+            "display_name": title_value,
+            "description": description_value,
+            "font_family": font_family_value,
+            "font_size": font_size_value,
+            "updated_at": datetime.utcnow().isoformat()
         }
+        update_template_metadata_entry(docx_filename, {k: v for k, v in metadata_payload.items() if v is not None})
+
+        response_payload = {
+            "success": True,
+            "filename": docx_filename,
+            "placeholders": placeholders,
+            "placeholder_count": len(placeholders),
+            "metadata": {
+                "display_name": title_value,
+                "description": description_value,
+                "font_family": font_family_value,
+                "font_size": font_size_value
+            }
+        }
+        if template_id:
+            response_payload["template_id"] = str(template_id)
+        if warnings:
+            response_payload["warnings"] = warnings
+
+        return response_payload
     except HTTPException:
         raise
     except Exception as e:
@@ -974,12 +1197,16 @@ async def delete_template(
 ):
     """Delete a template"""
     try:
+        resolved_name = template_name
+        warnings: List[str] = []
+
         if SUPABASE_ENABLED:
             template_record = resolve_template_record(template_name)
             if not template_record:
                 raise HTTPException(status_code=404, detail="Template not found")
 
             template_id = template_record['id']
+            resolved_name = template_record.get('file_name') or template_name
 
             try:
                 supabase.table('template_files').delete().eq('template_id', template_id).execute()
@@ -987,21 +1214,55 @@ async def delete_template(
                 supabase.table('document_templates').delete().eq('id', template_id).execute()
             except Exception as exc:
                 logger.error(f"Failed to delete template from Supabase: {exc}")
-                raise HTTPException(status_code=500, detail="Failed to delete template")
+                warnings.append("Supabase delete failed; removed local copy only")
 
-            return {"success": True, "message": f"Template {template_name} deleted"}
+        docx_name = ensure_docx_filename(resolved_name)
+        file_path = os.path.join(TEMPLATES_DIR, docx_name)
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as exc:
+                logger.error(f"Failed to delete template file {docx_name}: {exc}")
+                warnings.append("Could not delete local template file")
 
-        if not template_name.endswith('.docx'):
-            template_name += '.docx'
+        # Clean up placeholder settings
+        placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+        if placeholder_settings:
+            removed = False
+            if docx_name in placeholder_settings:
+                placeholder_settings.pop(docx_name, None)
+                removed = True
+            else:
+                normalised_key = normalise_template_key(docx_name)
+                for key in list(placeholder_settings.keys()):
+                    if normalise_template_key(key) == normalised_key:
+                        placeholder_settings.pop(key, None)
+                        removed = True
+            if removed:
+                write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
 
-        file_path = os.path.join(TEMPLATES_DIR, template_name)
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="Template not found")
+        # Clean up metadata
+        metadata = load_template_metadata()
+        if metadata:
+            removed_meta = False
+            if docx_name in metadata:
+                metadata.pop(docx_name, None)
+                removed_meta = True
+            else:
+                normalised_key = normalise_template_key(docx_name)
+                for key in list(metadata.keys()):
+                    if normalise_template_key(key) == normalised_key:
+                        metadata.pop(key, None)
+                        removed_meta = True
+            if removed_meta:
+                save_template_metadata(metadata)
 
-        os.remove(file_path)
-        logger.info(f"Template deleted: {template_name}")
+        logger.info(f"Template deleted: {docx_name}")
 
-        return {"success": True, "message": f"Template {template_name} deleted"}
+        response = {"success": True, "message": f"Template {docx_name} deleted"}
+        if warnings:
+            response["warnings"] = warnings
+        return response
     except HTTPException:
         raise
     except Exception as e:
@@ -1024,7 +1285,7 @@ async def get_placeholder_settings(template_name: Optional[str] = None, template
                 template_record = resolve_template_record(template_name)
             if not template_record:
                 raise HTTPException(status_code=404, detail="Template not found")
-            settings = fetch_template_placeholders(template_record['id'])
+            settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
             return {
                 "template": template_record.get('file_name') or template_name,
                 "settings": settings,
@@ -1103,10 +1364,10 @@ async def save_placeholder_settings(
                     'randomOption': cfg.get('randomOption', 'auto')
                 }
 
-            upsert_template_placeholders(template_id, sanitised_settings)
+            upsert_template_placeholders(template_id, sanitised_settings, template_record.get('file_name'))
 
             # Return latest snapshot
-            refreshed = fetch_template_placeholders(template_id)
+            refreshed = fetch_template_placeholders(template_id, template_record.get('file_name'))
             return {"success": True, "template": template_name, "template_id": str(template_id), "settings": refreshed}
 
         if not SUPABASE_ENABLED and template_name:
@@ -1243,13 +1504,11 @@ async def update_plan(request: Request):
                                     }).execute()
                                 logger.info(f"Set all templates permission for plan {plan_id}")
                             elif isinstance(allowed, list):
-                                # Allow specific templates - normalize names (remove .docx if present)
-                                template_names = {t.replace('.docx', '').strip() for t in allowed if t != '*'}
-                                
+                                template_names = {normalise_template_key(t) for t in allowed if t != '*'}
+
                                 for template in templates_res.data:
                                     template_name = template.get('file_name', '').strip()
-                                    # Match by file_name (without extension)
-                                    if template_name in template_names:
+                                    if normalise_template_key(template_name) in template_names:
                                         supabase.table('plan_template_permissions').insert({
                                             'plan_id': db_plan_id,
                                             'template_id': template['id'],
@@ -1278,12 +1537,21 @@ async def update_plan(request: Request):
             can_download = plan_data['can_download']
             # Normalize: ensure it's a list and remove .docx extensions for consistency
             if isinstance(can_download, str):
-                updated_plan['can_download'] = [can_download]
+                updated_plan['can_download'] = [ensure_docx_filename(can_download) if can_download != '*' else '*']
             elif isinstance(can_download, list):
-                # Remove .docx extension from template names for consistency
-                updated_plan['can_download'] = [t.replace('.docx', '').strip() if isinstance(t, str) else t for t in can_download if t]
-            else:
-                updated_plan['can_download'] = can_download
+                normalized = []
+                for t in can_download:
+                    if not t:
+                        continue
+                    if t == '*':
+                        normalized.append('*')
+                    elif isinstance(t, str):
+                        normalized.append(ensure_docx_filename(t))
+                    else:
+                        normalized.append(t)
+                updated_plan['can_download'] = normalized
+        else:
+            updated_plan['can_download'] = can_download
         
         if 'max_downloads_per_month' in plan_data:
             updated_plan['max_downloads_per_month'] = plan_data['max_downloads_per_month']
@@ -1614,6 +1882,30 @@ async def get_csv_rows(csv_id: str, field_name: str):
     except Exception as e:
         logger.error(f"Error getting CSV rows: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/csv-files/{csv_id}")
+async def delete_csv_file(csv_id: str):
+    """Delete a CSV data source file"""
+    try:
+        csv_mapping = {
+            "buyers_sellers": "buyers_sellers_data_220.csv",
+            "bank_accounts": "bank_accounts.csv",
+            "icpo": "icpo_section4_6_data_230.csv"
+        }
+        filename = csv_mapping.get(csv_id, f"{csv_id}.csv")
+        file_path = os.path.join(DATA_DIR, filename)
+
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="CSV file not found")
+
+        os.remove(file_path)
+        logger.info(f"CSV deleted: {filename}")
+        return {"success": True, "filename": filename}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error deleting CSV file: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
     """Get data from a CSV file by row index"""
@@ -2105,7 +2397,7 @@ async def generate_document(request: Request):
             if not template_record:
                 raise HTTPException(status_code=404, detail=f"Template not found: {template_name}")
 
-            template_settings = fetch_template_placeholders(template_record['id'])
+            template_settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
 
             file_record = fetch_template_file_record(template_record['id'], include_data=True)
             fallback_checked = False
@@ -2352,8 +2644,8 @@ async def generate_document(request: Request):
                     logger.info(f"Recorded download for user {user_id}, template {template_id}")
             except Exception as e:
                 logger.warning(f"Failed to record download: {e}")
-        
-        # Clean up temp files
+            
+            # Clean up temp files
         try:
             if os.path.exists(processed_docx):
                 os.remove(processed_docx)

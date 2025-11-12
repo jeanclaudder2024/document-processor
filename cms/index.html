@@ -97,6 +97,33 @@
                                 <h5 class="mb-0"><i class="fas fa-upload me-2"></i>Upload Template</h5>
                             </div>
                             <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Display Name</label>
+                                    <input type="text" class="form-control" id="templateNameInput" placeholder="Optional friendly name">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Description</label>
+                                    <textarea class="form-control" id="templateDescriptionInput" rows="2" placeholder="Describe the template for other admins"></textarea>
+                                </div>
+                                <div class="row">
+                                    <div class="col-7">
+                                        <label class="form-label">Default Font Family</label>
+                                        <select class="form-select" id="templateFontFamily">
+                                            <option value="">Use document default</option>
+                                            <option value="Arial">Arial</option>
+                                            <option value="Calibri">Calibri</option>
+                                            <option value="Times New Roman">Times New Roman</option>
+                                            <option value="Helvetica">Helvetica</option>
+                                            <option value="Courier New">Courier New</option>
+                                            <option value="Verdana">Verdana</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-5">
+                                        <label class="form-label">Font Size (pt)</label>
+                                        <input type="number" class="form-control" id="templateFontSize" min="8" max="72" placeholder="Auto">
+                                    </div>
+                                </div>
+                                <hr class="my-3">
                                 <div class="upload-area" id="uploadArea" onclick="document.getElementById('templateFile').click()">
                                     <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
                                     <h5>Drop DOCX file here</h5>
@@ -242,6 +269,69 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Template Metadata Modal -->
+    <div class="modal fade" id="templateMetaModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Template Metadata</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Display Name</label>
+                        <input type="text" class="form-control" id="metaDisplayName" placeholder="Display name in CMS">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <textarea class="form-control" id="metaDescription" rows="3" placeholder="Visible to CMS admins"></textarea>
+                    </div>
+                    <div class="row">
+                        <div class="col-7">
+                            <label class="form-label">Default Font</label>
+                            <select class="form-select" id="metaFontFamily">
+                                <option value="">Use document default</option>
+                                <option value="Arial">Arial</option>
+                                <option value="Calibri">Calibri</option>
+                                <option value="Times New Roman">Times New Roman</option>
+                                <option value="Helvetica">Helvetica</option>
+                                <option value="Courier New">Courier New</option>
+                                <option value="Verdana">Verdana</option>
+                            </select>
+                        </div>
+                        <div class="col-5">
+                            <label class="form-label">Font Size (pt)</label>
+                            <input type="number" class="form-control" id="metaFontSize" min="8" max="72" placeholder="Auto">
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="cms.saveTemplateMetadata()">
+                        <i class="fas fa-save me-1"></i>Save Metadata
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Placeholders Modal -->
+    <div class="modal fade" id="placeholdersModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Placeholders · <span id="placeholderTemplateName"></span></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="placeholderList">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
