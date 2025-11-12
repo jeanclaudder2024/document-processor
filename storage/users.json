@@ -1,29 +1,4 @@
 {
-  "users": [
-    {
-      "username": "admin",
-      "password_hash": "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9"
-    }
-  ],
-  "sessions": {
-    "b55bfa9afe6e468dbac9fbd71e03002a": "admin",
-    "e5393eb46e254b3dba090622d6bb98fd": "admin",
-    "e726c2220d20425fa2c51a9c8f8f3a91": "admin",
-    "51ad811da2224bae9771e8fa9a750120": "admin",
-    "351a571611244f989e61c19a0200d268": "admin",
-    "da304b68815c43619fe8abcc45591529": "admin",
-    "693937adb14843c286b9954c6f01e960": "admin",
-    "ab7bead7c6e844f4a8f842c905566530": "admin",
-    "7a37af5409804b2c8401d53ad0ed9910": "admin",
-    "8c6aedc127eb417d9d4b945a8d25692f": "admin",
-    "9f26bc2bc9594791ab699f83f2948c0e": "admin",
-    "e64faf4cd1524e849fbf5c955025012e": "admin",
-    "775b82c5de124df081313edfa2fbc2ce": "admin",
-    "2343c3a5cea748c08e131530d225e341": "admin",
-    "c4b5280fd8104d638d3ccc3e2ada42de": "admin",
-    "57086005ea0f469da6fec572b49c81d5": "admin",
-    "1b1f6cffdb22461dbfc4107201ee38b5": "admin",
-    "2de12fcfc6054a8f8c3db4dd0dc8d189": "admin",
-    "76936fb8fee040faaddebd16c34837b7": "admin"
-  }
+  "users": [],
+  "sessions": {}
 }

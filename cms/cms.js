@@ -729,30 +729,48 @@ class DocumentCMS {
 
     displayDataSources(sources) {
         const container = document.getElementById('dataSourcesList');
-        container.innerHTML = Object.entries(sources).map(([name, source]) => `
-            <div class="card mb-3">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start">
-                        <div>
-                            <h6 class="mb-2">
-                                <i class="fas fa-database me-2"></i>${name.replace('_', ' ').toUpperCase()}
-                            </h6>
-                            <div class="small">
-                                <div><strong>File:</strong> ${source.filename}</div>
-                                <div><strong>Status:</strong> ${source.exists ? '<span class="text-success">✓ Available</span>' : '<span class="text-danger">✗ Missing</span>'}</div>
-                                ${source.exists ? `<div><strong>Size:</strong> ${this.formatBytes(source.size)}</div>` : ''}
-                                ${source.exists ? `<div><strong>Rows:</strong> ${source.row_count}</div>` : ''}
+        const entries = Object.entries(sources || {});
+
+        if (entries.length === 0) {
+            container.innerHTML = `
+                <div class="text-muted text-center py-3">
+                    <i class="fas fa-circle-info me-2"></i>No CSV datasets uploaded yet.
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = entries.map(([id, source]) => {
+            const displayName = source.display_name || id.replace('_', ' ').toUpperCase();
+            const exists = source.exists;
+            const size = exists ? this.formatBytes(source.size) : 'n/a';
+            const rows = exists ? source.row_count : 0;
+            return `
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <h6 class="mb-1">
+                                    <i class="fas fa-database me-2"></i>${displayName}
+                                </h6>
+                                <div class="small text-muted mb-1">Dataset ID: <code>${id}</code></div>
+                                <div class="small">
+                                    <div><strong>File:</strong> ${source.filename}</div>
+                                    <div><strong>Status:</strong> ${exists ? '<span class="text-success">✓ Available</span>' : '<span class="text-danger">✗ Missing</span>'}</div>
+                                    ${exists ? `<div><strong>Size:</strong> ${size}</div>` : ''}
+                                    ${exists ? `<div><strong>Rows:</strong> ${rows}</div>` : ''}
+                                </div>
                             </div>
-                        </div>
-                        <div>
-                            ${source.exists ? `<button class="btn btn-sm btn-outline-danger" onclick="cms.deleteCSV('${name}')">
-                                <i class="fas fa-trash me-1"></i>Delete
-                            </button>` : ''}
+                            <div>
+                                ${exists ? `<button class="btn btn-sm btn-outline-danger" onclick="cms.deleteCSV('${id}')">
+                                    <i class="fas fa-trash me-1"></i>Delete
+                                </button>` : ''}
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
     }
 
     handleCSVSelect(event) {
@@ -775,12 +793,17 @@ class DocumentCMS {
             return;
         }
 
-        const dataTypeSelect = document.getElementById('csvDataType');
-        if (!dataTypeSelect) {
-            this.showToast('error', 'Upload Failed', 'CSV data type selector missing in the page.');
+        const dataTypeInput = document.getElementById('csvDataType');
+        if (!dataTypeInput) {
+            this.showToast('error', 'Upload Failed', 'Dataset name input missing in the page.');
             return;
         }
-        const dataType = dataTypeSelect.value;
+        const dataType = dataTypeInput.value.trim();
+        if (!dataType) {
+            this.showToast('error', 'Upload Failed', 'Please enter a dataset name (letters and numbers only).');
+            return;
+        }
+
         const formData = new FormData();
         formData.append('file', this.selectedCSV);
         formData.append('data_type', dataType);
@@ -794,7 +817,7 @@ class DocumentCMS {
 
             if (response && response.ok) {
                 const data = await response.json();
-                this.showToast('success', 'Upload Success', `CSV "${data.filename}" uploaded`);
+                this.showToast('success', 'Upload Success', `Dataset "${data.display_name || data.dataset_id}" uploaded`);
                 this.selectedCSV = null;
                 const csvUploadArea = document.getElementById('csvUploadArea');
                 if (csvUploadArea) {
@@ -808,6 +831,7 @@ class DocumentCMS {
                 if (csvFileInput) {
                     csvFileInput.value = '';
                 }
+                dataTypeInput.value = '';
                 this.loadDataSources();
             } else {
                 const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
@@ -821,7 +845,7 @@ class DocumentCMS {
     async deleteCSV(csvId) {
         if (!this.ensureAuthenticated()) return;
         if (!csvId) return;
-        if (!confirm('Delete this CSV file?')) return;
+        if (!confirm(`Delete dataset "${csvId}"?`)) return;
 
         try {
             const response = await this.apiFetch(`/csv-files/${encodeURIComponent(csvId)}`, {
@@ -830,7 +854,7 @@ class DocumentCMS {
 
             if (response && response.ok) {
                 const data = await response.json();
-                this.showToast('success', 'Deleted', `CSV "${data.filename}" deleted`);
+                this.showToast('success', 'Deleted', `Dataset "${data.dataset_id || csvId}" deleted`);
                 this.loadDataSources();
             } else {
                 const error = await response.json().catch(() => ({ detail: 'Delete failed' }));

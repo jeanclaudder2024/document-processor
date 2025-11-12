@@ -202,12 +202,9 @@
                             </div>
                             <div class="card-body">
                                 <div class="mb-3">
-                                    <label class="form-label">Data Type</label>
-                                    <select class="form-select" id="csvDataType">
-                                        <option value="buyers_sellers">Buyers & Sellers</option>
-                                        <option value="bank_accounts">Bank Accounts</option>
-                                        <option value="icpo">ICPO Data</option>
-                                    </select>
+                                    <label class="form-label">Dataset Name</label>
+                                    <input type="text" class="form-control" id="csvDataType" placeholder="e.g. buyers_sellers">
+                                    <small class="text-muted">Letters and numbers only. We'll convert spaces to underscores.</small>
                                 </div>
                                 <div class="upload-area" id="csvUploadArea" onclick="document.getElementById('csvFile').click()">
                                     <i class="fas fa-file-csv fa-3x text-muted mb-3"></i>
@@ -384,9 +381,6 @@
                     <button type="submit" class="btn btn-primary w-100" id="loginSubmitBtn">
                         <i class="fas fa-sign-in-alt me-1"></i>Login
                     </button>
-                    <div class="form-text text-center mt-3">
-                        Default credentials: <code>admin / admin123</code>
-                    </div>
                 </form>
             </div>
         </div>

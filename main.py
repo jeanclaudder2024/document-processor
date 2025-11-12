@@ -98,6 +98,7 @@ PLACEHOLDER_SETTINGS_PATH = os.path.join(
 PLANS_PATH = os.path.join(STORAGE_DIR, 'plans.json')
 USERS_PATH = os.path.join(STORAGE_DIR, 'users.json')
 TEMPLATE_METADATA_PATH = os.path.join(STORAGE_DIR, 'template_metadata.json')
+DATA_SOURCES_METADATA_PATH = os.path.join(STORAGE_DIR, 'data_sources.json')
 
 # Supabase client
 SUPABASE_URL = os.getenv(
@@ -394,6 +395,9 @@ def ensure_storage():
     if not os.path.exists(TEMPLATE_METADATA_PATH):
         write_json_atomic(TEMPLATE_METADATA_PATH, {})
 
+    if not os.path.exists(DATA_SOURCES_METADATA_PATH):
+        write_json_atomic(DATA_SOURCES_METADATA_PATH, {})
+
 
 # Initialize storage on startup
 ensure_storage()
@@ -421,6 +425,66 @@ def update_template_metadata_entry(
     metadata[template_key] = entry
     save_template_metadata(metadata)
     return metadata
+
+
+def load_data_sources_metadata() -> Dict[str, Dict]:
+    metadata = read_json_file(DATA_SOURCES_METADATA_PATH, {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def save_data_sources_metadata(metadata: Dict[str, Dict]) -> None:
+    write_json_atomic(DATA_SOURCES_METADATA_PATH, metadata)
+
+
+def upsert_data_source_metadata(dataset_id: str, display_name: Optional[str] = None) -> None:
+    metadata = load_data_sources_metadata()
+    entry = metadata.get(dataset_id, {})
+    if display_name:
+        entry['display_name'] = display_name
+    entry['updated_at'] = datetime.utcnow().isoformat()
+    metadata[dataset_id] = entry
+    save_data_sources_metadata(metadata)
+
+
+def remove_data_source_metadata(dataset_id: str) -> None:
+    metadata = load_data_sources_metadata()
+    if dataset_id in metadata:
+        metadata.pop(dataset_id, None)
+        save_data_sources_metadata(metadata)
+
+
+def normalise_dataset_id(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    cleaned = value.strip().lower()
+    cleaned = re.sub(r'[^a-z0-9]+', '_', cleaned)
+    cleaned = re.sub(r'_+', '_', cleaned).strip('_')
+    if not cleaned:
+        return ""
+    return cleaned[:80]
+
+
+def dataset_id_to_filename(dataset_id: str) -> str:
+    return f"{dataset_id}.csv"
+
+
+def list_csv_datasets() -> List[Dict[str, str]]:
+    datasets: List[Dict[str, str]] = []
+    if not os.path.exists(DATA_DIR):
+        return datasets
+    metadata = load_data_sources_metadata()
+    for entry in os.listdir(DATA_DIR):
+        if not entry.lower().endswith('.csv'):
+            continue
+        dataset_id = entry[:-4]
+        file_path = os.path.join(DATA_DIR, entry)
+        datasets.append({
+            "id": dataset_id,
+            "filename": entry,
+            "path": file_path,
+            "display_name": metadata.get(dataset_id, {}).get('display_name')
+        })
+    return datasets
 
 
 def normalise_template_key(value: Optional[str]) -> str:
@@ -475,6 +539,8 @@ async def auth_login(request: Request):
         password = data.get('password', '')
 
         users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
+        if not users_data.get("users"):
+            raise HTTPException(status_code=403, detail="No administrators defined. Please create a user in storage/users.json")
         pwd_hash = hashlib.sha256(password.encode()).hexdigest()
 
         user_found = any(
@@ -1858,32 +1924,38 @@ async def get_user_downloadable_templates(request: Request):
 @app.post("/upload-csv")
 async def upload_csv(
     file: UploadFile = File(...),
-    data_type: str = Form(...)
-    ,
+    data_type: str = Form(...),
     current_user: str = Depends(get_current_user)
 ):
     """Upload CSV data file"""
     try:
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail="Only .csv files are allowed")
-        
-        # Map data_type to filename
-        filename_map = {
-            "buyers_sellers": "buyers_sellers_data_220.csv",
-            "bank_accounts": "bank_accounts.csv",
-            "icpo": "icpo_section4_6_data_230.csv"
-        }
-        
-        filename = filename_map.get(data_type, f"{data_type}.csv")
+
+        raw_label = (data_type or "").strip()
+        if not raw_label:
+            raise HTTPException(status_code=400, detail="data_type is required")
+
+        dataset_id = normalise_dataset_id(raw_label)
+        if not dataset_id:
+            dataset_id = f"dataset_{uuid.uuid4().hex[:6]}"
+
+        filename = dataset_id_to_filename(dataset_id)
         file_path = os.path.join(DATA_DIR, filename)
-        
-        # Save file
+
         with open(file_path, 'wb') as f:
             content = await file.read()
             f.write(content)
-        
+
+        upsert_data_source_metadata(dataset_id, raw_label)
+
         logger.info(f"CSV uploaded: {filename}")
-        return {"success": True, "filename": filename, "data_type": data_type}
+        return {
+            "success": True,
+            "dataset_id": dataset_id,
+            "filename": filename,
+            "display_name": raw_label or dataset_id
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1894,36 +1966,31 @@ async def upload_csv(
 async def get_all_data(current_user: str = Depends(get_current_user)):
     """Get status of all CSV data sources"""
     try:
-        data_sources = {}
-        csv_files = {
-            "buyers_sellers": "buyers_sellers_data_220.csv",
-            "bank_accounts": "bank_accounts.csv",
-            "icpo": "icpo_section4_6_data_230.csv"
-        }
-        
-        for name, filename in csv_files.items():
-            file_path = os.path.join(DATA_DIR, filename)
+        data_sources: Dict[str, Dict[str, Optional[str]]] = {}
+        for dataset in list_csv_datasets():
+            file_path = dataset["path"]
             exists = os.path.exists(file_path)
             size = os.path.getsize(file_path) if exists else 0
-            
+            row_count = 0
+
             if exists:
-                # Count rows
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         reader = csv.DictReader(f)
                         row_count = sum(1 for _ in reader)
-                except:
+                except Exception:
                     row_count = 0
-            else:
-                row_count = 0
-            
-            data_sources[name] = {
-                "filename": filename,
+
+            display_name = dataset.get("display_name") or dataset["id"].replace('_', ' ').title()
+
+            data_sources[dataset["id"]] = {
+                "filename": dataset["filename"],
                 "exists": exists,
                 "size": size,
-                "row_count": row_count
+                "row_count": row_count,
+                "display_name": display_name
             }
-        
+
         return {"success": True, "data_sources": data_sources}
     except Exception as e:
         logger.error(f"Error getting data sources: {e}")
@@ -1934,21 +2001,14 @@ async def get_csv_files(current_user: str = Depends(get_current_user)):
     """Get list of available CSV files"""
     try:
         csv_files = []
-        csv_mapping = {
-            "buyers_sellers": "buyers_sellers_data_220.csv",
-            "bank_accounts": "bank_accounts.csv",
-            "icpo": "icpo_section4_6_data_230.csv"
-        }
-        
-        for name, filename in csv_mapping.items():
-            file_path = os.path.join(DATA_DIR, filename)
-            if os.path.exists(file_path):
+        for dataset in list_csv_datasets():
+            if os.path.exists(dataset["path"]):
                 csv_files.append({
-                    "id": name,
-                    "filename": filename,
-                    "display_name": name.replace('_', ' ').title()
+                    "id": dataset["id"],
+                    "filename": dataset["filename"],
+                    "display_name": dataset.get("display_name") or dataset["id"].replace('_', ' ').title()
                 })
-        
+
         return {"success": True, "csv_files": csv_files}
     except Exception as e:
         logger.error(f"Error getting CSV files: {e}")
@@ -1958,25 +2018,18 @@ async def get_csv_files(current_user: str = Depends(get_current_user)):
 async def get_csv_fields(csv_id: str, current_user: str = Depends(get_current_user)):
     """Get columns/fields from a CSV file"""
     try:
-        csv_mapping = {
-            "buyers_sellers": "buyers_sellers_data_220.csv",
-            "bank_accounts": "bank_accounts.csv",
-            "icpo": "icpo_section4_6_data_230.csv"
-        }
-        
-        filename = csv_mapping.get(csv_id)
-        if not filename:
+        dataset_id = normalise_dataset_id(csv_id)
+        if not dataset_id:
             raise HTTPException(status_code=404, detail="CSV file not found")
-        
-        file_path = os.path.join(DATA_DIR, filename)
+
+        file_path = os.path.join(DATA_DIR, dataset_id_to_filename(dataset_id))
         if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail=f"CSV file not found: {filename}")
-        
-        # Read CSV headers
+            raise HTTPException(status_code=404, detail=f"CSV file not found: {dataset_id}")
+
         with open(file_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             fields = [{"name": field, "label": field.replace('_', ' ').title()} for field in reader.fieldnames]
-        
+
         return {"success": True, "fields": fields}
     except HTTPException:
         raise
@@ -1988,33 +2041,28 @@ async def get_csv_fields(csv_id: str, current_user: str = Depends(get_current_us
 async def get_csv_rows(csv_id: str, field_name: str, current_user: str = Depends(get_current_user)):
     """Get all unique rows for a specific field in a CSV file"""
     try:
-        csv_mapping = {
-            "buyers_sellers": "buyers_sellers_data_220.csv",
-            "bank_accounts": "bank_accounts.csv",
-            "icpo": "icpo_section4_6_data_230.csv"
-        }
-        
-        filename = csv_mapping.get(csv_id)
-        if not filename:
+        dataset_id = normalise_dataset_id(csv_id)
+        if not dataset_id:
             raise HTTPException(status_code=404, detail="CSV file not found")
-        
-        file_path = os.path.join(DATA_DIR, filename)
+
+        file_path = os.path.join(DATA_DIR, dataset_id_to_filename(dataset_id))
         if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail=f"CSV file not found: {filename}")
-        
-        # Read CSV rows for the specific field
+            raise HTTPException(status_code=404, detail=f"CSV file not found: {dataset_id}")
+
         rows_data = []
         with open(file_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for idx, row in enumerate(reader):
                 if field_name in row and row[field_name]:
+                    value = row[field_name]
+                    preview = value[:100] + "..." if len(str(value)) > 100 else value
                     rows_data.append({
                         "row_index": idx,
-                        "value": row[field_name],
-                        "preview": row[field_name][:100] + "..." if len(str(row[field_name])) > 100 else row[field_name]
+                        "value": value,
+                        "preview": preview
                     })
-        
-        return {"success": True, "rows": rows_data[:100]}  # Limit to 100 rows
+
+        return {"success": True, "rows": rows_data[:100]}
     except HTTPException:
         raise
     except Exception as e:
@@ -2025,20 +2073,20 @@ async def get_csv_rows(csv_id: str, field_name: str, current_user: str = Depends
 async def delete_csv_file(csv_id: str, current_user: str = Depends(get_current_user)):
     """Delete a CSV data source file"""
     try:
-        csv_mapping = {
-            "buyers_sellers": "buyers_sellers_data_220.csv",
-            "bank_accounts": "bank_accounts.csv",
-            "icpo": "icpo_section4_6_data_230.csv"
-        }
-        filename = csv_mapping.get(csv_id, f"{csv_id}.csv")
+        dataset_id = normalise_dataset_id(csv_id)
+        if not dataset_id:
+            raise HTTPException(status_code=404, detail="CSV file not found")
+
+        filename = dataset_id_to_filename(dataset_id)
         file_path = os.path.join(DATA_DIR, filename)
 
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="CSV file not found")
 
         os.remove(file_path)
+        remove_data_source_metadata(dataset_id)
         logger.info(f"CSV deleted: {filename}")
-        return {"success": True, "filename": filename}
+        return {"success": True, "filename": filename, "dataset_id": dataset_id}
     except HTTPException:
         raise
     except Exception as exc:

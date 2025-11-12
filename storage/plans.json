@@ -42,5 +42,20 @@
       "SLA"
     ],
     "name": "Enterprise Plan"
+  },
+  "broker": {
+    "name": "Broker Plan",
+    "description": "For certified brokers handling intermediary documentation",
+    "plan_tier": "broker",
+    "can_download": [
+      "BROKER AGREEMENT.docx",
+      "BROKER MANDATE.docx",
+      "BROKER_PROTECTOR_TEMPLATE.docx"
+    ],
+    "max_downloads_per_month": 20,
+    "features": [
+      "Broker specific templates",
+      "Priority support for intermediaries"
+    ]
   }
 }
