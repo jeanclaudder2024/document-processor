@@ -11,7 +11,7 @@ import tempfile
 import logging
 import csv
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -93,14 +93,18 @@ if os.path.isdir(CMS_DIR):
     app.mount("/cms", StaticFiles(directory=CMS_DIR, html=True), name="cms")
 
 # Storage paths
-PLACEHOLDER_SETTINGS_PATH = os.path.join(STORAGE_DIR, 'placeholder_settings.json')
+PLACEHOLDER_SETTINGS_PATH = os.path.join(
+    STORAGE_DIR, 'placeholder_settings.json')
 PLANS_PATH = os.path.join(STORAGE_DIR, 'plans.json')
 USERS_PATH = os.path.join(STORAGE_DIR, 'users.json')
 TEMPLATE_METADATA_PATH = os.path.join(STORAGE_DIR, 'template_metadata.json')
 
 # Supabase client
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
+SUPABASE_URL = os.getenv(
+    "SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
+SUPABASE_KEY = os.getenv(
+    "SUPABASE_KEY",
+     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
 
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -111,11 +115,13 @@ except Exception as e:
 
 SUPABASE_ENABLED = supabase is not None
 
+
 def encode_bytea(data: bytes) -> str:
     """Encode raw bytes into Postgres bytea hex format"""
     if data is None:
         return None
     return "\\x" + data.hex()
+
 
 def decode_bytea(value) -> Optional[bytes]:
     """Decode Postgres bytea (hex) or raw bytes to bytes"""
@@ -132,6 +138,7 @@ def decode_bytea(value) -> Optional[bytes]:
         return bytes(value)
     except Exception:
         return None
+
 
 def resolve_template_record(template_name: str) -> Optional[Dict]:
     """Find a template row in Supabase by various name permutations"""
@@ -154,10 +161,13 @@ def resolve_template_record(template_name: str) -> Optional[Dict]:
             if response.data:
                 return response.data[0]
         except Exception as exc:
-            logger.error(f"Failed to resolve template by ID '{template_name}': {exc}")
+            logger.error(
+                f"Failed to resolve template by ID '{template_name}': {exc}")
 
-    name_with_ext = template_name if template_name.endswith('.docx') else f"{template_name}.docx"
-    name_without_ext = template_name[:-5] if template_name.endswith('.docx') else template_name
+    name_with_ext = template_name if template_name.endswith(
+        '.docx') else f"{template_name}.docx"
+    name_without_ext = template_name[:-
+        5] if template_name.endswith('.docx') else template_name
 
     candidates = list({name_with_ext, name_without_ext})
 
@@ -182,12 +192,17 @@ def resolve_template_record(template_name: str) -> Optional[Dict]:
 
     return None
 
-def fetch_template_placeholders(template_id: str, template_hint: Optional[str] = None) -> Dict[str, Dict[str, Optional[str]]]:
+
+def fetch_template_placeholders(template_id: str,
+    template_hint: Optional[str] = None) -> Dict[str,
+    Dict[str,
+     Optional[str]]]:
     """Fetch placeholder configuration for a template"""
     disk_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
 
     if not SUPABASE_ENABLED:
-        return _lookup_placeholder_settings_from_disk(disk_settings, template_id, template_hint)
+        return _lookup_placeholder_settings_from_disk(
+            disk_settings, template_id, template_hint)
 
     try:
         response = supabase.table('template_placeholders').select(
@@ -207,10 +222,14 @@ def fetch_template_placeholders(template_id: str, template_hint: Optional[str] =
         if settings:
             return settings
     except Exception as exc:
-        logger.error(f"Failed to fetch template placeholders for {template_id}: {exc}")
-    return _lookup_placeholder_settings_from_disk(disk_settings, template_id, template_hint)
+        logger.error(
+            f"Failed to fetch template placeholders for {template_id}: {exc}")
+    return _lookup_placeholder_settings_from_disk(
+        disk_settings, template_id, template_hint)
 
-def _lookup_placeholder_settings_from_disk(disk_settings: Dict[str, Dict], template_id: str, template_hint: Optional[str]) -> Dict[str, Dict[str, Optional[str]]]:
+
+def _lookup_placeholder_settings_from_disk(
+    disk_settings: Dict[str, Dict], template_id: str, template_hint: Optional[str]) -> Dict[str, Dict[str, Optional[str]]]:
     """Internal helper to find placeholder config from disk storage."""
     candidates = []
     if template_hint:
@@ -236,7 +255,10 @@ def _lookup_placeholder_settings_from_disk(disk_settings: Dict[str, Dict], templ
     return {}
 
 
-def upsert_template_placeholders(template_id: str, settings: Dict[str, Dict], template_hint: Optional[str] = None) -> None:
+def upsert_template_placeholders(template_id: str,
+    settings: Dict[str,
+    Dict],
+     template_hint: Optional[str] = None) -> None:
     """Upsert placeholder settings into Supabase"""
     if SUPABASE_ENABLED and settings:
         rows = []
@@ -254,19 +276,24 @@ def upsert_template_placeholders(template_id: str, settings: Dict[str, Dict], te
             })
 
         try:
-            response = supabase.table('template_placeholders').upsert(rows, on_conflict='template_id,placeholder').execute()
+            response = supabase.table('template_placeholders').upsert(
+                rows, on_conflict='template_id,placeholder').execute()
             if getattr(response, "error", None):
-                logger.error(f"Supabase error upserting placeholders for {template_id}: {response.error}")
+                logger.error(
+                    f"Supabase error upserting placeholders for {template_id}: {response.error}")
         except Exception as exc:
             logger.error(f"Failed to upsert placeholder settings: {exc}")
 
     # Persist to disk as reliable fallback
-    placeholder_key = ensure_docx_filename(template_hint) if template_hint else str(template_id)
+    placeholder_key = ensure_docx_filename(
+        template_hint) if template_hint else str(template_id)
     placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
     placeholder_settings[placeholder_key] = settings
     write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
 
-def fetch_template_file_record(template_id: str, include_data: bool = False) -> Optional[Dict]:
+
+def fetch_template_file_record(template_id: str,
+     include_data: bool = False) -> Optional[Dict]:
     """Get the latest template file record from Supabase"""
     if not SUPABASE_ENABLED:
         return None
@@ -285,13 +312,15 @@ def fetch_template_file_record(template_id: str, include_data: bool = False) -> 
             return response.data[0]
     except Exception as exc:
         logger.error(f"Failed to fetch template file for {template_id}: {exc}")
-    return None
+        return None
+
 
 def write_temp_docx_from_record(file_record: Dict) -> str:
     """Persist a template file from Supabase to a temporary DOCX path"""
     doc_bytes = decode_bytea(file_record.get('file_data'))
     if not doc_bytes:
-        raise HTTPException(status_code=500, detail="Template file data is empty")
+        raise HTTPException(
+            status_code=500, detail="Template file data is empty")
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
     tmp.write(doc_bytes)
@@ -303,6 +332,7 @@ def write_temp_docx_from_record(file_record: Dict) -> str:
 # STEP 1: STORAGE HELPERS (JSON on disk with atomic writes)
 # ============================================================================
 
+
 def read_json_file(path: str, default=None):
     """Read JSON file with default fallback"""
     try:
@@ -311,6 +341,7 @@ def read_json_file(path: str, default=None):
     except Exception as e:
         logger.warning(f"Error reading {path}: {e}")
         return default if default is not None else {}
+
 
 def write_json_atomic(path: str, data) -> None:
     """Write JSON file atomically (write to temp, then rename)"""
@@ -324,6 +355,7 @@ def write_json_atomic(path: str, data) -> None:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         raise
+
 
 def ensure_storage():
     """Initialize storage files with defaults"""
@@ -351,7 +383,7 @@ def ensure_storage():
                 "features": ["Unlimited", "SLA"]
             }
         })
-    
+
     if not os.path.exists(USERS_PATH):
         pwd_hash = hashlib.sha256("admin123".encode()).hexdigest()
         write_json_atomic(USERS_PATH, {
@@ -362,10 +394,13 @@ def ensure_storage():
     if not os.path.exists(TEMPLATE_METADATA_PATH):
         write_json_atomic(TEMPLATE_METADATA_PATH, {})
 
+
 # Initialize storage on startup
 ensure_storage()
 
 # Metadata helpers
+
+
 def load_template_metadata() -> Dict[str, Dict]:
     """Load template metadata JSON with safe fallback."""
     metadata = read_json_file(TEMPLATE_METADATA_PATH, {})
@@ -377,7 +412,8 @@ def save_template_metadata(metadata: Dict[str, Dict]) -> None:
     write_json_atomic(TEMPLATE_METADATA_PATH, metadata)
 
 
-def update_template_metadata_entry(template_key: str, updates: Dict) -> Dict[str, Dict]:
+def update_template_metadata_entry(
+    template_key: str, updates: Dict) -> Dict[str, Dict]:
     """Merge updates into template metadata entry and persist."""
     metadata = load_template_metadata()
     entry = metadata.get(template_key, {})
@@ -413,17 +449,22 @@ def get_current_user(request: Request):
     """Dependency to check if user is authenticated"""
     token = request.cookies.get('session')
     if not token:
-        logger.warning(f"Auth failed: No session cookie. Available cookies: {list(request.cookies.keys())}")
-        raise HTTPException(status_code=401, detail="Not authenticated - Please login")
-    
+        logger.warning(
+            f"Auth failed: No session cookie. Available cookies: {list(request.cookies.keys())}")
+        raise HTTPException(
+            status_code=401, detail="Not authenticated - Please login")
+
     users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
     username = users_data.get("sessions", {}).get(token)
     if not username:
-        logger.warning(f"Auth failed: Invalid token {token[:10]}... Sessions: {len(users_data.get('sessions', {}))}")
-        raise HTTPException(status_code=401, detail="Invalid session - Please login again")
-    
+        logger.warning(
+            f"Auth failed: Invalid token {token[:10]}... Sessions: {len(users_data.get('sessions', {}))}")
+        raise HTTPException(
+            status_code=401, detail="Invalid session - Please login again")
+
     logger.info(f"Authenticated user: {username}")
     return username
+
 
 @app.post("/auth/login")
 async def auth_login(request: Request):
@@ -432,33 +473,40 @@ async def auth_login(request: Request):
         data = await request.json()
         username = data.get('username')
         password = data.get('password', '')
-        
+
         users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
         pwd_hash = hashlib.sha256(password.encode()).hexdigest()
-        
+
         user_found = any(
-            u.get('username') == username and u.get('password_hash') == pwd_hash
+            u.get('username') == username and u.get(
+                'password_hash') == pwd_hash
             for u in users_data.get('users', [])
         )
-        
+
         if not user_found:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        
+
         # Create session token
         token = uuid.uuid4().hex
         users_data['sessions'][token] = username
         write_json_atomic(USERS_PATH, users_data)
-        
-        # Set HttpOnly cookie with SameSite=None and Secure for cross-origin, or Lax for same-site
-        response = Response(content=json.dumps({"success": True, "user": username}), media_type="application/json")
-        # Use SameSite='None' and Secure=True if running on different ports, but check origin first
+
+        # Set HttpOnly cookie with SameSite=None and Secure for cross-origin,
+        # or Lax for same-site
+        response = Response(content=json.dumps(
+            {"success": True, "user": username}), media_type="application/json")
+        # Use SameSite='None' and Secure=True if running on different ports,
+        # but check origin first
         origin = request.headers.get('origin', '')
-        if origin and origin.startswith('http://127.0.0.1') or origin.startswith('http://localhost'):
+        if origin and origin.startswith(
+            'http://127.0.0.1') or origin.startswith('http://localhost'):
             # Same-site cookies work with Lax for same-origin requests
-            response.set_cookie(key='session', value=token, httponly=True, samesite='Lax', max_age=86400)
+            response.set_cookie(key='session', value=token,
+                                httponly=True, samesite='Lax', max_age=86400)
         else:
             # For true cross-origin, use None with Secure (requires HTTPS)
-            response.set_cookie(key='session', value=token, httponly=True, samesite='Lax', max_age=86400)
+            response.set_cookie(key='session', value=token,
+                                httponly=True, samesite='Lax', max_age=86400)
         return response
     except HTTPException:
         raise
@@ -466,22 +514,26 @@ async def auth_login(request: Request):
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
+
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
     """Logout endpoint - removes session"""
     try:
         token = request.cookies.get('session')
         if token:
-            users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
+            users_data = read_json_file(
+                USERS_PATH, {"users": [], "sessions": {}})
             users_data.get("sessions", {}).pop(token, None)
             write_json_atomic(USERS_PATH, users_data)
-        
-        response = Response(content=json.dumps({"success": True}), media_type="application/json")
+
+        response = Response(content=json.dumps(
+            {"success": True}), media_type="application/json")
         response.delete_cookie('session')
         return response
     except Exception as e:
         logger.error(f"Logout error: {e}")
         raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
+
 
 @app.get("/auth/me")
 async def auth_me(request: Request):
@@ -489,21 +541,23 @@ async def auth_me(request: Request):
     token = request.cookies.get('session')
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
     username = users_data.get("sessions", {}).get(token)
     if not username:
         raise HTTPException(status_code=401, detail="Invalid session")
-    
+
     return {"success": True, "user": username}
 
 # ============================================================================
 # BASIC HEALTH & ROOT ENDPOINTS
 # ============================================================================
 
+
 @app.get("/")
 async def root():
     return {"message": "Document Processing API v2.0", "status": "running"}
+
 
 @app.get("/health")
 async def health_check():
@@ -518,6 +572,7 @@ async def health_check():
 # VESSELS API (from Supabase)
 # ============================================================================
 
+
 @app.get("/vessels")
 async def get_vessels():
     """Get list of vessels from Supabase"""
@@ -527,13 +582,16 @@ async def get_vessels():
             return {
                 "success": True,
                 "vessels": [
-                    {"id": 1, "imo": "IMO1234567", "name": "Test Vessel 1", "vessel_type": "Tanker", "flag": "Panama"},
-                    {"id": 2, "imo": "IMO9876543", "name": "Test Vessel 2", "vessel_type": "Cargo", "flag": "Singapore"}
+                    {"id": 1, "imo": "IMO1234567", "name": "Test Vessel 1",
+                        "vessel_type": "Tanker", "flag": "Panama"},
+                    {"id": 2, "imo": "IMO9876543", "name": "Test Vessel 2",
+                        "vessel_type": "Cargo", "flag": "Singapore"}
                 ],
                 "count": 2
             }
-        
-        response = supabase.table('vessels').select('id, name, imo, vessel_type, flag').limit(50).execute()
+
+        response = supabase.table('vessels').select(
+            'id, name, imo, vessel_type, flag').limit(50).execute()
         return {
             "success": True,
             "vessels": response.data or [],
@@ -541,25 +599,31 @@ async def get_vessels():
         }
     except Exception as e:
         logger.error(f"Error fetching vessels: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch vessels: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch vessels: {str(e)}")
+
 
 @app.get("/vessel/{imo}")
 async def get_vessel(imo: str):
     """Get vessel by IMO"""
     try:
         if not supabase:
-            raise HTTPException(status_code=503, detail="Supabase not available")
-        
-        response = supabase.table('vessels').select('*').eq('imo', imo).execute()
+            raise HTTPException(
+                status_code=503, detail="Supabase not available")
+
+        response = supabase.table('vessels').select(
+            '*').eq('imo', imo).execute()
         if not response.data or len(response.data) == 0:
-            raise HTTPException(status_code=404, detail=f"Vessel with IMO {imo} not found")
-        
+            raise HTTPException(
+                status_code=404, detail=f"Vessel with IMO {imo} not found")
+
         return {"success": True, "vessel": response.data[0]}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error fetching vessel {imo}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/vessel-fields")
 async def get_vessel_fields():
@@ -616,7 +680,7 @@ async def get_vessel_fields():
             {'name': 'route_distance', 'label': 'Route Distance'},
             {'name': 'route_info', 'label': 'Route Info'},
         ]
-        
+
         return {"success": True, "fields": fields}
     except Exception as e:
         logger.error(f"Error getting vessel fields: {e}")
@@ -625,6 +689,7 @@ async def get_vessel_fields():
 # ============================================================================
 # STEP 3: PLACEHOLDER EXTRACTION (from DOCX files)
 # ============================================================================
+
 
 def find_placeholders(text: str) -> List[str]:
     """Extract placeholders from text using multiple formats"""
@@ -638,30 +703,32 @@ def find_placeholders(text: str) -> List[str]:
         r'__([^_]+)__',          # __placeholder__
         r'##([^#]+)##',          # ##placeholder##
     ]
-    
+
     placeholders = set()
     for pattern in patterns:
         matches = re.findall(pattern, text)
         for match in matches:
-            # Clean up match - replace newlines with spaces, remove extra whitespace
+            # Clean up match - replace newlines with spaces, remove extra
+            # whitespace
             cleaned = match.strip().replace('\n', ' ').replace('\r', ' ')
             cleaned = ' '.join(cleaned.split())  # Remove extra spaces
             if cleaned:
                 placeholders.add(cleaned)
-    
+
     return sorted(list(placeholders))
+
 
 def extract_placeholders_from_docx(file_path: str) -> List[str]:
     """Extract all placeholders from a DOCX file"""
     try:
         doc = Document(file_path)
         all_placeholders = set()
-        
+
         # Extract from paragraphs
         for paragraph in doc.paragraphs:
             placeholders = find_placeholders(paragraph.text)
             all_placeholders.update(placeholders)
-        
+
         # Extract from tables
         for table in doc.tables:
             for row in table.rows:
@@ -669,17 +736,64 @@ def extract_placeholders_from_docx(file_path: str) -> List[str]:
                     for paragraph in cell.paragraphs:
                         placeholders = find_placeholders(paragraph.text)
                         all_placeholders.update(placeholders)
-        
+
         return sorted(list(all_placeholders))
     except Exception as e:
         logger.error(f"Error extracting placeholders from {file_path}: {e}")
         return []
 
+
+def normalise_placeholder_key(value: Optional[str]) -> str:
+    """Normalise placeholder identifiers for matching (case and punctuation insensitive)."""
+    if not value:
+        return ""
+    # Lowercase, replace whitespace with underscore, then strip
+    # non-alphanumeric/underscore
+    cleaned = value.strip().lower()
+    cleaned = re.sub(r'\s+', '_', cleaned)
+    cleaned = re.sub(r'[^a-z0-9_]', '', cleaned)
+    return cleaned
+
+
+def resolve_placeholder_setting(
+    template_settings: Dict[str, Dict], placeholder: str) -> Tuple[Optional[str], Optional[Dict]]:
+    """
+    Resolve a placeholder setting using multiple normalisation strategies.
+    Returns the matched key and the setting dict.
+    """
+    if not template_settings or not placeholder:
+        return None, None
+
+    # Direct match
+    if placeholder in template_settings:
+        return placeholder, template_settings[placeholder]
+
+    # Common variants
+    variants = [
+        placeholder.lower(),
+        placeholder.replace(' ', '_'),
+        placeholder.replace(' ', '_').lower(),
+    ]
+
+    for variant in variants:
+        if variant in template_settings:
+            return variant, template_settings[variant]
+
+    # Normalised comparison
+    target_norm = normalise_placeholder_key(placeholder)
+    for key, value in template_settings.items():
+        if normalise_placeholder_key(key) == target_norm:
+            return key, value
+
+    return None, None
+
 # ============================================================================
 # STEP 4: TEMPLATES API (upload, list, get, delete)
 # ============================================================================
 
-def _cors_preflight_headers(request: Request, allowed_methods: str) -> Dict[str, str]:
+
+def _cors_preflight_headers(
+    request: Request, allowed_methods: str) -> Dict[str, str]:
     origin = request.headers.get("origin", "")
     headers: Dict[str, str] = {
         "Access-Control-Allow-Methods": allowed_methods,
@@ -700,10 +814,15 @@ def _cors_preflight_headers(request: Request, allowed_methods: str) -> Dict[str,
 @app.options("/templates")
 async def options_templates(request: Request):
     """Handle CORS preflight for templates endpoint"""
-    return Response(status_code=200, headers=_cors_preflight_headers(request, "GET, POST, OPTIONS"))
+    return Response(
+    status_code=200,
+    headers=_cors_preflight_headers(
+        request,
+         "GET, POST, OPTIONS"))
+
 
 @app.get("/templates")
-async def get_templates():
+async def get_templates(current_user: str = Depends(get_current_user)):
     """List all available templates with placeholders"""
     try:
         templates = []
@@ -722,12 +841,15 @@ async def get_templates():
 
                     file_meta = fetch_template_file_record(template_id)
                     size = file_meta.get('file_size') if file_meta else 0
-                    created_at = (file_meta or {}).get('uploaded_at') or record.get('created_at')
+                    created_at = (file_meta or {}).get(
+                        'uploaded_at') or record.get('created_at')
 
                     # Normalise names for the frontend
-                    file_name = ensure_docx_filename(record.get('file_name') or record.get('title') or 'template')
+                    file_name = ensure_docx_filename(record.get(
+                        'file_name') or record.get('title') or 'template')
 
-                    display_name = record.get('title') or file_name.replace('.docx', '')
+                    display_name = record.get(
+                        'title') or file_name.replace('.docx', '')
                     metadata_entry = metadata_map.get(file_name, {})
 
                     template_payload = {
@@ -768,7 +890,8 @@ async def get_templates():
                 file_size = os.path.getsize(file_path)
             except OSError:
                 file_size = 0
-            created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
+            created_at = datetime.fromtimestamp(
+                os.path.getctime(file_path)).isoformat()
             placeholders = extract_placeholders_from_docx(file_path)
             metadata_entry = metadata_map.get(file_name, {})
 
@@ -800,6 +923,7 @@ async def get_templates():
         logger.error(f"Error listing templates: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/plans-db")
 async def get_plans_db():
     """Get all plans from database with template permissions"""
@@ -808,50 +932,59 @@ async def get_plans_db():
             # Fallback to JSON
             plans = read_json_file(PLANS_PATH, {})
             return {"success": True, "plans": plans, "source": "json"}
-        
+
         try:
             # Get plans from database
-            plans_res = supabase.table('subscription_plans').select('*').eq('is_active', True).order('sort_order').execute()
-            
+            plans_res = supabase.table('subscription_plans').select(
+                '*').eq('is_active', True).order('sort_order').execute()
+
             if not plans_res.data:
                 # Fallback to JSON if no database plans
                 plans = read_json_file(PLANS_PATH, {})
-                return {"success": True, "plans": plans, "source": "json_fallback"}
-            
+                return {
+    "success": True,
+    "plans": plans,
+     "source": "json_fallback"}
+
             # Get all templates (may not exist yet, so handle gracefully)
             template_map = {}
             try:
-                templates_res = supabase.table('document_templates').select('id, file_name, title').eq('is_active', True).execute()
+                templates_res = supabase.table('document_templates').select(
+                    'id, file_name, title').eq('is_active', True).execute()
                 template_map = {t['id']: t for t in (templates_res.data or [])}
             except Exception as e:
                 logger.warning(f"Could not fetch templates from database: {e}")
-            
+
             # Get permissions for each plan
             plans_dict = {}
             for plan in plans_res.data:
                 plan_tier = plan['plan_tier']
-                
+
                 # Get permissions for this plan (may not exist yet)
                 allowed_templates = []
                 try:
-                    permissions_res = supabase.table('plan_template_permissions').select('template_id, can_download').eq('plan_id', plan['id']).execute()
-                    
+                    permissions_res = supabase.table('plan_template_permissions').select(
+                        'template_id, can_download').eq('plan_id', plan['id']).execute()
+
                     if permissions_res.data:
                         for perm in permissions_res.data:
                             if perm['can_download']:
                                 template_id = perm['template_id']
                                 template_info = template_map.get(template_id)
                                 if template_info:
-                                    allowed_templates.append(template_info.get('file_name', ''))
+                                    allowed_templates.append(
+                                        template_info.get('file_name', ''))
                 except Exception as e:
-                    logger.warning(f"Could not fetch permissions for plan {plan_tier}: {e}")
-                    # Default to all templates if permissions table doesn't exist
+                    logger.warning(
+                        f"Could not fetch permissions for plan {plan_tier}: {e}")
+                    # Default to all templates if permissions table doesn't
+                    # exist
                     allowed_templates = ['*']
-                
+
                 # If no permissions set, default to all templates
                 if not allowed_templates:
                     allowed_templates = ['*']
-                
+
                 # Normalize template names (remove .docx if present)
                 normalized_templates = []
                 if allowed_templates:
@@ -859,10 +992,11 @@ async def get_plans_db():
                         if t == '*':
                             normalized_templates.append('*')
                         elif isinstance(t, str):
-                            normalized_templates.append(ensure_docx_filename(t))
+                            normalized_templates.append(
+                                ensure_docx_filename(t))
                         else:
                             normalized_templates.append(str(t))
-                
+
                 plans_dict[plan_tier] = {
                     "id": str(plan['id']),
                     "name": plan['plan_name'],
@@ -892,7 +1026,7 @@ async def get_plans_db():
             raise HTTPException(status_code=500, detail=str(final_exc))
 
 @app.get("/templates/{template_name}")
-async def get_template(template_name: str):
+async def get_template(template_name: str, current_user: str = Depends(get_current_user)):
     """Get details for a specific template"""
     try:
         metadata_map = load_template_metadata()
@@ -964,7 +1098,8 @@ async def get_template(template_name: str):
 @app.post("/templates/{template_name}/metadata")
 async def update_template_metadata(
     template_name: str,
-    payload: Dict = Body(...)
+    payload: Dict = Body(...),
+    current_user: str = Depends(get_current_user)
 ):
     """Update template metadata (display name, description, fonts)."""
     try:
@@ -1026,8 +1161,8 @@ async def upload_template(
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     font_family: Optional[str] = Form(None),
-    font_size: Optional[str] = Form(None)
-    # current_user: str = Depends(get_current_user)  # Disabled for now
+    font_size: Optional[str] = Form(None),
+    current_user: str = Depends(get_current_user)
 ):
     """Upload a new template"""
     try:
@@ -1192,8 +1327,8 @@ async def upload_template(
 
 @app.delete("/templates/{template_name}")
 async def delete_template(
-    template_name: str
-    # current_user: str = Depends(get_current_user)  # Disabled for now
+    template_name: str,
+    current_user: str = Depends(get_current_user)
 ):
     """Delete a template"""
     try:
@@ -1274,7 +1409,11 @@ async def delete_template(
 # ============================================================================
 
 @app.get("/placeholder-settings")
-async def get_placeholder_settings(template_name: Optional[str] = None, template_id: Optional[str] = None):
+async def get_placeholder_settings(
+    template_name: Optional[str] = None,
+    template_id: Optional[str] = None,
+    current_user: str = Depends(get_current_user)
+):
     """Get placeholder settings (all or per-template)"""
     try:
         if SUPABASE_ENABLED and (template_name or template_id):
@@ -1325,8 +1464,8 @@ async def get_placeholder_settings(template_name: Optional[str] = None, template
 
 @app.post("/placeholder-settings")
 async def save_placeholder_settings(
-    request: Request
-    # current_user: str = Depends(get_current_user)  # Disabled for now
+    request: Request,
+    current_user: str = Depends(get_current_user)
 ):
     """Save placeholder settings for a template"""
     try:
@@ -1455,7 +1594,7 @@ async def check_download_permission(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/update-plan")
-async def update_plan(request: Request):
+async def update_plan(request: Request, current_user: str = Depends(get_current_user)):
     """Update a subscription plan"""
     try:
         body = await request.json()
@@ -1550,8 +1689,6 @@ async def update_plan(request: Request):
                     else:
                         normalized.append(t)
                 updated_plan['can_download'] = normalized
-        else:
-            updated_plan['can_download'] = can_download
         
         if 'max_downloads_per_month' in plan_data:
             updated_plan['max_downloads_per_month'] = plan_data['max_downloads_per_month']
@@ -1650,7 +1787,7 @@ async def get_user_downloadable_templates(request: Request):
                     file_size = os.path.getsize(file_path)
                     created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
                     placeholders = extract_placeholders_from_docx(file_path)
-                    
+
                     templates.append({
                         "name": filename,
                         "file_name": filename.replace('.docx', ''),
@@ -1662,7 +1799,7 @@ async def get_user_downloadable_templates(request: Request):
                         "current_downloads": 0,
                         "remaining_downloads": 10
                     })
-            
+
             return {
                 "success": True,
                 "templates": templates,
@@ -1722,7 +1859,8 @@ async def get_user_downloadable_templates(request: Request):
 async def upload_csv(
     file: UploadFile = File(...),
     data_type: str = Form(...)
-    # current_user: str = Depends(get_current_user)  # Disabled for now
+    ,
+    current_user: str = Depends(get_current_user)
 ):
     """Upload CSV data file"""
     try:
@@ -1753,7 +1891,7 @@ async def upload_csv(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/data/all")
-async def get_all_data():
+async def get_all_data(current_user: str = Depends(get_current_user)):
     """Get status of all CSV data sources"""
     try:
         data_sources = {}
@@ -1792,7 +1930,7 @@ async def get_all_data():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/csv-files")
-async def get_csv_files():
+async def get_csv_files(current_user: str = Depends(get_current_user)):
     """Get list of available CSV files"""
     try:
         csv_files = []
@@ -1817,7 +1955,7 @@ async def get_csv_files():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/csv-fields/{csv_id}")
-async def get_csv_fields(csv_id: str):
+async def get_csv_fields(csv_id: str, current_user: str = Depends(get_current_user)):
     """Get columns/fields from a CSV file"""
     try:
         csv_mapping = {
@@ -1847,7 +1985,7 @@ async def get_csv_fields(csv_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/csv-rows/{csv_id}/{field_name}")
-async def get_csv_rows(csv_id: str, field_name: str):
+async def get_csv_rows(csv_id: str, field_name: str, current_user: str = Depends(get_current_user)):
     """Get all unique rows for a specific field in a CSV file"""
     try:
         csv_mapping = {
@@ -1884,7 +2022,7 @@ async def get_csv_rows(csv_id: str, field_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/csv-files/{csv_id}")
-async def delete_csv_file(csv_id: str):
+async def delete_csv_file(csv_id: str, current_user: str = Depends(get_current_user)):
     """Delete a CSV data source file"""
     try:
         csv_mapping = {
@@ -2227,71 +2365,106 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     else:
         return f"Test_{placeholder}"
 
+def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
+    """
+    Construct flexible regular expression patterns that match a placeholder
+    regardless of spacing, underscores, or case.
+    """
+    if not placeholder:
+        return []
+
+    normalized = placeholder.strip()
+    if not normalized:
+        return []
+
+    pattern_parts: List[str] = []
+    for char in normalized:
+        if char in {' ', '\u00A0', '_', '-'}:
+            pattern_parts.append(r'[\s_\-]+')
+        else:
+            pattern_parts.append(re.escape(char))
+
+    inner_pattern = ''.join(pattern_parts)
+    wrappers = [
+        rf"\{{\{{\s*{inner_pattern}\s*\}}\}}",   # {{placeholder}}
+        rf"\{{\s*{inner_pattern}\s*\}}",         # {placeholder}
+        rf"\[\[\s*{inner_pattern}\s*\]\]",       # [[placeholder]]
+        rf"\[\s*{inner_pattern}\s*\]",           # [placeholder]
+        rf"%\s*{inner_pattern}\s*%",             # %placeholder%
+        rf"<\s*{inner_pattern}\s*>",             # <placeholder>
+        rf"__\s*{inner_pattern}\s*__",           # __placeholder__
+        rf"##\s*{inner_pattern}\s*##",           # ##placeholder##
+        inner_pattern,                           # raw placeholder (no wrapper)
+    ]
+
+    return [re.compile(wrap, re.IGNORECASE) for wrap in wrappers]
+
+
+def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache: Dict[str, List[re.Pattern]]) -> Tuple[str, int]:
+    """Apply placeholder replacements to a block of text."""
+    total_replacements = 0
+    updated_text = text
+
+    for placeholder, value in mapping.items():
+        if value is None:
+            continue
+
+        patterns = pattern_cache.get(placeholder)
+        if patterns is None:
+            patterns = _build_placeholder_pattern(placeholder)
+            pattern_cache[placeholder] = patterns
+
+        for pattern in patterns:
+            updated_text, replacements = pattern.subn(str(value), updated_text)
+            if replacements:
+                total_replacements += replacements
+                logger.debug("Replaced %s occurrences for placeholder '%s' using pattern '%s'", replacements, placeholder, pattern.pattern)
+
+    return updated_text, total_replacements
+
+
 def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
-    """Replace placeholders in a DOCX file"""
+    """Replace placeholders in a DOCX file with robust pattern matching."""
     try:
-        logger.info(f"Starting replacement with {len(data)} mappings")
+        logger.info("Starting replacement with %d mappings", len(data))
         for key, value in data.items():
-            logger.debug(f"Will replace {key} -> {value}")
-        
-        # Load the document
+            logger.debug("Planned replacement: %s -> %s", key, value)
+
         doc = Document(docx_path)
-        
         replacements_made = 0
-        
-        # Replace in paragraphs
-        for paragraph in doc.paragraphs:
-            for placeholder, value in data.items():
-                # Try different placeholder formats
-                formats = [
-                    f"{{{{{placeholder}}}}}",  # {{placeholder}}
-                    f"{{{placeholder}}}",       # {placeholder}
-                    f"[{placeholder}]",         # [placeholder]
-                    f"[[{placeholder}]]",       # [[placeholder]]
-                    f"%{placeholder}%",         # %placeholder%
-                    f"<{placeholder}>",         # <placeholder>
-                    f"__{placeholder}__",       # __placeholder__
-                    f"##{placeholder}##",       # ##placeholder##
-                ]
-                
-                for fmt in formats:
-                    if fmt in paragraph.text:
-                        paragraph.text = paragraph.text.replace(fmt, str(value))
-                        replacements_made += 1
-                        logger.debug(f"Replaced '{fmt}' with '{value}' in paragraph")
-        
-        # Replace in tables
+        pattern_cache: Dict[str, List[re.Pattern]] = {}
+
+        def process_paragraphs(paragraphs):
+            nonlocal replacements_made
+            for paragraph in paragraphs:
+                original_text = paragraph.text
+                updated_text, replaced = _replace_text_with_mapping(original_text, data, pattern_cache)
+                if replaced and updated_text != original_text:
+                    paragraph.text = updated_text
+                    replacements_made += replaced
+
+        # Body paragraphs
+        process_paragraphs(doc.paragraphs)
+
+        # Tables
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
-                    for paragraph in cell.paragraphs:
-                        for placeholder, value in data.items():
-                            formats = [
-                                f"{{{{{placeholder}}}}}",  # {{placeholder}}
-                                f"{{{placeholder}}}",       # {placeholder}
-                                f"[{placeholder}]",         # [placeholder]
-                                f"[[{placeholder}]]",       # [[placeholder]]
-                                f"%{placeholder}%",         # %placeholder%
-                                f"<{placeholder}>",         # <placeholder>
-                                f"__{placeholder}__",       # __placeholder__
-                                f"##{placeholder}##",       # ##placeholder##
-                            ]
-                            
-                            for fmt in formats:
-                                if fmt in paragraph.text:
-                                    paragraph.text = paragraph.text.replace(fmt, str(value))
-                                    replacements_made += 1
-                                    logger.debug(f"Replaced '{fmt}' with '{value}' in table cell")
-        
-        logger.info(f"Total replacements made: {replacements_made}")
-        
-        # Save the modified document
+                    process_paragraphs(cell.paragraphs)
+
+        # Headers and footers
+        for section in doc.sections:
+            process_paragraphs(section.header.paragraphs)
+            process_paragraphs(section.footer.paragraphs)
+
+        logger.info("Total replacements made: %d", replacements_made)
+
         output_path = os.path.join(TEMP_DIR, f"processed_{uuid.uuid4().hex}.docx")
         doc.save(output_path)
         return output_path
-        
+
     except Exception as e:
-        logger.error(f"Error processing document: {e}")
+        logger.error("Error processing document: %s", e)
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
 
 def convert_docx_to_pdf(docx_path: str) -> str:
@@ -2485,39 +2658,31 @@ async def generate_document(request: Request):
         
         for placeholder in placeholders:
             found = False
-            
-            # IMPORTANT: Only use database data if explicitly configured in CMS
-            # Priority 1: Check if placeholder has custom settings configured in CMS
-            if placeholder in template_settings:
-                logger.info(f"\n🔍 Processing placeholder: '{placeholder}'")
-                setting = template_settings[placeholder]
+            setting_key, setting = resolve_placeholder_setting(template_settings, placeholder)
+
+            if setting:
                 source = setting.get('source', 'random')
-                logger.info(f"Processing placeholder '{placeholder}': source={source}, full setting={setting}")
-                
+                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source})")
+                logger.debug(f"Full CMS setting for '{placeholder}': {setting}")
+
                 if source == 'custom':
-                    # Use custom value from CMS
                     custom_value = setting.get('customValue', '')
                     if custom_value:
                         data_mapping[placeholder] = custom_value
+                        found = True
                         logger.info(f"{placeholder} -> {custom_value} (CMS custom value)")
-                    found = True
+
                 elif source == 'database':
-                    # Use database field - try explicit field first, then intelligent matching
-                    # This uses the vessel data from the vessel detail page (vessel_imo)
-                    database_field = setting.get('databaseField', '').strip()
+                    database_field = (setting.get('databaseField') or '').strip()
                     logger.info(f"  🗄️  DATABASE source configured for '{placeholder}'")
                     logger.info(f"     databaseField='{database_field}'")
                     logger.info(f"     vessel_imo='{vessel_imo}' (from page)")
-                    
-                    # Vessel data is already fetched and vessel['imo'] is already set
                     logger.info(f"  📋 Available vessel fields: {list(vessel.keys())}")
-                    
+
                     matched_field = None
                     matched_value = None
-                    
-                    # Strategy 1: If databaseField is explicitly set, use it
+
                     if database_field:
-                        # Try exact match first
                         if database_field in vessel:
                             value = vessel[database_field]
                             if value is not None and str(value).strip() != '':
@@ -2525,31 +2690,26 @@ async def generate_document(request: Request):
                                 matched_value = str(value).strip()
                                 logger.info(f"  ✅ Exact match found: '{database_field}'")
                         else:
-                            # Try case-insensitive matching
                             database_field_lower = database_field.lower()
                             for key, value in vessel.items():
-                                if key.lower() == database_field_lower:
-                                    if value is not None and str(value).strip() != '':
-                                        matched_field = key
-                                        matched_value = str(value).strip()
-                                        logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}'")
-                    break
-            
-                    # Strategy 2: If no explicit match and databaseField is empty, try intelligent matching
+                                if key.lower() == database_field_lower and value is not None and str(value).strip() != '':
+                                    matched_field = key
+                                    matched_value = str(value).strip()
+                                    logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}'")
+                                    break
+
                     if not matched_field and not database_field:
                         logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
                         matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
                         if matched_field:
                             logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}'")
-                    
-                    # Strategy 3: If still no match but databaseField was set, try intelligent matching as fallback
+
                     if not matched_field and database_field:
                         logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")
                         matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
                         if matched_field:
                             logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}'")
-                    
-                    # Use the matched value if found
+
                     if matched_field and matched_value:
                         data_mapping[placeholder] = matched_value
                         found = True
@@ -2561,12 +2721,12 @@ async def generate_document(request: Request):
                             logger.error(f"  ❌ Explicit field '{database_field}' not found in vessel data")
                         logger.error(f"  ❌ Available fields: {list(vessel.keys())}")
                         logger.error(f"  ❌ This will use RANDOM data!")
+
                 elif source == 'csv':
-                    # Use CSV data if explicitly configured in CMS
                     csv_id = setting.get('csvId', '')
                     csv_field = setting.get('csvField', '')
                     csv_row = setting.get('csvRow', 0)
-                    
+
                     if csv_id and csv_field:
                         csv_data = get_csv_data(csv_id, csv_row)
                         if csv_data and csv_field in csv_data and csv_data[csv_field]:
@@ -2575,20 +2735,16 @@ async def generate_document(request: Request):
                             logger.info(f"{placeholder} -> {csv_data[csv_field]} (CMS configured CSV: {csv_id}[{csv_row}].{csv_field})")
                     else:
                         logger.warning(f"{placeholder}: CSV source selected but csvId or csvField missing in CMS")
-            
-            # Priority 2: Generate random data if not found or not configured in CMS
-            # NOTE: We do NOT automatically match vessel data - only if CMS explicitly configures it
+
             if not found:
-                # Check random option from settings if placeholder was configured, otherwise use default
-                if placeholder in template_settings:
-                    setting = template_settings[placeholder]
+                if setting:
                     random_option = setting.get('randomOption', 'auto')
                     source = setting.get('source', 'random')
                     logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
                 else:
-                    random_option = 'auto'  # Default for non-configured placeholders
+                    random_option = 'auto'
                     logger.info(f"  {placeholder}: Not configured in CMS, using random data (mode: {random_option})")
-                
+
                 seed_imo = None if random_option == 'fixed' else vessel_imo
                 data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo)
                 logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
@@ -2644,8 +2800,8 @@ async def generate_document(request: Request):
                     logger.info(f"Recorded download for user {user_id}, template {template_id}")
             except Exception as e:
                 logger.warning(f"Failed to record download: {e}")
-            
-            # Clean up temp files
+
+        # Clean up temp files
         try:
             if os.path.exists(processed_docx):
                 os.remove(processed_docx)
@@ -2655,7 +2811,7 @@ async def generate_document(request: Request):
                 os.remove(template_temp_path)
         except Exception as cleanup_error:
             logger.debug(f"Cleanup warning: {cleanup_error}")
-        
+
         # Return file
         return Response(
             content=file_content,

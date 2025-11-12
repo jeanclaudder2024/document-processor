@@ -50,6 +50,26 @@
         }
         .status-online { color: #28a745; }
         .status-offline { color: #dc3545; }
+        .login-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.85);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            backdrop-filter: blur(3px);
+        }
+        .login-overlay.d-none {
+            display: none;
+        }
+        .login-card {
+            width: 100%;
+            max-width: 360px;
+            border: none;
+            border-radius: 14px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+        }
     </style>
 </head>
 <body>
@@ -59,8 +79,14 @@
             <span class="navbar-brand mb-0 h4">
                 <i class="fas fa-cogs me-2"></i>Document Processor CMS
             </span>
-            <div class="d-flex align-items-center">
-                <span class="text-white me-3">Administrator</span>
+            <div class="d-flex align-items-center gap-2">
+                <span class="text-white small" id="userInfo">Not authenticated</span>
+                <button class="btn btn-outline-light btn-sm" id="loginBtn">
+                    <i class="fas fa-sign-in-alt me-1"></i>Login
+                </button>
+                <button class="btn btn-light btn-sm d-none" id="logoutBtn">
+                    <i class="fas fa-sign-out-alt me-1"></i>Logout
+                </button>
             </div>
         </div>
     </nav>
@@ -333,6 +359,35 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Overlay -->
+    <div id="loginOverlay" class="login-overlay d-none">
+        <div class="card login-card">
+            <div class="card-body p-4">
+                <div class="text-center mb-4">
+                    <i class="fas fa-shield-alt fa-2x text-primary mb-2"></i>
+                    <h5 class="mb-1">Administrator Login</h5>
+                    <small class="text-muted">Sign in to manage templates and data</small>
+                </div>
+                <form id="loginForm">
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input type="text" class="form-control" id="loginUsername" placeholder="admin" autocomplete="username" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-control" id="loginPassword" placeholder="••••••••" autocomplete="current-password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100" id="loginSubmitBtn">
+                        <i class="fas fa-sign-in-alt me-1"></i>Login
+                    </button>
+                    <div class="form-text text-center mt-3">
+                        Default credentials: <code>admin / admin123</code>
+                    </div>
+                </form>
             </div>
         </div>
     </div>

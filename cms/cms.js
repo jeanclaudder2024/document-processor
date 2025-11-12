@@ -21,7 +21,82 @@ class DocumentCMS {
         this.templates = [];
         this.allTemplates = [];
         this.activeTemplateMetadata = null;
+        this.isLoggedIn = false;
+        this.dataInitialized = false;
+        this.loginInProgress = false;
         this.init();
+    }
+
+    normalizeTemplateName(name) {
+        if (!name) return '';
+        const value = String(name).trim().toLowerCase();
+        return value.endsWith('.docx') ? value : `${value}.docx`;
+    }
+
+    bindAuthEvents() {
+        const loginForm = document.getElementById('loginForm');
+        if (loginForm) {
+            loginForm.addEventListener('submit', (event) => {
+                event.preventDefault();
+                this.handleLoginSubmit();
+            });
+        }
+
+        const loginBtn = document.getElementById('loginBtn');
+        if (loginBtn) {
+            loginBtn.addEventListener('click', () => {
+                this.showLoginOverlay();
+                const usernameInput = document.getElementById('loginUsername');
+                if (usernameInput) {
+                    setTimeout(() => usernameInput.focus(), 50);
+                }
+            });
+        }
+
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', () => this.logout());
+        }
+    }
+
+    showLoginOverlay() {
+        const overlay = document.getElementById('loginOverlay');
+        if (overlay) {
+            overlay.classList.remove('d-none');
+        }
+        document.body.classList.add('overflow-hidden');
+    }
+
+    hideLoginOverlay() {
+        const overlay = document.getElementById('loginOverlay');
+        if (overlay) {
+            overlay.classList.add('d-none');
+        }
+        document.body.classList.remove('overflow-hidden');
+        const passwordInput = document.getElementById('loginPassword');
+        if (passwordInput) {
+            passwordInput.value = '';
+        }
+    }
+
+    ensureAuthenticated(showMessage = true) {
+        if (this.isLoggedIn) {
+            return true;
+        }
+        if (showMessage) {
+            this.showToast('error', 'Login Required', 'Please login to continue');
+        }
+        this.showLoginOverlay();
+        return false;
+    }
+
+    bootstrapData(force = false) {
+        if (!this.isLoggedIn) return;
+        if (this.dataInitialized && !force) return;
+        this.loadTemplates();
+        this.loadDataSources();
+        this.loadPlans();
+        this.dataInitialized = true;
     }
 
     findTemplateByName(name) {
@@ -86,6 +161,7 @@ class DocumentCMS {
     }
 
     async saveTemplateMetadata() {
+        if (!this.ensureAuthenticated()) return;
         if (!this.activeTemplateMetadata) {
             this.showToast('error', 'Error', 'No template selected');
             return;
@@ -139,11 +215,15 @@ class DocumentCMS {
     }
 
     init() {
-        // this.checkLoginStatus();  // Disabled for now
+        this.bindAuthEvents();
         this.checkApiStatus();
-        this.loadTemplates();
-        this.loadDataSources();
-        this.loadPlans();
+        this.checkLoginStatus(true).then(isLoggedIn => {
+            if (isLoggedIn) {
+                this.bootstrapData(true);
+            } else {
+                this.showLoginOverlay();
+            }
+        });
     }
 
     // ========================================================================
@@ -193,7 +273,9 @@ class DocumentCMS {
     }
 
     handleUnauthorized() {
-        this.showToast('error', 'Session Expired', 'Please login again');
+        if (this.isLoggedIn) {
+            this.showToast('error', 'Session Expired', 'Please login again');
+        }
         this.updateLoginUI(false);
     }
 
@@ -201,24 +283,30 @@ class DocumentCMS {
     // Authentication
     // ========================================================================
 
-    async checkLoginStatus() {
+    async checkLoginStatus(silent = false) {
         try {
             const data = await this.apiJson('/auth/me');
-            console.log('Session check:', data);
             if (data && data.user) {
                 this.updateLoginUI(true, data.user);
-            } else {
-                this.updateLoginUI(false);
+                return true;
             }
-        } catch (error) {
-            console.log('No session:', error.message);
             this.updateLoginUI(false);
+            if (!silent) {
+                this.showLoginOverlay();
+            }
+            return false;
+        } catch (error) {
+            this.updateLoginUI(false);
+            if (!silent) {
+                this.showLoginOverlay();
+                this.showToast('info', 'Login Required', 'Please login to continue');
+            }
+            return false;
         }
     }
 
     async login(username, password) {
         try {
-            console.log('Attempting login...');
             const response = await this.apiFetch('/auth/login', {
                 method: 'POST',
                 body: JSON.stringify({ username, password })
@@ -235,11 +323,9 @@ class DocumentCMS {
             }
             
             const data = await response.json();
-            console.log('Login response:', data);
-            
             if (data && data.success) {
-                // Verify session is working
-                await this.checkLoginStatus();
+                this.dataInitialized = false;
+                this.updateLoginUI(true, data.user);
                 this.showToast('success', 'Login Success', `Welcome, ${data.user}!`);
                 return true;
             } else {
@@ -256,6 +342,7 @@ class DocumentCMS {
     async logout() {
         try {
             await this.apiFetch('/auth/logout', { method: 'POST' });
+            this.dataInitialized = false;
             this.updateLoginUI(false);
             this.showToast('success', 'Logged Out', 'You have been logged out');
         } catch (error) {
@@ -263,19 +350,74 @@ class DocumentCMS {
         }
     }
 
+    async handleLoginSubmit() {
+        if (this.loginInProgress) {
+            return;
+        }
+
+        const usernameInput = document.getElementById('loginUsername');
+        const passwordInput = document.getElementById('loginPassword');
+        const submitBtn = document.getElementById('loginSubmitBtn');
+
+        if (!usernameInput || !passwordInput) {
+            return;
+        }
+
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value;
+
+        if (!username || !password) {
+            this.showToast('error', 'Missing Credentials', 'Enter both username and password');
+            return;
+        }
+
+        const originalText = submitBtn ? submitBtn.innerHTML : '';
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Logging in...';
+        }
+
+        this.loginInProgress = true;
+        const success = await this.login(username, password);
+        this.loginInProgress = false;
+
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+        }
+
+        if (success) {
+            this.hideLoginOverlay();
+            this.bootstrapData(true);
+        }
+    }
+
     updateLoginUI(isLoggedIn, username = null) {
+        this.isLoggedIn = !!isLoggedIn;
+
         const userInfo = document.getElementById('userInfo');
         const loginBtn = document.getElementById('loginBtn');
         const logoutBtn = document.getElementById('logoutBtn');
-        
+
+        if (userInfo) {
+            userInfo.textContent = isLoggedIn
+                ? `User: ${username || 'Admin'}`
+                : 'Not authenticated';
+        }
+
+        if (loginBtn) {
+            loginBtn.classList.toggle('d-none', !!isLoggedIn);
+        }
+
+        if (logoutBtn) {
+            logoutBtn.classList.toggle('d-none', !isLoggedIn);
+        }
+
         if (isLoggedIn) {
-            userInfo.textContent = `User: ${username}`;
-            loginBtn.classList.add('d-none');
-            logoutBtn.classList.remove('d-none');
+            this.hideLoginOverlay();
         } else {
-            userInfo.textContent = 'Not logged in';
-            loginBtn.classList.remove('d-none');
-            logoutBtn.classList.add('d-none');
+            this.dataInitialized = false;
+            this.showLoginOverlay();
         }
     }
 
@@ -306,6 +448,7 @@ class DocumentCMS {
     // ========================================================================
 
     async loadTemplates() {
+        if (!this.ensureAuthenticated(false)) return;
         try {
             const data = await this.apiJson('/templates');
             if (data && data.templates) {
@@ -422,6 +565,7 @@ class DocumentCMS {
     }
 
     async uploadTemplate() {
+        if (!this.ensureAuthenticated()) return;
         if (!this.selectedFile) {
             this.showToast('error', 'No File', 'Please select a file first');
             return;
@@ -518,6 +662,7 @@ class DocumentCMS {
     }
 
     async deleteTemplate(templateName) {
+        if (!this.ensureAuthenticated()) return;
         if (!confirm(`Delete template "${templateName}"?`)) return;
 
         try {
@@ -528,8 +673,34 @@ class DocumentCMS {
             if (response && response.ok) {
                 const data = await response.json();
                 if (data && data.success) {
+                    const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+                    warnings.forEach(msg => this.showToast('warning', 'Delete Warning', msg));
+
                     this.showToast('success', 'Deleted', `Template "${templateName}" deleted`);
-                    this.loadTemplates();
+                    const target = this.normalizeTemplateName(templateName);
+
+                    if (Array.isArray(this.templates)) {
+                        this.templates = this.templates.filter(template => {
+                            if (!template) return false;
+                            const candidate = this.normalizeTemplateName(
+                                template.name ||
+                                template.file_with_extension ||
+                                template.file_name ||
+                                template.id ||
+                                template
+                            );
+                            return candidate !== target;
+                        });
+                    }
+
+                    if (Array.isArray(this.allTemplates)) {
+                        this.allTemplates = this.allTemplates.filter(name => this.normalizeTemplateName(name) !== target);
+                    }
+
+                    this.displayTemplates(this.templates);
+                    setTimeout(() => this.loadTemplates(), 500);
+                    // Refresh plans to drop deleted template references
+                    this.loadPlans();
                 }
             } else {
                 const error = await response.json().catch(() => ({ detail: 'Delete failed' }));
@@ -545,6 +716,7 @@ class DocumentCMS {
     // ========================================================================
 
     async loadDataSources() {
+        if (!this.ensureAuthenticated(false)) return;
         try {
             const data = await this.apiJson('/data/all');
             if (data && data.data_sources) {
@@ -597,12 +769,18 @@ class DocumentCMS {
     }
 
     async uploadCSV() {
+        if (!this.ensureAuthenticated()) return;
         if (!this.selectedCSV) {
             this.showToast('error', 'No File', 'Please select a CSV file first');
             return;
         }
 
-        const dataType = document.getElementById('csvDataType').value;
+        const dataTypeSelect = document.getElementById('csvDataType');
+        if (!dataTypeSelect) {
+            this.showToast('error', 'Upload Failed', 'CSV data type selector missing in the page.');
+            return;
+        }
+        const dataType = dataTypeSelect.value;
         const formData = new FormData();
         formData.append('file', this.selectedCSV);
         formData.append('data_type', dataType);
@@ -618,12 +796,18 @@ class DocumentCMS {
                 const data = await response.json();
                 this.showToast('success', 'Upload Success', `CSV "${data.filename}" uploaded`);
                 this.selectedCSV = null;
-                document.getElementById('csvUploadArea').innerHTML = `
-                    <i class="fas fa-file-csv fa-3x text-muted mb-3"></i>
-                    <h5>Drop CSV file here</h5>
-                    <p class="text-muted mb-0">or click to browse</p>
-                `;
-                document.getElementById('csvFile').value = '';
+                const csvUploadArea = document.getElementById('csvUploadArea');
+                if (csvUploadArea) {
+                    csvUploadArea.innerHTML = `
+                        <i class="fas fa-file-csv fa-3x text-muted mb-3"></i>
+                        <h5>Drop CSV file here</h5>
+                        <p class="text-muted mb-0">or click to browse</p>
+                    `;
+                }
+                const csvFileInput = document.getElementById('csvFile');
+                if (csvFileInput) {
+                    csvFileInput.value = '';
+                }
                 this.loadDataSources();
             } else {
                 const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
@@ -635,6 +819,7 @@ class DocumentCMS {
     }
 
     async deleteCSV(csvId) {
+        if (!this.ensureAuthenticated()) return;
         if (!csvId) return;
         if (!confirm('Delete this CSV file?')) return;
 
@@ -661,6 +846,7 @@ class DocumentCMS {
     // ========================================================================
 
     async loadPlans() {
+        if (!this.ensureAuthenticated(false)) return;
         try {
             // Try JSON first (more reliable for immediate updates)
             let data = null;
@@ -756,6 +942,7 @@ class DocumentCMS {
     }
 
     async testPermission() {
+        if (!this.ensureAuthenticated()) return;
         const userId = document.getElementById('testUserId').value;
         const templateName = document.getElementById('testTemplate').value;
 
@@ -785,6 +972,7 @@ class DocumentCMS {
     }
 
     async testGenerateDocument(templateName) {
+        if (!this.ensureAuthenticated()) return;
         // Show vessel selection modal
         this.showVesselSelectionModal(templateName);
     }
@@ -858,6 +1046,7 @@ class DocumentCMS {
     }
 
     async generateWithVessel(templateName) {
+        if (!this.ensureAuthenticated()) return;
         const select = document.getElementById('vesselSelect');
         const imoInput = document.getElementById('vesselIMO');
         
@@ -927,6 +1116,7 @@ class DocumentCMS {
     }
 
     async editPlan(planId) {
+        if (!this.ensureAuthenticated()) return;
         if (!this.allPlans || !this.allPlans[planId]) {
             this.showToast('error', 'Error', 'Plan not found');
             return;
@@ -1038,6 +1228,7 @@ class DocumentCMS {
     }
     
     async savePlan(planId) {
+        if (!this.ensureAuthenticated()) return;
         try {
             const accessTypeRadio = document.querySelector('input[name="accessType"]:checked');
             if (!accessTypeRadio) {
