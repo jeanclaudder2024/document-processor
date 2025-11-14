@@ -943,12 +943,27 @@ async def get_templates(current_user: str = Depends(get_current_user)):
                 logger.error(f"Failed to load templates from Supabase: {exc}")
 
         # Include local filesystem templates as fallback / supplement
+        # But only if they don't exist in Supabase (to avoid re-adding deleted templates)
+        deleted_template_names = set()  # Track templates that were soft-deleted in Supabase
+        if SUPABASE_ENABLED:
+            try:
+                deleted_templates = supabase.table('document_templates').select('file_name').eq('is_active', False).execute()
+                if deleted_templates.data:
+                    deleted_template_names = {ensure_docx_filename(t.get('file_name', '')) for t in deleted_templates.data if t.get('file_name')}
+            except Exception as exc:
+                logger.warning(f"Could not check deleted templates: {exc}")
+        
         for filename in os.listdir(TEMPLATES_DIR):
             if not filename.lower().endswith('.docx'):
                 continue
         
             file_name = ensure_docx_filename(filename)
             if file_name in templates_by_key:
+                continue
+            
+            # Skip templates that were soft-deleted in Supabase
+            if file_name in deleted_template_names:
+                logger.debug(f"Skipping deleted template: {file_name}")
                 continue
 
             file_path = os.path.join(TEMPLATES_DIR, file_name)
@@ -1232,17 +1247,27 @@ async def upload_template(
 ):
     """Upload a new template"""
     try:
-        if not file.filename.lower().endswith('.docx'):
+        if not file.filename or not file.filename.lower().endswith('.docx'):
             raise HTTPException(status_code=400, detail="Only .docx files are allowed")
         
+        # Read file bytes - ensure we get the full file
         file_bytes = await file.read()
-        if not file_bytes:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        if not file_bytes or len(file_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty or could not be read")
+        
+        logger.info(f"Received file: {file.filename}, size: {len(file_bytes)} bytes")
 
         # Write to temp file to extract placeholders
         with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
             tmp.write(file_bytes)
+            tmp.flush()  # Ensure data is written to disk
+            os.fsync(tmp.fileno())  # Force write to disk
             tmp_path = tmp.name
+
+        # Verify the temp file was written correctly
+        if os.path.getsize(tmp_path) == 0:
+            os.remove(tmp_path)
+            raise HTTPException(status_code=400, detail="File write failed - file is empty")
 
         placeholders = extract_placeholders_from_docx(tmp_path)
         placeholders = list(dict.fromkeys(placeholders))
@@ -1262,9 +1287,19 @@ async def upload_template(
         try:
             with open(file_path, 'wb') as f:
                 f.write(file_bytes)
+                f.flush()  # Ensure data is written
+                os.fsync(f.fileno())  # Force write to disk
+            
+            # Verify the file was written correctly
+            written_size = os.path.getsize(file_path)
+            if written_size == 0 or written_size != len(file_bytes):
+                logger.error(f"File size mismatch: expected {len(file_bytes)}, got {written_size}")
+                raise HTTPException(status_code=500, detail=f"File write verification failed: expected {len(file_bytes)} bytes, got {written_size}")
+            
+            logger.info(f"Template file written successfully: {docx_filename} ({written_size} bytes)")
         except Exception as exc:
             logger.error(f"Failed to write template to disk: {exc}")
-            raise HTTPException(status_code=500, detail="Failed to write template to disk")
+            raise HTTPException(status_code=500, detail=f"Failed to write template to disk: {str(exc)}")
 
         template_id = None
         template_record = None
@@ -1410,9 +1445,12 @@ async def delete_template(
             resolved_name = template_record.get('file_name') or template_name
 
             try:
+                # Use soft delete by setting is_active = False instead of hard delete
+                # This prevents the template from being re-added from local filesystem
+                supabase.table('document_templates').update({'is_active': False}).eq('id', template_id).execute()
+                # Optionally also delete related records
                 supabase.table('template_files').delete().eq('template_id', template_id).execute()
                 supabase.table('template_placeholders').delete().eq('template_id', template_id).execute()
-                supabase.table('document_templates').delete().eq('id', template_id).execute()
             except Exception as exc:
                 logger.error(f"Failed to delete template from Supabase: {exc}")
                 warnings.append("Supabase delete failed; removed local copy only")
@@ -1422,6 +1460,7 @@ async def delete_template(
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)
+                logger.info(f"Deleted local template file: {docx_name}")
             except Exception as exc:
                 logger.error(f"Failed to delete template file {docx_name}: {exc}")
                 warnings.append("Could not delete local template file")
@@ -1834,6 +1873,99 @@ async def options_user_downloadable_templates(request: Request):
     """Handle CORS preflight for user-downloadable-templates endpoint"""
     return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
+@app.get("/templates/{template_name}/plan-info")
+async def get_template_plan_info(template_name: str):
+    """Get plan information for a specific template (which plans can download it)"""
+    try:
+        if not supabase:
+            return {
+                "success": True,
+                "template_name": template_name,
+                "plans": [],
+                "source": "json_fallback"
+            }
+        
+        # Get template ID
+        template_file_name = template_name.replace('.docx', '')
+        template_res = supabase.table('document_templates').select('id, file_name').eq('file_name', template_file_name).eq('is_active', True).limit(1).execute()
+        
+        if not template_res.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        template_id = template_res.data[0]['id']
+        
+        # Get all plans that can download this template
+        permissions_res = supabase.table('plan_template_permissions').select(
+            'plan_id, can_download'
+        ).eq('template_id', template_id).eq('can_download', True).execute()
+        
+        plan_ids = [p['plan_id'] for p in (permissions_res.data or [])]
+        
+        if plan_ids:
+            plans_res = supabase.table('subscription_plans').select(
+                'id, plan_name, plan_tier, name'
+            ).in_('id', plan_ids).eq('is_active', True).execute()
+            
+            plans = []
+            if plans_res.data:
+                for plan in plans_res.data:
+                    plans.append({
+                        "plan_id": str(plan['id']),
+                        "plan_name": plan.get('plan_name') or plan.get('name') or plan.get('plan_tier'),
+                        "plan_tier": plan.get('plan_tier')
+                    })
+            
+            # If template is available to all plans (check if any plan has * permission)
+            all_plans_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('is_active', True).execute()
+            if all_plans_res.data:
+                # Check if there's a plan with all templates access
+                for plan in all_plans_res.data:
+                    plan_permissions = supabase.table('plan_template_permissions').select('template_id').eq('plan_id', plan['id']).execute()
+                    # If plan has no restrictions or has all templates, include it
+                    if not plan_permissions.data or len(plan_permissions.data) == 0:
+                        # Check if plan allows all by checking can_download list in plans-db
+                        plan_tier = plan.get('plan_tier')
+                        plan_info = supabase.table('subscription_plans').select('*').eq('plan_tier', plan_tier).limit(1).execute()
+                        if plan_info.data:
+                            # Check plan permissions via RPC or direct check
+                            plans.append({
+                                "plan_id": str(plan['id']),
+                                "plan_name": plan.get('plan_name') or plan.get('name') or plan_tier,
+                                "plan_tier": plan_tier
+                            })
+            
+            # Remove duplicates
+            seen = set()
+            unique_plans = []
+            for plan in plans:
+                key = (plan.get('plan_id'), plan.get('plan_name'))
+                if key not in seen:
+                    seen.add(key)
+                    unique_plans.append(plan)
+            
+            return {
+                "success": True,
+                "template_name": template_name,
+                "plans": unique_plans,
+                "plan_name": unique_plans[0]['plan_name'] if unique_plans else None,
+                "plan_tier": unique_plans[0]['plan_tier'] if unique_plans else None,
+                "source": "database"
+            }
+        else:
+            return {
+                "success": True,
+                "template_name": template_name,
+                "plans": [],
+                "plan_name": None,
+                "plan_tier": None,
+                "source": "database"
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting template plan info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/user-downloadable-templates")
 async def get_user_downloadable_templates(request: Request):
     """Get list of templates user can download with download counts"""
@@ -1884,10 +2016,46 @@ async def get_user_downloadable_templates(request: Request):
             
             details_map = {d['id']: d for d in (details_res.data or [])}
             
+            # Get user's plan info
+            user_plan_info = None
+            try:
+                user_res = supabase.table('subscribers').select('subscription_plan, plan_tier').eq('user_id', user_id).limit(1).execute()
+                if user_res.data and user_res.data[0]:
+                    plan_tier = user_res.data[0].get('plan_tier') or user_res.data[0].get('subscription_plan')
+                    if plan_tier:
+                        plan_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('plan_tier', plan_tier).limit(1).execute()
+                        if plan_res.data:
+                            user_plan_info = {
+                                "plan_name": plan_res.data[0].get('plan_name') or plan_res.data[0].get('name') or plan_tier,
+                                "plan_tier": plan_tier
+                            }
+            except Exception as e:
+                logger.warning(f"Could not fetch user plan info: {e}")
+            
             enhanced_templates = []
             for t in templates_res.data:
                 template_id = t['template_id']
                 details = details_map.get(template_id, {})
+                
+                # If user can download, use their plan name, otherwise try to get plan info for template
+                plan_name = None
+                plan_tier_val = None
+                if t['can_download'] and user_plan_info:
+                    plan_name = user_plan_info['plan_name']
+                    plan_tier_val = user_plan_info['plan_tier']
+                elif not t['can_download']:
+                    # Try to get which plan allows this template
+                    try:
+                        perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).eq('can_download', True).limit(1).execute()
+                        if perm_res.data:
+                            plan_id = perm_res.data[0]['plan_id']
+                            plan_detail_res = supabase.table('subscription_plans').select('plan_name, plan_tier, name').eq('id', plan_id).limit(1).execute()
+                            if plan_detail_res.data:
+                                plan_name = plan_detail_res.data[0].get('plan_name') or plan_detail_res.data[0].get('name') or plan_detail_res.data[0].get('plan_tier')
+                                plan_tier_val = plan_detail_res.data[0].get('plan_tier')
+                    except Exception as e:
+                        logger.warning(f"Could not fetch plan info for template {template_id}: {e}")
+                
                 enhanced_templates.append({
                     "id": str(template_id),
                     "name": details.get('title', 'Unknown'),
@@ -1897,7 +2065,9 @@ async def get_user_downloadable_templates(request: Request):
                     "can_download": t['can_download'],
                     "max_downloads": t['max_downloads'],
                     "current_downloads": t['current_downloads'],
-                    "remaining_downloads": t['remaining_downloads']
+                    "remaining_downloads": t['remaining_downloads'],
+                    "plan_name": plan_name,
+                    "plan_tier": plan_tier_val
                 })
             
             return {

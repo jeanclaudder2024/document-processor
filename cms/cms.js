@@ -458,21 +458,29 @@ class DocumentCMS {
                     return nameA.localeCompare(nameB);
                 });
                 // Build template name list for plan editing - use canonical names
+                // Use name (which includes .docx extension) as primary identifier
                 this.allTemplates = this.templates.map(t => {
                     if (typeof t === 'string') {
                         return t.endsWith('.docx') ? t : `${t}.docx`;
                     }
+                    // Prioritize 'name' field as it's the canonical identifier
                     if (t.name) {
-                        return t.name;
+                        return t.name.endsWith('.docx') ? t.name : `${t.name}.docx`;
                     }
                     if (t.file_with_extension) {
-                        return t.file_with_extension;
+                        return t.file_with_extension.endsWith('.docx') ? t.file_with_extension : `${t.file_with_extension}.docx`;
                     }
                     if (t.file_name) {
                         return t.file_name.endsWith('.docx') ? t.file_name : `${t.file_name}.docx`;
                     }
-                    return t.title ? `${t.title}.docx` : '';
+                    // Fallback to title-based name
+                    if (t.title) {
+                        return t.title.endsWith('.docx') ? t.title : `${t.title}.docx`;
+                    }
+                    return '';
                 }).filter(t => t && t.trim() !== ''); // Remove empty values
+                // Remove duplicates
+                this.allTemplates = [...new Set(this.allTemplates)];
                 console.log('Loaded templates:', this.allTemplates.length, 'templates:', this.allTemplates);
                 this.displayTemplates(this.templates);
             } else {
@@ -697,10 +705,15 @@ class DocumentCMS {
                         this.allTemplates = this.allTemplates.filter(name => this.normalizeTemplateName(name) !== target);
                     }
 
+                    // Remove from display immediately
                     this.displayTemplates(this.templates);
-                    setTimeout(() => this.loadTemplates(), 500);
-                    // Refresh plans to drop deleted template references
-                    this.loadPlans();
+                    // Force reload templates after a short delay to ensure backend deletion is complete
+                    setTimeout(() => {
+                        this.loadTemplates().then(() => {
+                            // Also refresh plans to drop deleted template references
+                            this.loadPlans();
+                        });
+                    }, 1000);
                 }
             } else {
                 const error = await response.json().catch(() => ({ detail: 'Delete failed' }));
@@ -957,11 +970,32 @@ class DocumentCMS {
         
         // Store plans for editing
         this.allPlans = plans;
-        // Ensure templates are loaded
-        if (this.templates && Array.isArray(this.templates)) {
-            this.allTemplates = this.templates.map(t => t.name || t.file_name || t);
+        // Ensure templates are loaded - rebuild allTemplates from current templates
+        if (this.templates && Array.isArray(this.templates) && this.templates.length > 0) {
+            this.allTemplates = this.templates.map(t => {
+                if (typeof t === 'string') {
+                    return t.endsWith('.docx') ? t : `${t}.docx`;
+                }
+                if (t.name) {
+                    return t.name.endsWith('.docx') ? t.name : `${t.name}.docx`;
+                }
+                if (t.file_with_extension) {
+                    return t.file_with_extension.endsWith('.docx') ? t.file_with_extension : `${t.file_with_extension}.docx`;
+                }
+                if (t.file_name) {
+                    return t.file_name.endsWith('.docx') ? t.file_name : `${t.file_name}.docx`;
+                }
+                return '';
+            }).filter(t => t && t.trim() !== '');
+            // Remove duplicates
+            this.allTemplates = [...new Set(this.allTemplates)];
+            console.log('Rebuilt allTemplates in displayPlans:', this.allTemplates.length, 'templates:', this.allTemplates);
         } else {
-            this.allTemplates = [];
+            // If templates aren't loaded, load them now
+            if (this.allTemplates && this.allTemplates.length === 0) {
+                console.log('Templates not loaded, fetching...');
+                this.loadTemplates();
+            }
         }
     }
 
@@ -1194,13 +1228,30 @@ class DocumentCMS {
                             <div id="templateSelection" class="mb-3 border rounded p-3" style="max-height: 300px; overflow-y: auto; ${plan.can_download && plan.can_download[0] === '*' ? 'display:none;' : ''}">
                                 <p class="mb-2"><strong>Select templates:</strong></p>
                                 ${templates.length > 0 ? templates.map(t => {
-                                    const templateName = typeof t === 'string' ? t : (t.name || t.file_name || '');
-                                    const isChecked = plan.can_download && Array.isArray(plan.can_download) && plan.can_download.includes(templateName);
+                                    // Normalize template name - ensure consistent format
+                                    let templateName = '';
+                                    if (typeof t === 'string') {
+                                        templateName = t.endsWith('.docx') ? t : `${t}.docx`;
+                                    } else {
+                                        templateName = t.name || t.file_with_extension || t.file_name || '';
+                                        if (templateName && !templateName.endsWith('.docx')) {
+                                            templateName = `${templateName}.docx`;
+                                        }
+                                    }
+                                    // Check if this template is in the plan's can_download list
+                                    const canDownloadList = plan.can_download && Array.isArray(plan.can_download) ? plan.can_download : [];
+                                    // Normalize comparison - check both with and without .docx
+                                    const isChecked = canDownloadList.some(allowed => {
+                                        const normalizedAllowed = allowed.endsWith('.docx') ? allowed : `${allowed}.docx`;
+                                        const normalizedTemplate = templateName.endsWith('.docx') ? templateName : `${templateName}.docx`;
+                                        return normalizedAllowed === normalizedTemplate || allowed === '*' || allowed === templateName.replace('.docx', '');
+                                    });
+                                    const displayName = typeof t === 'string' ? t : (t.metadata?.display_name || t.title || t.name || templateName).replace('.docx', '');
                                     return `
                                         <div class="form-check mb-2">
                                             <input type="checkbox" class="form-check-input template-checkbox" value="${templateName}" 
                                                 ${isChecked ? 'checked' : ''}>
-                                            <label class="form-check-label">${templateName}</label>
+                                            <label class="form-check-label">${displayName}</label>
                                         </div>
                                     `;
                                 }).join('') : '<p class="text-muted">No templates available. Please upload templates first.</p>'}
