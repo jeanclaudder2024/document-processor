@@ -9,7 +9,7 @@ class DocumentEditor {
             apiBase = window.__CMS_API_BASE__;
         } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
             apiBase = 'http://localhost:8000';
-        } else if (hostname === 'petrodealhub.com' || hostname === 'www.petrodealhub.com' || hostname === 'control.petrodealhub.com') {
+        } else if (hostname === 'control.petrodealhub.com') {
             apiBase = 'https://petrodealhub.com/api';
         } else if (origin && origin.startsWith('http')) {
             apiBase = `${origin.replace(/\/$/, '')}/api`;
