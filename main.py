@@ -888,8 +888,15 @@ async def options_templates(request: Request):
 
 
 @app.get("/templates")
-async def get_templates(current_user: str = Depends(get_current_user)):
+async def get_templates(request: Request):
     """List all available templates with placeholders"""
+    # Try to get current user, but don't require authentication
+    current_user = None
+    try:
+        current_user = get_current_user(request)
+    except HTTPException:
+        # Allow unauthenticated access for public template listing
+        pass
     try:
         templates = []
         templates_by_key: Dict[str, Dict] = {}
