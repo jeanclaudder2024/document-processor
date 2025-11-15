@@ -1038,7 +1038,7 @@ async def get_templates(request: Request):
                     placeholders = record.get('placeholders') or []
 
                     file_meta = fetch_template_file_record(template_id)
-                    size = file_meta.get('file_size') if file_meta else 0
+                    size = file_meta.get('file_size') if file_meta else None
                     created_at = (file_meta or {}).get(
                         'uploaded_at') or record.get('created_at')
 
@@ -1051,6 +1051,20 @@ async def get_templates(request: Request):
                     if file_name in deleted_template_names or file_name_lower in deleted_template_names_lower:
                         logger.info(f"Skipping deleted template from Supabase: {file_name}")
                         continue
+
+                    # If size is not available from Supabase, try to get it from local file
+                    if not size or size == 0:
+                        local_file_path = os.path.join(TEMPLATES_DIR, file_name)
+                        if os.path.exists(local_file_path):
+                            try:
+                                size = os.path.getsize(local_file_path)
+                                logger.debug(f"Got file size from local file for {file_name}: {size} bytes")
+                            except OSError:
+                                size = 0
+                                logger.warning(f"Could not get file size from local file for {file_name}")
+                        else:
+                            size = 0
+                            logger.warning(f"File size not available for {file_name} (not in Supabase file_record and local file doesn't exist)")
 
                     display_name = record.get(
                         'title') or file_name.replace('.docx', '')
