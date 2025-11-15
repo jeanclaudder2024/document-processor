@@ -338,6 +338,14 @@ def write_temp_docx_from_record(file_record: Dict) -> str:
 def get_deleted_templates() -> set:
     """Get set of deleted template names"""
     try:
+        # Ensure file exists
+        if not os.path.exists(DELETED_TEMPLATES_PATH):
+            os.makedirs(os.path.dirname(DELETED_TEMPLATES_PATH), exist_ok=True)
+            initial_data = {"deleted_templates": [], "last_updated": ""}
+            write_json_atomic(DELETED_TEMPLATES_PATH, initial_data)
+            logger.info(f"Created deleted_templates.json file at {DELETED_TEMPLATES_PATH}")
+            return set()
+        
         deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
         deleted_names = deleted_data.get('deleted_templates', [])
         # Normalize all names to ensure consistency
@@ -349,17 +357,26 @@ def get_deleted_templates() -> set:
 def mark_template_as_deleted(template_name: str) -> None:
     """Mark a template as deleted in the deleted templates file"""
     try:
+        # Ensure file exists
+        if not os.path.exists(DELETED_TEMPLATES_PATH):
+            os.makedirs(os.path.dirname(DELETED_TEMPLATES_PATH), exist_ok=True)
+        
         deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
         deleted_list = deleted_data.get('deleted_templates', [])
         normalized_name = ensure_docx_filename(template_name)
         
+        # Normalize existing names for comparison
+        normalized_existing = {ensure_docx_filename(name) for name in deleted_list if name}
+        
         # Add to list if not already there
-        if normalized_name not in [ensure_docx_filename(name) for name in deleted_list]:
+        if normalized_name and normalized_name not in normalized_existing:
             deleted_list.append(normalized_name)
             deleted_data['deleted_templates'] = deleted_list
             deleted_data['last_updated'] = datetime.now().isoformat()
             write_json_atomic(DELETED_TEMPLATES_PATH, deleted_data)
             logger.info(f"Marked template as deleted: {normalized_name}")
+        elif normalized_name in normalized_existing:
+            logger.debug(f"Template {normalized_name} already marked as deleted")
     except Exception as e:
         logger.error(f"Failed to mark template as deleted: {e}")
 
@@ -1486,42 +1503,47 @@ async def delete_template(
     try:
         resolved_name = template_name
         warnings: List[str] = []
+        template_id = None
 
         if SUPABASE_ENABLED:
-            template_record = resolve_template_record(template_name)
-            if not template_record:
-                raise HTTPException(status_code=404, detail="Template not found")
-
-            template_id = template_record['id']
-            resolved_name = template_record.get('file_name') or template_name
-
             try:
-                # Hard delete: Remove from plan permissions first (foreign key constraint)
-                try:
-                    supabase.table('plan_template_permissions').delete().eq('template_id', template_id).execute()
-                    logger.info(f"Deleted plan permissions for template {template_id}")
-                except Exception as perm_exc:
-                    logger.warning(f"Could not delete plan permissions: {perm_exc}")
-                
-                # Delete related records
-                try:
-                    supabase.table('template_files').delete().eq('template_id', template_id).execute()
-                    logger.info(f"Deleted template files for template {template_id}")
-                except Exception as file_exc:
-                    logger.warning(f"Could not delete template files: {file_exc}")
-                
-                try:
-                    supabase.table('template_placeholders').delete().eq('template_id', template_id).execute()
-                    logger.info(f"Deleted template placeholders for template {template_id}")
-                except Exception as placeholder_exc:
-                    logger.warning(f"Could not delete template placeholders: {placeholder_exc}")
-                
-                # Finally, hard delete the template record itself
-                supabase.table('document_templates').delete().eq('id', template_id).execute()
-                logger.info(f"Hard deleted template record {template_id} from Supabase")
-            except Exception as exc:
-                logger.error(f"Failed to delete template from Supabase: {exc}")
-                warnings.append("Supabase delete failed; removed local copy only")
+                template_record = resolve_template_record(template_name)
+                if template_record:
+                    template_id = template_record['id']
+                    resolved_name = template_record.get('file_name') or template_name
+
+                    try:
+                        # Hard delete: Remove from plan permissions first (foreign key constraint)
+                        try:
+                            supabase.table('plan_template_permissions').delete().eq('template_id', template_id).execute()
+                            logger.info(f"Deleted plan permissions for template {template_id}")
+                        except Exception as perm_exc:
+                            logger.warning(f"Could not delete plan permissions: {perm_exc}")
+                        
+                        # Delete related records
+                        try:
+                            supabase.table('template_files').delete().eq('template_id', template_id).execute()
+                            logger.info(f"Deleted template files for template {template_id}")
+                        except Exception as file_exc:
+                            logger.warning(f"Could not delete template files: {file_exc}")
+                        
+                        try:
+                            supabase.table('template_placeholders').delete().eq('template_id', template_id).execute()
+                            logger.info(f"Deleted template placeholders for template {template_id}")
+                        except Exception as placeholder_exc:
+                            logger.warning(f"Could not delete template placeholders: {placeholder_exc}")
+                        
+                        # Finally, hard delete the template record itself
+                        supabase.table('document_templates').delete().eq('id', template_id).execute()
+                        logger.info(f"Hard deleted template record {template_id} from Supabase")
+                    except Exception as exc:
+                        logger.error(f"Failed to delete template from Supabase: {exc}")
+                        warnings.append("Supabase delete failed; removed local copy only")
+                else:
+                    logger.warning(f"Template not found in Supabase: {template_name}, proceeding with local deletion")
+            except Exception as supabase_exc:
+                logger.error(f"Error checking Supabase for template: {supabase_exc}")
+                warnings.append("Could not check Supabase; proceeding with local deletion")
 
         docx_name = ensure_docx_filename(resolved_name)
         file_path = os.path.join(TEMPLATES_DIR, docx_name)
@@ -1535,9 +1557,19 @@ async def delete_template(
             resolved_name,
             ensure_docx_filename(resolved_name.lower()),
             ensure_docx_filename(resolved_name.upper()),
+            template_name,  # Original template name
+            ensure_docx_filename(template_name),  # Original with .docx
         ]
         
+        # Also check without .docx extension
+        if not resolved_name.endswith('.docx'):
+            file_variations.append(ensure_docx_filename(resolved_name))
+        if not template_name.endswith('.docx'):
+            file_variations.append(ensure_docx_filename(template_name))
+        
         for file_variant in set(file_variations):  # Use set to avoid duplicates
+            if not file_variant:
+                continue
             variant_path = os.path.join(TEMPLATES_DIR, file_variant)
             if os.path.exists(variant_path):
                 try:
@@ -1547,8 +1579,15 @@ async def delete_template(
                 except Exception as exc:
                     logger.warning(f"Failed to delete template file {file_variant}: {exc}")
         
+        # If template not found in Supabase and no local file, return 404
+        if not template_id and not deleted_local:
+            # Check if file exists with any variation
+            file_exists = any(os.path.exists(os.path.join(TEMPLATES_DIR, var)) for var in set(file_variations) if var)
+            if not file_exists:
+                raise HTTPException(status_code=404, detail=f"Template not found: {template_name}")
+        
         if not deleted_local:
-            logger.warning(f"No local template file found to delete for {docx_name}")
+            logger.warning(f"No local template file found to delete for {docx_name} (but marked as deleted in tracking file)")
 
         # Clean up placeholder settings
         placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
