@@ -401,6 +401,37 @@ def mark_template_as_deleted(template_name: str) -> None:
         import traceback
         logger.error(traceback.format_exc())
 
+def unmark_template_as_deleted(template_name: str) -> None:
+    """Remove a template from the deleted templates file (when re-uploaded)"""
+    if not template_name:
+        return
+        
+    try:
+        if not os.path.exists(DELETED_TEMPLATES_PATH):
+            return  # Nothing to remove if file doesn't exist
+        
+        deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
+        deleted_list = deleted_data.get('deleted_templates', [])
+        normalized_name = ensure_docx_filename(template_name)
+        
+        # Remove all variations of the template name (case-insensitive)
+        original_count = len(deleted_list)
+        deleted_list = [
+            name for name in deleted_list 
+            if name and ensure_docx_filename(str(name)).lower() != normalized_name.lower()
+        ]
+        
+        # If we removed anything, save the updated list
+        if len(deleted_list) != original_count:
+            deleted_data['deleted_templates'] = deleted_list
+            deleted_data['last_updated'] = datetime.now().isoformat()
+            write_json_atomic(DELETED_TEMPLATES_PATH, deleted_data)
+            logger.info(f"Unmarked template from deleted_templates.json: {normalized_name} (from original: {template_name}) - removed {original_count - len(deleted_list)} entry/entries")
+    except Exception as e:
+        logger.error(f"Failed to unmark template as deleted: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
 def read_json_file(path: str, default=None):
     """Read JSON file with default fallback"""
     try:
@@ -1521,6 +1552,13 @@ async def upload_template(
             })
 
         upsert_template_placeholders(template_id or docx_filename, default_settings, docx_filename)
+
+        # Remove template from deleted list if it was previously deleted (re-upload scenario)
+        unmark_template_as_deleted(docx_filename)
+        unmark_template_as_deleted(safe_filename)
+        if title_value and title_value != inferred_title:
+            unmark_template_as_deleted(title_value)
+        logger.info(f"Removed {docx_filename} from deleted templates list (if present)")
 
         # Persist metadata locally
         font_family_value = (font_family or "").strip() or None

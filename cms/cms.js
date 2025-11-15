@@ -643,7 +643,18 @@ class DocumentCMS {
                 if (fontFamilySelect) fontFamilySelect.value = '';
                 if (fontSizeInput) fontSizeInput.value = '';
 
-                this.loadTemplates();
+                // Force reload templates after a short delay to ensure backend has processed the upload
+                // This helps ensure the template appears in the list immediately after upload
+                console.log('Upload successful, reloading templates...');
+                setTimeout(() => {
+                    this.loadTemplates().then(() => {
+                        console.log('Templates reloaded after upload');
+                        // Also refresh plans to include new template
+                        this.loadPlans();
+                    }).catch(err => {
+                        console.error('Error reloading templates after upload:', err);
+                    });
+                }, 500);
             } else {
                 const statusText = response?.statusText || 'Unknown error';
                 const statusCode = response?.status || 'N/A';
