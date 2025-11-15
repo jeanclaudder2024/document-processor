@@ -348,10 +348,26 @@ def get_deleted_templates() -> set:
         
         deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
         deleted_names = deleted_data.get('deleted_templates', [])
+        
+        if not deleted_names:
+            logger.debug(f"deleted_templates.json is empty or has no deleted_templates key")
+            return set()
+        
         # Normalize all names to ensure consistency
-        return {ensure_docx_filename(name) for name in deleted_names if name}
+        normalized_names = set()
+        for name in deleted_names:
+            if not name:
+                continue
+            normalized = ensure_docx_filename(str(name))
+            normalized_names.add(normalized)
+            logger.debug(f"Loaded deleted template: {name} -> {normalized}")
+        
+        logger.info(f"Loaded {len(normalized_names)} deleted templates from {DELETED_TEMPLATES_PATH}")
+        return normalized_names
     except Exception as e:
-        logger.warning(f"Could not read deleted templates: {e}")
+        logger.error(f"Could not read deleted templates from {DELETED_TEMPLATES_PATH}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return set()
 
 def mark_template_as_deleted(template_name: str) -> None:
@@ -998,10 +1014,13 @@ async def get_templates(request: Request):
         # Include local filesystem templates as fallback / supplement
         # But only if they don't exist in Supabase (to avoid re-adding deleted templates)
         deleted_template_names = set()  # Track templates that were soft-deleted in Supabase
+        deleted_template_names_lower = set()  # Case-insensitive lookup
         
         # Get hard-deleted templates from deleted_templates.json (for hard delete support)
         hard_deleted_templates = get_deleted_templates()
         deleted_template_names.update(hard_deleted_templates)
+        deleted_template_names_lower.update({name.lower() for name in hard_deleted_templates})
+        logger.debug(f"Loaded {len(hard_deleted_templates)} deleted templates from deleted_templates.json")
         
         if SUPABASE_ENABLED:
             try:
@@ -1010,6 +1029,8 @@ async def get_templates(request: Request):
                 if soft_deleted_templates.data:
                     soft_deleted_names = {ensure_docx_filename(t.get('file_name', '')) for t in soft_deleted_templates.data if t.get('file_name')}
                     deleted_template_names.update(soft_deleted_names)
+                    deleted_template_names_lower.update({name.lower() for name in soft_deleted_names})
+                    logger.debug(f"Loaded {len(soft_deleted_names)} soft-deleted templates from Supabase")
             except Exception as exc:
                 logger.warning(f"Could not check deleted templates from Supabase: {exc}")
         
@@ -1022,16 +1043,24 @@ async def get_templates(request: Request):
                 continue
             
             # Skip templates that were deleted (hard delete or soft delete)
-            if file_name in deleted_template_names:
+            # Check both exact match and case-insensitive match
+            file_name_lower = file_name.lower()
+            is_deleted = file_name in deleted_template_names or file_name_lower in deleted_template_names_lower
+            
+            if is_deleted:
                 logger.info(f"Skipping deleted template (from deleted_templates.json or Supabase): {file_name}")
                 # Optionally delete the local file if it's marked as deleted
                 file_path_to_delete = os.path.join(TEMPLATES_DIR, file_name)
-                if os.path.exists(file_path_to_delete):
-                    try:
-                        os.remove(file_path_to_delete)
-                        logger.info(f"Removed orphaned local file for deleted template: {file_name}")
-                    except Exception as delete_exc:
-                        logger.warning(f"Could not remove orphaned local file {file_name}: {delete_exc}")
+                # Also check original filename
+                original_file_path = os.path.join(TEMPLATES_DIR, filename)
+                
+                for path_to_check in [file_path_to_delete, original_file_path]:
+                    if os.path.exists(path_to_check):
+                        try:
+                            os.remove(path_to_check)
+                            logger.info(f"Removed orphaned local file for deleted template: {path_to_check}")
+                        except Exception as delete_exc:
+                            logger.warning(f"Could not remove orphaned local file {path_to_check}: {delete_exc}")
                 continue
 
             file_path = os.path.join(TEMPLATES_DIR, file_name)
