@@ -1575,45 +1575,66 @@ async def delete_template(
         warnings: List[str] = []
         template_id = None
 
+        supabase_deleted = False
         if SUPABASE_ENABLED:
             try:
                 template_record = resolve_template_record(template_name)
                 if template_record:
                     template_id = template_record['id']
                     resolved_name = template_record.get('file_name') or template_name
+                    logger.info(f"Found template in Supabase: ID={template_id}, file_name={resolved_name}")
 
                     try:
                         # Hard delete: Remove from plan permissions first (foreign key constraint)
                         try:
-                            supabase.table('plan_template_permissions').delete().eq('template_id', template_id).execute()
-                            logger.info(f"Deleted plan permissions for template {template_id}")
+                            perm_result = supabase.table('plan_template_permissions').delete().eq('template_id', template_id).execute()
+                            logger.info(f"Deleted plan permissions for template {template_id}: {len(perm_result.data) if perm_result.data else 0} rows")
                         except Exception as perm_exc:
                             logger.warning(f"Could not delete plan permissions: {perm_exc}")
                         
                         # Delete related records
                         try:
-                            supabase.table('template_files').delete().eq('template_id', template_id).execute()
-                            logger.info(f"Deleted template files for template {template_id}")
+                            file_result = supabase.table('template_files').delete().eq('template_id', template_id).execute()
+                            logger.info(f"Deleted template files for template {template_id}: {len(file_result.data) if file_result.data else 0} rows")
                         except Exception as file_exc:
                             logger.warning(f"Could not delete template files: {file_exc}")
                         
                         try:
-                            supabase.table('template_placeholders').delete().eq('template_id', template_id).execute()
-                            logger.info(f"Deleted template placeholders for template {template_id}")
+                            placeholder_result = supabase.table('template_placeholders').delete().eq('template_id', template_id).execute()
+                            logger.info(f"Deleted template placeholders for template {template_id}: {len(placeholder_result.data) if placeholder_result.data else 0} rows")
                         except Exception as placeholder_exc:
                             logger.warning(f"Could not delete template placeholders: {placeholder_exc}")
                         
                         # Finally, hard delete the template record itself
-                        supabase.table('document_templates').delete().eq('id', template_id).execute()
-                        logger.info(f"Hard deleted template record {template_id} from Supabase")
+                        delete_result = supabase.table('document_templates').delete().eq('id', template_id).execute()
+                        deleted_count = len(delete_result.data) if delete_result.data else 0
+                        if deleted_count > 0:
+                            logger.info(f"✓ Hard deleted template record {template_id} from Supabase document_templates table ({deleted_count} row(s))")
+                            supabase_deleted = True
+                        else:
+                            logger.warning(f"Template delete query executed but no rows were deleted for ID {template_id}")
+                            warnings.append("Template not found in Supabase database (may have been already deleted)")
+                        
+                        # Verify deletion
+                        verify_result = supabase.table('document_templates').select('id').eq('id', template_id).execute()
+                        if verify_result.data and len(verify_result.data) > 0:
+                            logger.error(f"⚠ WARNING: Template {template_id} still exists in Supabase after deletion attempt!")
+                            warnings.append("Template deletion from Supabase may have failed - please verify")
+                        else:
+                            logger.info(f"✓ Verified: Template {template_id} successfully deleted from Supabase")
+                            
                     except Exception as exc:
-                        logger.error(f"Failed to delete template from Supabase: {exc}")
-                        warnings.append("Supabase delete failed; removed local copy only")
+                        logger.error(f"✗ Failed to delete template from Supabase: {exc}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        warnings.append(f"Supabase delete failed: {str(exc)}")
                 else:
-                    logger.warning(f"Template not found in Supabase: {template_name}, proceeding with local deletion")
+                    logger.warning(f"Template not found in Supabase: {template_name}, proceeding with local deletion only")
             except Exception as supabase_exc:
-                logger.error(f"Error checking Supabase for template: {supabase_exc}")
-                warnings.append("Could not check Supabase; proceeding with local deletion")
+                logger.error(f"✗ Error checking Supabase for template: {supabase_exc}")
+                import traceback
+                logger.error(traceback.format_exc())
+                warnings.append(f"Could not check Supabase: {str(supabase_exc)}")
 
         docx_name = ensure_docx_filename(resolved_name)
         file_path = os.path.join(TEMPLATES_DIR, docx_name)
@@ -1726,9 +1747,17 @@ async def delete_template(
         mark_template_as_deleted(docx_name.lower())
         mark_template_as_deleted(docx_name.upper())
 
-        logger.info(f"Template deleted: {docx_name}")
+        logger.info(f"Template deletion completed: {docx_name}")
+        if supabase_deleted:
+            logger.info(f"✓ Template successfully deleted from Supabase and local filesystem: {docx_name}")
+        elif SUPABASE_ENABLED and not supabase_deleted:
+            logger.warning(f"⚠ Template deleted locally but may not have been deleted from Supabase: {docx_name}")
 
-        response = {"success": True, "message": f"Template {docx_name} deleted completely"}
+        response = {
+            "success": True, 
+            "message": f"Template {docx_name} deleted completely",
+            "deleted_from_supabase": supabase_deleted if SUPABASE_ENABLED else None
+        }
         if warnings:
             response["warnings"] = warnings
         return response
