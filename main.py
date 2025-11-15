@@ -978,7 +978,10 @@ async def get_templates(request: Request):
         hard_deleted_templates = get_deleted_templates()
         deleted_template_names.update(hard_deleted_templates)
         deleted_template_names_lower.update({name.lower() for name in hard_deleted_templates})
-        logger.info(f"Loaded {len(hard_deleted_templates)} deleted templates from deleted_templates.json")
+        if hard_deleted_templates:
+            logger.info(f"Loaded {len(hard_deleted_templates)} deleted templates from deleted_templates.json: {list(hard_deleted_templates)[:5]}")
+        else:
+            logger.debug(f"No deleted templates found in deleted_templates.json")
         
         if SUPABASE_ENABLED:
             try:
@@ -1054,17 +1057,40 @@ async def get_templates(request: Request):
                 continue
         
             file_name = ensure_docx_filename(filename)
+            
+            # Skip if already loaded from Supabase
             if file_name in templates_by_key:
+                logger.debug(f"Template {file_name} already loaded from Supabase, skipping local file")
                 continue
             
             # Skip templates that were deleted (hard delete or soft delete)
             # Check both exact match and case-insensitive match
             file_name_lower = file_name.lower()
-            is_deleted = file_name in deleted_template_names or file_name_lower in deleted_template_names_lower
+            filename_lower = filename.lower()
+            
+            # Check multiple variations
+            is_deleted = (
+                file_name in deleted_template_names or 
+                file_name_lower in deleted_template_names_lower or
+                filename in deleted_template_names or
+                filename_lower in deleted_template_names_lower
+            )
+            
+            # Also check without .docx extension
+            file_name_no_ext = file_name.replace('.docx', '').replace('.DOCX', '')
+            filename_no_ext = filename.replace('.docx', '').replace('.DOCX', '')
+            if not is_deleted:
+                for deleted_name in deleted_template_names:
+                    deleted_no_ext = deleted_name.replace('.docx', '').replace('.DOCX', '')
+                    if (file_name_no_ext.lower() == deleted_no_ext.lower() or 
+                        filename_no_ext.lower() == deleted_no_ext.lower()):
+                        is_deleted = True
+                        logger.debug(f"Matched deleted template by name without extension: {file_name} matches {deleted_name}")
+                        break
             
             if is_deleted:
-                logger.info(f"Skipping deleted template (from deleted_templates.json or Supabase): {file_name}")
-                # Optionally delete the local file if it's marked as deleted
+                logger.info(f"Skipping deleted template (from deleted_templates.json or Supabase): {file_name} (original: {filename})")
+                # Delete the local file if it's marked as deleted
                 file_path_to_delete = os.path.join(TEMPLATES_DIR, file_name)
                 # Also check original filename
                 original_file_path = os.path.join(TEMPLATES_DIR, filename)
