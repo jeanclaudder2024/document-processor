@@ -98,6 +98,7 @@ PLACEHOLDER_SETTINGS_PATH = os.path.join(
 PLANS_PATH = os.path.join(STORAGE_DIR, 'plans.json')
 USERS_PATH = os.path.join(STORAGE_DIR, 'users.json')
 TEMPLATE_METADATA_PATH = os.path.join(STORAGE_DIR, 'template_metadata.json')
+DELETED_TEMPLATES_PATH = os.path.join(STORAGE_DIR, 'deleted_templates.json')
 DATA_SOURCES_METADATA_PATH = os.path.join(STORAGE_DIR, 'data_sources.json')
 
 # Supabase client
@@ -333,6 +334,34 @@ def write_temp_docx_from_record(file_record: Dict) -> str:
 # STEP 1: STORAGE HELPERS (JSON on disk with atomic writes)
 # ============================================================================
 
+
+def get_deleted_templates() -> set:
+    """Get set of deleted template names"""
+    try:
+        deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
+        deleted_names = deleted_data.get('deleted_templates', [])
+        # Normalize all names to ensure consistency
+        return {ensure_docx_filename(name) for name in deleted_names if name}
+    except Exception as e:
+        logger.warning(f"Could not read deleted templates: {e}")
+        return set()
+
+def mark_template_as_deleted(template_name: str) -> None:
+    """Mark a template as deleted in the deleted templates file"""
+    try:
+        deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
+        deleted_list = deleted_data.get('deleted_templates', [])
+        normalized_name = ensure_docx_filename(template_name)
+        
+        # Add to list if not already there
+        if normalized_name not in [ensure_docx_filename(name) for name in deleted_list]:
+            deleted_list.append(normalized_name)
+            deleted_data['deleted_templates'] = deleted_list
+            deleted_data['last_updated'] = datetime.now().isoformat()
+            write_json_atomic(DELETED_TEMPLATES_PATH, deleted_data)
+            logger.info(f"Marked template as deleted: {normalized_name}")
+    except Exception as e:
+        logger.error(f"Failed to mark template as deleted: {e}")
 
 def read_json_file(path: str, default=None):
     """Read JSON file with default fallback"""
@@ -952,13 +981,20 @@ async def get_templates(request: Request):
         # Include local filesystem templates as fallback / supplement
         # But only if they don't exist in Supabase (to avoid re-adding deleted templates)
         deleted_template_names = set()  # Track templates that were soft-deleted in Supabase
+        
+        # Get hard-deleted templates from deleted_templates.json (for hard delete support)
+        hard_deleted_templates = get_deleted_templates()
+        deleted_template_names.update(hard_deleted_templates)
+        
         if SUPABASE_ENABLED:
             try:
-                deleted_templates = supabase.table('document_templates').select('file_name').eq('is_active', False).execute()
-                if deleted_templates.data:
-                    deleted_template_names = {ensure_docx_filename(t.get('file_name', '')) for t in deleted_templates.data if t.get('file_name')}
+                # Also check for soft-deleted templates in Supabase (for backward compatibility)
+                soft_deleted_templates = supabase.table('document_templates').select('file_name').eq('is_active', False).execute()
+                if soft_deleted_templates.data:
+                    soft_deleted_names = {ensure_docx_filename(t.get('file_name', '')) for t in soft_deleted_templates.data if t.get('file_name')}
+                    deleted_template_names.update(soft_deleted_names)
             except Exception as exc:
-                logger.warning(f"Could not check deleted templates: {exc}")
+                logger.warning(f"Could not check deleted templates from Supabase: {exc}")
         
         for filename in os.listdir(TEMPLATES_DIR):
             if not filename.lower().endswith('.docx'):
@@ -968,9 +1004,17 @@ async def get_templates(request: Request):
             if file_name in templates_by_key:
                 continue
             
-            # Skip templates that were soft-deleted in Supabase
+            # Skip templates that were deleted (hard delete or soft delete)
             if file_name in deleted_template_names:
-                logger.debug(f"Skipping deleted template: {file_name}")
+                logger.info(f"Skipping deleted template (from deleted_templates.json or Supabase): {file_name}")
+                # Optionally delete the local file if it's marked as deleted
+                file_path_to_delete = os.path.join(TEMPLATES_DIR, file_name)
+                if os.path.exists(file_path_to_delete):
+                    try:
+                        os.remove(file_path_to_delete)
+                        logger.info(f"Removed orphaned local file for deleted template: {file_name}")
+                    except Exception as delete_exc:
+                        logger.warning(f"Could not remove orphaned local file {file_name}: {delete_exc}")
                 continue
 
             file_path = os.path.join(TEMPLATES_DIR, file_name)
@@ -1560,6 +1604,12 @@ async def delete_template(
                     logger.info(f"Updated plans.json to remove template {docx_name}")
         except Exception as plans_exc:
             logger.warning(f"Could not update plans.json: {plans_exc}")
+
+        # Mark template as deleted in deleted templates file (to prevent re-addition from local filesystem)
+        mark_template_as_deleted(docx_name)
+        # Also mark variations to ensure consistency
+        if resolved_name != docx_name:
+            mark_template_as_deleted(resolved_name)
 
         logger.info(f"Template deleted: {docx_name}")
 
