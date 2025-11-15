@@ -2262,6 +2262,9 @@ async def get_user_downloadable_templates(request: Request):
                 "source": "json"
             }
         
+        # Load metadata map for fallback descriptions
+        metadata_map = load_template_metadata()
+        
         # Call database function
         templates_res = supabase.rpc('get_user_downloadable_templates', {
             'p_user_id': user_id
@@ -2295,6 +2298,25 @@ async def get_user_downloadable_templates(request: Request):
                 template_id = t['template_id']
                 details = details_map.get(template_id, {})
                 
+                # Get file_name and normalize for metadata lookup
+                file_name = details.get('file_name', '')
+                docx_file_name = ensure_docx_filename(file_name) if file_name else ''
+                metadata_entry = metadata_map.get(docx_file_name, {}) if docx_file_name else {}
+                
+                # Get description from Supabase, fallback to metadata, fallback to empty
+                description = (
+                    details.get('description') or 
+                    metadata_entry.get('description') or 
+                    ''
+                )
+                
+                # Get title/name - prefer Supabase title, fallback to metadata display_name
+                template_title = (
+                    details.get('title') or 
+                    metadata_entry.get('display_name') or 
+                    (file_name.replace('.docx', '') if file_name else 'Unknown')
+                )
+                
                 # If user can download, use their plan name, otherwise try to get plan info for template
                 plan_name = None
                 plan_tier_val = None
@@ -2316,16 +2338,21 @@ async def get_user_downloadable_templates(request: Request):
                 
                 enhanced_templates.append({
                     "id": str(template_id),
-                    "name": details.get('title', 'Unknown'),
-                    "file_name": details.get('file_name', ''),
-                    "description": details.get('description', ''),
+                    "name": template_title,
+                    "title": template_title,
+                    "file_name": file_name,
+                    "description": description,
                     "placeholders": details.get('placeholders', []),
                     "can_download": t['can_download'],
                     "max_downloads": t['max_downloads'],
                     "current_downloads": t['current_downloads'],
                     "remaining_downloads": t['remaining_downloads'],
                     "plan_name": plan_name,
-                    "plan_tier": plan_tier_val
+                    "plan_tier": plan_tier_val,
+                    "metadata": {
+                        "display_name": metadata_entry.get('display_name', template_title),
+                        "description": metadata_entry.get('description', description)
+                    }
                 })
             
             return {
