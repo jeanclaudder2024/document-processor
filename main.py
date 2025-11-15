@@ -372,6 +372,9 @@ def get_deleted_templates() -> set:
 
 def mark_template_as_deleted(template_name: str) -> None:
     """Mark a template as deleted in the deleted templates file"""
+    if not template_name:
+        return
+        
     try:
         # Ensure file exists
         if not os.path.exists(DELETED_TEMPLATES_PATH):
@@ -382,7 +385,7 @@ def mark_template_as_deleted(template_name: str) -> None:
         normalized_name = ensure_docx_filename(template_name)
         
         # Normalize existing names for comparison
-        normalized_existing = {ensure_docx_filename(name) for name in deleted_list if name}
+        normalized_existing = {ensure_docx_filename(str(name)) for name in deleted_list if name}
         
         # Add to list if not already there
         if normalized_name and normalized_name not in normalized_existing:
@@ -390,11 +393,13 @@ def mark_template_as_deleted(template_name: str) -> None:
             deleted_data['deleted_templates'] = deleted_list
             deleted_data['last_updated'] = datetime.now().isoformat()
             write_json_atomic(DELETED_TEMPLATES_PATH, deleted_data)
-            logger.info(f"Marked template as deleted: {normalized_name}")
+            logger.info(f"Marked template as deleted in deleted_templates.json: {normalized_name} (from original: {template_name})")
         elif normalized_name in normalized_existing:
-            logger.debug(f"Template {normalized_name} already marked as deleted")
+            logger.debug(f"Template {normalized_name} already marked as deleted (from original: {template_name})")
     except Exception as e:
         logger.error(f"Failed to mark template as deleted: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 def read_json_file(path: str, default=None):
     """Read JSON file with default fallback"""
@@ -964,6 +969,30 @@ async def get_templates(request: Request):
         templates_by_key: Dict[str, Dict] = {}
         metadata_map = load_template_metadata()
 
+        # FIRST: Get deleted templates list BEFORE loading from Supabase or filesystem
+        # This ensures we don't add deleted templates back
+        deleted_template_names = set()  # Track templates that were soft-deleted in Supabase
+        deleted_template_names_lower = set()  # Case-insensitive lookup
+        
+        # Get hard-deleted templates from deleted_templates.json (for hard delete support)
+        hard_deleted_templates = get_deleted_templates()
+        deleted_template_names.update(hard_deleted_templates)
+        deleted_template_names_lower.update({name.lower() for name in hard_deleted_templates})
+        logger.info(f"Loaded {len(hard_deleted_templates)} deleted templates from deleted_templates.json")
+        
+        if SUPABASE_ENABLED:
+            try:
+                # Also check for soft-deleted templates in Supabase (for backward compatibility)
+                soft_deleted_templates = supabase.table('document_templates').select('file_name').eq('is_active', False).execute()
+                if soft_deleted_templates.data:
+                    soft_deleted_names = {ensure_docx_filename(t.get('file_name', '')) for t in soft_deleted_templates.data if t.get('file_name')}
+                    deleted_template_names.update(soft_deleted_names)
+                    deleted_template_names_lower.update({name.lower() for name in soft_deleted_names})
+                    logger.info(f"Loaded {len(soft_deleted_names)} soft-deleted templates from Supabase")
+            except Exception as exc:
+                logger.warning(f"Could not check deleted templates from Supabase: {exc}")
+
+        # Load templates from Supabase (only active templates)
         if SUPABASE_ENABLED:
             try:
                 db_templates = supabase.table('document_templates').select(
@@ -982,6 +1011,12 @@ async def get_templates(request: Request):
                     # Normalise names for the frontend
                     file_name = ensure_docx_filename(record.get(
                         'file_name') or record.get('title') or 'template')
+
+                    # Skip if this template is marked as deleted
+                    file_name_lower = file_name.lower()
+                    if file_name in deleted_template_names or file_name_lower in deleted_template_names_lower:
+                        logger.info(f"Skipping deleted template from Supabase: {file_name}")
+                        continue
 
                     display_name = record.get(
                         'title') or file_name.replace('.docx', '')
@@ -1012,27 +1047,7 @@ async def get_templates(request: Request):
                 logger.error(f"Failed to load templates from Supabase: {exc}")
 
         # Include local filesystem templates as fallback / supplement
-        # But only if they don't exist in Supabase (to avoid re-adding deleted templates)
-        deleted_template_names = set()  # Track templates that were soft-deleted in Supabase
-        deleted_template_names_lower = set()  # Case-insensitive lookup
-        
-        # Get hard-deleted templates from deleted_templates.json (for hard delete support)
-        hard_deleted_templates = get_deleted_templates()
-        deleted_template_names.update(hard_deleted_templates)
-        deleted_template_names_lower.update({name.lower() for name in hard_deleted_templates})
-        logger.debug(f"Loaded {len(hard_deleted_templates)} deleted templates from deleted_templates.json")
-        
-        if SUPABASE_ENABLED:
-            try:
-                # Also check for soft-deleted templates in Supabase (for backward compatibility)
-                soft_deleted_templates = supabase.table('document_templates').select('file_name').eq('is_active', False).execute()
-                if soft_deleted_templates.data:
-                    soft_deleted_names = {ensure_docx_filename(t.get('file_name', '')) for t in soft_deleted_templates.data if t.get('file_name')}
-                    deleted_template_names.update(soft_deleted_names)
-                    deleted_template_names_lower.update({name.lower() for name in soft_deleted_names})
-                    logger.debug(f"Loaded {len(soft_deleted_names)} soft-deleted templates from Supabase")
-            except Exception as exc:
-                logger.warning(f"Could not check deleted templates from Supabase: {exc}")
+        # But only if they don't exist in Supabase AND are not marked as deleted
         
         for filename in os.listdir(TEMPLATES_DIR):
             if not filename.lower().endswith('.docx'):
@@ -1674,10 +1689,16 @@ async def delete_template(
             logger.warning(f"Could not update plans.json: {plans_exc}")
 
         # Mark template as deleted in deleted templates file (to prevent re-addition from local filesystem)
+        # Mark all variations to ensure we catch it regardless of how it's named
         mark_template_as_deleted(docx_name)
-        # Also mark variations to ensure consistency
         if resolved_name != docx_name:
             mark_template_as_deleted(resolved_name)
+        if template_name != docx_name and template_name != resolved_name:
+            mark_template_as_deleted(template_name)
+        
+        # Also mark case variations
+        mark_template_as_deleted(docx_name.lower())
+        mark_template_as_deleted(docx_name.upper())
 
         logger.info(f"Template deleted: {docx_name}")
 
