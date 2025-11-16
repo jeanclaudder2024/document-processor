@@ -3035,6 +3035,8 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
             pattern_parts.append(re.escape(char))
 
     inner_pattern = ''.join(pattern_parts)
+    # Build patterns that match the placeholder WITH its wrapper brackets
+    # This ensures we only replace what's inside brackets, not the placeholder name itself
     wrappers = [
         rf"\{{\{{\s*{inner_pattern}\s*\}}\}}",   # {{placeholder}}
         rf"\{{\s*{inner_pattern}\s*\}}",         # {placeholder}
@@ -3044,19 +3046,19 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
         rf"<\s*{inner_pattern}\s*>",             # <placeholder>
         rf"__\s*{inner_pattern}\s*__",           # __placeholder__
         rf"##\s*{inner_pattern}\s*##",           # ##placeholder##
-        inner_pattern,                           # raw placeholder (no wrapper)
     ]
+    # DO NOT include raw placeholder without wrapper - this would replace text outside brackets!
 
     return [re.compile(wrap, re.IGNORECASE) for wrap in wrappers]
 
 
 def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache: Dict[str, List[re.Pattern]]) -> Tuple[str, int]:
-    """Apply placeholder replacements to a block of text - ONLY replaces placeholder patterns, preserves all other text."""
+    """Apply placeholder replacements to a block of text - ONLY replaces placeholder patterns WITH brackets, preserves all other text."""
     total_replacements = 0
     updated_text = text
 
     for placeholder, value in mapping.items():
-        if value is None:
+        if value is None or not value:
             continue
 
         patterns = pattern_cache.get(placeholder)
@@ -3064,7 +3066,7 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
             patterns = _build_placeholder_pattern(placeholder)
             pattern_cache[placeholder] = patterns
 
-        # Replace each placeholder pattern with the value
+        # Replace each placeholder pattern (WITH brackets) with the value
         # Use finditer and replace from end to start to preserve positions
         for pattern in patterns:
             matches = list(pattern.finditer(updated_text))
@@ -3072,8 +3074,9 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
                 # Replace from end to start to preserve string positions
                 for match in reversed(matches):
                     start, end = match.span()
-                    # Only replace if this is actually a placeholder pattern match
+                    # Only replace if this is actually a placeholder pattern match (includes brackets)
                     matched_text = updated_text[start:end]
+                    # Replace the ENTIRE pattern (including brackets) with just the value
                     updated_text = updated_text[:start] + str(value) + updated_text[end:]
                     total_replacements += 1
                     logger.debug("Replaced placeholder pattern '%s' (matched: '%s') with '%s'", pattern.pattern, matched_text, str(value))
@@ -3379,14 +3382,19 @@ async def generate_document(request: Request):
                 logger.warning(f"⚠️  Placeholder '{placeholder}' not found in template_settings")
                 logger.warning(f"   Available settings keys: {list(template_settings.keys())[:10]}...")
                 logger.warning(f"   Trying to match using normalization...")
+                # Try to find similar placeholder names
+                placeholder_lower = placeholder.lower().strip()
+                for key in template_settings.keys():
+                    if placeholder_lower in key.lower() or key.lower() in placeholder_lower:
+                        logger.warning(f"   Similar key found: '{key}' (consider using this exact name)")
 
             if setting:
                 source = setting.get('source', 'random')
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source})")
                 logger.debug(f"Full CMS setting for '{placeholder}': {setting}")
-                logger.debug(f"   customValue: {setting.get('customValue')}")
-                logger.debug(f"   databaseField: {setting.get('databaseField')}")
-                logger.debug(f"   csvId: {setting.get('csvId')}, csvField: {setting.get('csvField')}, csvRow: {setting.get('csvRow')}")
+                logger.debug(f"   customValue: '{setting.get('customValue')}'")
+                logger.debug(f"   databaseField: '{setting.get('databaseField')}'")
+                logger.debug(f"   csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
 
                 if source == 'custom':
                     custom_value = setting.get('customValue', '')
