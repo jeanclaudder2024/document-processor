@@ -1066,9 +1066,21 @@ async def get_templates(request: Request):
                             size = 0
                             logger.warning(f"File size not available for {file_name} (not in Supabase file_record and local file doesn't exist)")
 
-                    display_name = record.get(
-                        'title') or file_name.replace('.docx', '')
+                    # Get display_name from metadata first, then Supabase title, then fallback
                     metadata_entry = metadata_map.get(file_name, {})
+                    display_name = (
+                        metadata_entry.get('display_name') or 
+                        record.get('title') or 
+                        file_name.replace('.docx', '')
+                    )
+                    
+                    # Update Supabase title if metadata has a different display_name
+                    if metadata_entry.get('display_name') and metadata_entry.get('display_name') != record.get('title'):
+                        try:
+                            supabase.table('document_templates').update({'title': metadata_entry.get('display_name')}).eq('id', template_id).execute()
+                            logger.debug(f"Synced display_name from metadata to Supabase for {file_name}")
+                        except Exception as sync_exc:
+                            logger.warning(f"Could not sync display_name to Supabase: {sync_exc}")
 
                     template_payload = {
                         "id": str(template_id),
@@ -1078,7 +1090,7 @@ async def get_templates(request: Request):
                         "file_with_extension": file_name,
                         "description": metadata_entry.get('description') or record.get('description') or '',
                         "metadata": {
-                            "display_name": metadata_entry.get('display_name', display_name),
+                            "display_name": display_name,  # Use the resolved display_name
                             "description": metadata_entry.get('description') or record.get('description') or '',
                             "font_family": metadata_entry.get('font_family'),
                             "font_size": metadata_entry.get('font_size')
@@ -1386,13 +1398,21 @@ async def update_template_metadata(
                 update_data = {}
                 if display_name:
                     update_data['title'] = display_name
+                    logger.info(f"Updating Supabase title for {docx_name} to: {display_name}")
                 if description:
                     update_data['description'] = description
+                    logger.info(f"Updating Supabase description for {docx_name}")
                 if update_data:
                     try:
-                        supabase.table('document_templates').update(update_data).eq('id', template_record['id']).execute()
+                        result = supabase.table('document_templates').update(update_data).eq('id', template_record['id']).execute()
+                        if result.data:
+                            logger.info(f"Successfully updated Supabase metadata for {docx_name}: {update_data}")
+                        else:
+                            logger.warning(f"Supabase update returned no data for {docx_name}")
                     except Exception as exc:
                         logger.error(f"Failed to update template metadata in Supabase: {exc}")
+                        import traceback
+                        logger.error(traceback.format_exc())
 
         metadata_updates = {
             "display_name": display_name or None,
@@ -2058,17 +2078,42 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     }).execute()
                                 logger.info(f"Set all templates permission for plan {plan_id}")
                             elif isinstance(allowed, list):
-                                template_names = {normalise_template_key(t) for t in allowed if t != '*'}
+                                # Normalize template names from can_download list (may have .docx or not)
+                                template_names_normalized = set()
+                                for t in allowed:
+                                    if t != '*':
+                                        # Ensure .docx extension for comparison
+                                        normalized = ensure_docx_filename(t)
+                                        template_names_normalized.add(normalise_template_key(normalized))
+                                        # Also add without extension for flexibility
+                                        template_names_normalized.add(normalise_template_key(t.replace('.docx', '').replace('.DOCX', '')))
+                                
+                                logger.info(f"Matching templates for plan {plan_id} against normalized names: {list(template_names_normalized)[:5]}...")
 
+                                inserted_count = 0
                                 for template in templates_res.data:
                                     template_name = template.get('file_name', '').strip()
-                                    if normalise_template_key(template_name) in template_names:
-                                        supabase.table('plan_template_permissions').insert({
-                                            'plan_id': db_plan_id,
-                                            'template_id': template['id'],
-                                            'can_download': True
-                                        }).execute()
-                                logger.info(f"Set {len(template_names)} template permissions for plan {plan_id}")
+                                    if not template_name:
+                                        continue
+                                    
+                                    # Normalize template name for comparison
+                                    normalized_template_name = normalise_template_key(ensure_docx_filename(template_name))
+                                    normalized_template_name_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
+                                    
+                                    # Check if this template matches any in the allowed list
+                                    if normalized_template_name in template_names_normalized or normalized_template_name_no_ext in template_names_normalized:
+                                        try:
+                                            supabase.table('plan_template_permissions').insert({
+                                                'plan_id': db_plan_id,
+                                                'template_id': template['id'],
+                                                'can_download': True
+                                            }).execute()
+                                            inserted_count += 1
+                                            logger.debug(f"Added permission for template {template_name} (ID: {template['id']}) to plan {plan_id}")
+                                        except Exception as insert_exc:
+                                            logger.warning(f"Failed to insert permission for template {template_name}: {insert_exc}")
+                                
+                                logger.info(f"Set {inserted_count} template permissions for plan {plan_id} (matched {len(template_names_normalized)} template names)")
                     
                     logger.info(f"Updated plan in database: {plan_id}")
             except Exception as e:
@@ -2918,7 +2963,23 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     elif 'ref' in placeholder_lower or 'number' in placeholder_lower:
         return f"REF-{random.randint(100000,999999)}"
     else:
-        return f"Test_{placeholder}"
+        # Generate more realistic data based on placeholder name
+        if 'company' in placeholder_lower or 'firm' in placeholder_lower:
+            companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'Marine Services Group', 'International Vessel Corp']
+            return random.choice(companies)
+        elif 'address' in placeholder_lower:
+            addresses = ['123 Maritime Street, London, UK', '456 Harbor Road, Singapore', '789 Port Avenue, Dubai, UAE', '321 Dock Lane, Rotterdam, NL']
+            return random.choice(addresses)
+        elif 'person' in placeholder_lower or 'contact' in placeholder_lower:
+            names = ['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown']
+            return random.choice(names)
+        elif 'value' in placeholder_lower or 'amount' in placeholder_lower or 'price' in placeholder_lower:
+            return f"${random.randint(1000, 999999):,}"
+        elif 'percent' in placeholder_lower or 'percentage' in placeholder_lower:
+            return f"{random.uniform(0.1, 99.9):.2f}%"
+        else:
+            # Generate a more realistic generic value
+            return f"Value-{random.randint(1000, 9999)}"
 
 def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     """

@@ -198,7 +198,8 @@ class DocumentCMS {
                     }
                 }
 
-                this.displayTemplates(this.templates);
+                // Force reload templates to get updated metadata from backend
+                await this.loadTemplates();
                 this.showToast('success', 'Metadata Saved', 'Template details updated successfully');
 
                 const modalEl = document.getElementById('templateMetaModal');
