@@ -3051,7 +3051,7 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
 
 
 def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache: Dict[str, List[re.Pattern]]) -> Tuple[str, int]:
-    """Apply placeholder replacements to a block of text."""
+    """Apply placeholder replacements to a block of text - ONLY replaces placeholder patterns, preserves all other text."""
     total_replacements = 0
     updated_text = text
 
@@ -3064,11 +3064,19 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
             patterns = _build_placeholder_pattern(placeholder)
             pattern_cache[placeholder] = patterns
 
+        # Replace each placeholder pattern with the value
+        # Use finditer and replace from end to start to preserve positions
         for pattern in patterns:
-            updated_text, replacements = pattern.subn(str(value), updated_text)
-            if replacements:
-                total_replacements += replacements
-                logger.debug("Replaced %s occurrences for placeholder '%s' using pattern '%s'", replacements, placeholder, pattern.pattern)
+            matches = list(pattern.finditer(updated_text))
+            if matches:
+                # Replace from end to start to preserve string positions
+                for match in reversed(matches):
+                    start, end = match.span()
+                    # Only replace if this is actually a placeholder pattern match
+                    matched_text = updated_text[start:end]
+                    updated_text = updated_text[:start] + str(value) + updated_text[end:]
+                    total_replacements += 1
+                    logger.debug("Replaced placeholder pattern '%s' (matched: '%s') with '%s'", pattern.pattern, matched_text, str(value))
 
     return updated_text, total_replacements
 
