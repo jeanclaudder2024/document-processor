@@ -2648,18 +2648,30 @@ async def delete_csv_file(csv_id: str, current_user: str = Depends(get_current_u
 def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
     """Get data from a CSV file by row index"""
     try:
-        csv_mapping = {
-            "buyers_sellers": "buyers_sellers_data_220.csv",
-            "bank_accounts": "bank_accounts.csv",
-            "icpo": "icpo_section4_6_data_230.csv"
-        }
+        # First, try to get filename from data_sources.json (for dynamic CSV uploads)
+        metadata = load_data_sources_metadata()
+        filename = None
         
-        filename = csv_mapping.get(csv_id)
+        # Check if csv_id exists in metadata
+        if csv_id in metadata:
+            # Use dataset_id_to_filename to get the actual filename
+            filename = dataset_id_to_filename(csv_id)
+        else:
+            # Fallback to legacy hardcoded mapping for backward compatibility
+            csv_mapping = {
+                "buyers_sellers": "buyers_sellers_data_220.csv",
+                "bank_accounts": "bank_accounts.csv",
+                "icpo": "icpo_section4_6_data_230.csv"
+            }
+            filename = csv_mapping.get(csv_id)
+        
         if not filename:
+            logger.warning(f"CSV dataset '{csv_id}' not found in metadata or legacy mapping")
             return None
         
         file_path = os.path.join(DATA_DIR, filename)
         if not os.path.exists(file_path):
+            logger.warning(f"CSV file not found: {file_path}")
             return None
         
         # Read CSV data
@@ -2667,12 +2679,19 @@ def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
             reader = csv.DictReader(f)
             rows = list(reader)
             
+            if row_index < 0:
+                row_index = 0
             if row_index < len(rows):
+                logger.debug(f"Retrieved CSV data from {csv_id}[{row_index}]: {list(rows[row_index].keys())[:5]}...")
                 return rows[row_index]
+            else:
+                logger.warning(f"Row index {row_index} out of range for CSV {csv_id} (has {len(rows)} rows)")
         
         return None
     except Exception as e:
-        logger.error(f"Error reading CSV data: {e}")
+        logger.error(f"Error reading CSV data for '{csv_id}' at row {row_index}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 # ============================================================================
@@ -3343,14 +3362,53 @@ async def generate_document(request: Request):
                     csv_field = setting.get('csvField', '')
                     csv_row = setting.get('csvRow', 0)
 
+                    logger.info(f"  📊 CSV source configured for '{placeholder}'")
+                    logger.info(f"     csvId='{csv_id}', csvField='{csv_field}', csvRow={csv_row}")
+
                     if csv_id and csv_field:
-                        csv_data = get_csv_data(csv_id, csv_row)
-                        if csv_data and csv_field in csv_data and csv_data[csv_field]:
-                            data_mapping[placeholder] = str(csv_data[csv_field])
-                            found = True
-                            logger.info(f"{placeholder} -> {csv_data[csv_field]} (CMS configured CSV: {csv_id}[{csv_row}].{csv_field})")
+                        try:
+                            csv_row_int = int(csv_row) if csv_row is not None else 0
+                            csv_data = get_csv_data(csv_id, csv_row_int)
+                            
+                            if csv_data:
+                                logger.info(f"  ✅ CSV data retrieved for '{csv_id}' at row {csv_row_int}")
+                                logger.info(f"     Available fields: {list(csv_data.keys())[:10]}...")
+                                
+                                # Try exact match first
+                                if csv_field in csv_data:
+                                    value = csv_data[csv_field]
+                                    if value is not None and str(value).strip() != '':
+                                        data_mapping[placeholder] = str(value).strip()
+                                        found = True
+                                        logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{csv_field})")
+                                    else:
+                                        logger.warning(f"  ⚠️  CSV field '{csv_field}' exists but is empty")
+                                else:
+                                    # Try case-insensitive match
+                                    csv_field_lower = csv_field.lower()
+                                    matched_field = None
+                                    for key in csv_data.keys():
+                                        if key.lower() == csv_field_lower:
+                                            value = csv_data[key]
+                                            if value is not None and str(value).strip() != '':
+                                                matched_field = key
+                                                data_mapping[placeholder] = str(value).strip()
+                                                found = True
+                                                logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{matched_field} - case-insensitive match)")
+                                                break
+                                    
+                                    if not matched_field:
+                                        logger.error(f"  ❌❌❌ FAILED: CSV field '{csv_field}' not found in CSV data!")
+                                        logger.error(f"  ❌ Available fields: {list(csv_data.keys())}")
+                            else:
+                                logger.error(f"  ❌❌❌ FAILED: Could not retrieve CSV data for '{csv_id}' at row {csv_row_int}")
+                        except Exception as csv_exc:
+                            logger.error(f"  ❌❌❌ ERROR processing CSV data for '{placeholder}': {csv_exc}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                     else:
-                        logger.warning(f"{placeholder}: CSV source selected but csvId or csvField missing in CMS")
+                        logger.warning(f"  ⚠️  {placeholder}: CSV source selected but csvId or csvField missing in CMS")
+                        logger.warning(f"     csvId='{csv_id}', csvField='{csv_field}'")
 
             if not found:
                 if setting:
