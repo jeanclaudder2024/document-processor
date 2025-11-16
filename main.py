@@ -3074,7 +3074,7 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
 
 
 def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
-    """Replace placeholders in a DOCX file with robust pattern matching."""
+    """Replace placeholders in a DOCX file - ONLY replaces placeholder patterns, preserves all other text and formatting."""
     try:
         logger.info("Starting replacement with %d mappings", len(data))
         for key, value in data.items():
@@ -3084,19 +3084,55 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
         replacements_made = 0
         pattern_cache: Dict[str, List[re.Pattern]] = {}
 
-        def process_paragraphs(paragraphs):
+        def replace_in_runs(runs, data_mapping, pattern_cache):
+            """Replace placeholders in runs while preserving formatting - ONLY replaces placeholder patterns"""
             nonlocal replacements_made
-            for paragraph in paragraphs:
-                original_text = paragraph.text
-                if not original_text:
+            total_replacements = 0
+            
+            for run in runs:
+                original_run_text = run.text
+                if not original_run_text:
                     continue
                 
-                # Check if paragraph contains any placeholder pattern
+                # Check if this run contains any placeholder pattern
+                has_placeholder = False
+                for placeholder in data_mapping.keys():
+                    patterns = _build_placeholder_pattern(placeholder)
+                    for pattern in patterns:
+                        if pattern.search(original_run_text):
+                            has_placeholder = True
+                            break
+                    if has_placeholder:
+                        break
+                
+                if not has_placeholder:
+                    continue  # Skip runs without placeholders
+                
+                # Replace ONLY placeholder patterns in this run
+                updated_text, replaced = _replace_text_with_mapping(original_run_text, data_mapping, pattern_cache)
+                
+                if replaced > 0 and updated_text != original_run_text:
+                    # Only replace if we actually found and replaced placeholders
+                    run.text = updated_text
+                    total_replacements += replaced
+                    logger.debug(f"Replaced {replaced} placeholders in run: '{original_run_text[:30]}...' -> '{updated_text[:30]}...'")
+            
+            return total_replacements
+
+        def process_paragraphs(paragraphs):
+            """Process paragraphs and replace placeholders in their runs"""
+            nonlocal replacements_made
+            for paragraph in paragraphs:
+                paragraph_text = paragraph.text
+                if not paragraph_text:
+                    continue
+                
+                # Quick check: does this paragraph contain any placeholder pattern?
                 has_placeholder = False
                 for placeholder in data.keys():
                     patterns = _build_placeholder_pattern(placeholder)
                     for pattern in patterns:
-                        if pattern.search(original_text):
+                        if pattern.search(paragraph_text):
                             has_placeholder = True
                             break
                     if has_placeholder:
@@ -3105,25 +3141,12 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                 if not has_placeholder:
                     continue  # Skip paragraphs without placeholders
                 
-                # Replace placeholders while preserving formatting
-                # Use runs to maintain formatting if possible
-                updated_text, replaced = _replace_text_with_mapping(original_text, data, pattern_cache)
-                if replaced and updated_text != original_text:
-                    # Try to preserve formatting by replacing in runs if simple
-                    if len(paragraph.runs) == 1:
-                        # Single run - safe to replace text directly
-                        paragraph.runs[0].text = updated_text
-                    else:
-                        # Multiple runs - preserve structure but replace text
-                        # Clear all runs and add new text
-                        for run in paragraph.runs:
-                            run.text = ''
-                        if paragraph.runs:
-                            paragraph.runs[0].text = updated_text
-                        else:
-                            paragraph.text = updated_text
-                    replacements_made += replaced
-                    logger.debug(f"Replaced {replaced} placeholders in paragraph: {original_text[:50]}... -> {updated_text[:50]}...")
+                # Replace placeholders in runs (preserves formatting)
+                replaced = replace_in_runs(paragraph.runs, data, pattern_cache)
+                replacements_made += replaced
+                
+                if replaced > 0:
+                    logger.debug(f"Replaced {replaced} placeholders in paragraph: '{paragraph_text[:50]}...'")
 
         # Body paragraphs
         process_paragraphs(doc.paragraphs)
@@ -3147,6 +3170,8 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
 
     except Exception as e:
         logger.error("Error processing document: %s", e)
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
 
 def convert_docx_to_pdf(docx_path: str) -> str:
