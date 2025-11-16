@@ -212,17 +212,26 @@ def fetch_template_placeholders(template_id: str,
         ).eq('template_id', template_id).execute()
         settings: Dict[str, Dict[str, Optional[str]]] = {}
         for row in response.data or []:
-            settings[row['placeholder']] = {
+            placeholder_key = row.get('placeholder', '')
+            if not placeholder_key:
+                continue
+                
+            settings[placeholder_key] = {
                 'source': row.get('source', 'random'),
-                'customValue': row.get('custom_value') or '',
-                'databaseField': row.get('database_field') or '',
-                'csvId': row.get('csv_id') or '',
-                'csvField': row.get('csv_field') or '',
-                'csvRow': row['csv_row'] if row.get('csv_row') is not None else 0,
+                'customValue': str(row.get('custom_value') or '').strip(),
+                'databaseField': str(row.get('database_field') or '').strip(),
+                'csvId': str(row.get('csv_id') or '').strip(),
+                'csvField': str(row.get('csv_field') or '').strip(),
+                'csvRow': int(row['csv_row']) if row.get('csv_row') is not None else 0,
                 'randomOption': row.get('random_option', 'auto') or 'auto'
             }
+            logger.debug(f"Loaded placeholder setting for '{placeholder_key}': source={settings[placeholder_key]['source']}, databaseField={settings[placeholder_key]['databaseField']}, csvId={settings[placeholder_key]['csvId']}")
+        
         if settings:
+            logger.info(f"Loaded {len(settings)} placeholder settings from Supabase for template {template_id}")
             return settings
+        else:
+            logger.warning(f"No placeholder settings found in Supabase for template {template_id}, falling back to disk")
     except Exception as exc:
         logger.error(
             f"Failed to fetch template placeholders for {template_id}: {exc}")
@@ -3073,10 +3082,42 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
             nonlocal replacements_made
             for paragraph in paragraphs:
                 original_text = paragraph.text
+                if not original_text:
+                    continue
+                
+                # Check if paragraph contains any placeholder pattern
+                has_placeholder = False
+                for placeholder in data.keys():
+                    patterns = _build_placeholder_pattern(placeholder)
+                    for pattern in patterns:
+                        if pattern.search(original_text):
+                            has_placeholder = True
+                            break
+                    if has_placeholder:
+                        break
+                
+                if not has_placeholder:
+                    continue  # Skip paragraphs without placeholders
+                
+                # Replace placeholders while preserving formatting
+                # Use runs to maintain formatting if possible
                 updated_text, replaced = _replace_text_with_mapping(original_text, data, pattern_cache)
                 if replaced and updated_text != original_text:
-                    paragraph.text = updated_text
+                    # Try to preserve formatting by replacing in runs if simple
+                    if len(paragraph.runs) == 1:
+                        # Single run - safe to replace text directly
+                        paragraph.runs[0].text = updated_text
+                    else:
+                        # Multiple runs - preserve structure but replace text
+                        # Clear all runs and add new text
+                        for run in paragraph.runs:
+                            run.text = ''
+                        if paragraph.runs:
+                            paragraph.runs[0].text = updated_text
+                        else:
+                            paragraph.text = updated_text
                     replacements_made += replaced
+                    logger.debug(f"Replaced {replaced} placeholders in paragraph: {original_text[:50]}... -> {updated_text[:50]}...")
 
         # Body paragraphs
         process_paragraphs(doc.paragraphs)
@@ -3433,17 +3474,40 @@ async def generate_document(request: Request):
         # Convert to PDF
         pdf_path = convert_docx_to_pdf(processed_docx)
         
+        # Get template display name for filename (from metadata or Supabase title)
+        template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
+        if template_record:
+            # Get display name from Supabase title or file_name
+            template_display_name = template_record.get('title') or template_record.get('file_name', '')
+            if template_display_name:
+                template_display_name = template_display_name.replace('.docx', '').replace('.DOCX', '')
+        
+        # Also check metadata for display_name
+        if template_record:
+            docx_filename = ensure_docx_filename(template_record.get('file_name') or template_name)
+            metadata_map = load_template_metadata()
+            metadata_entry = metadata_map.get(docx_filename, {})
+            if metadata_entry.get('display_name'):
+                template_display_name = metadata_entry['display_name']
+        
+        # Clean template display name for filename (remove invalid characters)
+        template_display_name = re.sub(r'[<>:"/\\|?*]', '_', template_display_name).strip()
+        if not template_display_name:
+            template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
+        
         # Read file content
         if pdf_path.endswith('.pdf'):
             with open(pdf_path, 'rb') as f:
                 file_content = f.read()
             media_type = "application/pdf"
-            filename = f"generated_{template_name.replace('.docx', '')}_{vessel_imo}.pdf"
+            filename = f"{template_display_name}_{vessel_imo}.pdf"
         else:
             with open(processed_docx, 'rb') as f:
                 file_content = f.read()
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            filename = f"generated_{template_name.replace('.docx', '')}_{vessel_imo}.docx"
+            filename = f"{template_display_name}_{vessel_imo}.docx"
+        
+        logger.info(f"Generated filename: {filename} (from template display name: {template_display_name})")
         
         # Track download if user_id is provided and Supabase is available
         if user_id and supabase:
