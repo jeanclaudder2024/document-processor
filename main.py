@@ -1943,14 +1943,16 @@ async def save_placeholder_settings(
                     continue
                 sanitised_settings[placeholder] = {
                     'source': cfg.get('source', 'random'),
-                    'customValue': cfg.get('customValue'),
-                    'databaseField': cfg.get('databaseField'),
-                    'csvId': cfg.get('csvId'),
-                    'csvField': cfg.get('csvField'),
-                    'csvRow': cfg.get('csvRow', 0),
-                    'randomOption': cfg.get('randomOption', 'auto')
+                    'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
+                    'databaseField': str(cfg.get('databaseField', '')).strip() if cfg.get('databaseField') else '',
+                    'csvId': str(cfg.get('csvId', '')).strip() if cfg.get('csvId') else '',
+                    'csvField': str(cfg.get('csvField', '')).strip() if cfg.get('csvField') else '',
+                    'csvRow': int(cfg.get('csvRow', 0)) if cfg.get('csvRow') is not None else 0,
+                    'randomOption': cfg.get('randomOption', 'auto') or 'auto'
                 }
+                logger.debug(f"Sanitized setting for '{placeholder}': source={sanitised_settings[placeholder]['source']}, databaseField={sanitised_settings[placeholder]['databaseField']}, csvId={sanitised_settings[placeholder]['csvId']}")
 
+            logger.info(f"Saving {len(sanitised_settings)} placeholder settings for template {template_id} ({template_record.get('file_name')})")
             upsert_template_placeholders(template_id, sanitised_settings, template_record.get('file_name'))
 
             # Return latest snapshot
