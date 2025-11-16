@@ -3094,7 +3094,6 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
 
         def replace_in_runs(runs, data_mapping, pattern_cache):
             """Replace placeholders in runs while preserving formatting - ONLY replaces placeholder patterns"""
-            nonlocal replacements_made
             total_replacements = 0
             
             for run in runs:
