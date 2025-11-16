@@ -292,6 +292,10 @@ def upsert_template_placeholders(template_id: str,
             if getattr(response, "error", None):
                 logger.error(
                     f"Supabase error upserting placeholders for {template_id}: {response.error}")
+            else:
+                logger.info(f"Successfully saved {len(rows)} placeholder settings to Supabase for template {template_id}")
+                for row in rows:
+                    logger.debug(f"  Saved: {row['placeholder']} -> source={row['source']}, database_field={row.get('database_field')}, csv_id={row.get('csv_id')}")
         except Exception as exc:
             logger.error(f"Failed to upsert placeholder settings: {exc}")
 
@@ -3335,11 +3339,20 @@ async def generate_document(request: Request):
         for placeholder in placeholders:
             found = False
             setting_key, setting = resolve_placeholder_setting(template_settings, placeholder)
+            
+            # Log all available settings keys for debugging
+            if not setting and template_settings:
+                logger.warning(f"⚠️  Placeholder '{placeholder}' not found in template_settings")
+                logger.warning(f"   Available settings keys: {list(template_settings.keys())[:10]}...")
+                logger.warning(f"   Trying to match using normalization...")
 
             if setting:
                 source = setting.get('source', 'random')
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source})")
                 logger.debug(f"Full CMS setting for '{placeholder}': {setting}")
+                logger.debug(f"   customValue: {setting.get('customValue')}")
+                logger.debug(f"   databaseField: {setting.get('databaseField')}")
+                logger.debug(f"   csvId: {setting.get('csvId')}, csvField: {setting.get('csvField')}, csvRow: {setting.get('csvRow')}")
 
                 if source == 'custom':
                     custom_value = setting.get('customValue', '')
