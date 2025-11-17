@@ -3112,14 +3112,22 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
     """
     try:
         logger.info("=" * 80)
-        logger.info("Starting placeholder replacement with %d mappings", len(data))
+        logger.info("🔄 Starting placeholder replacement with %d mappings", len(data))
         logger.info("=" * 80)
         for key, value in data.items():
-            logger.info("📋 Planned replacement: '%s' -> '%s'", key, str(value))
+            logger.info("📋 Mapping: '%s' -> '%s'", key, str(value))
 
         doc = Document(docx_path)
         replacements_made = 0
         pattern_cache: Dict[str, List[re.Pattern]] = {}
+        
+        # Build all patterns upfront for better performance
+        logger.info("Building placeholder patterns...")
+        for placeholder in data.keys():
+            if placeholder not in pattern_cache:
+                patterns = _build_placeholder_pattern(placeholder)
+                pattern_cache[placeholder] = patterns
+                logger.debug(f"Built {len(patterns)} patterns for '{placeholder}'")
 
         def replace_in_runs(runs, data_mapping, pattern_cache):
             """Replace placeholders in runs while preserving formatting"""
@@ -3191,28 +3199,83 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                 if replaced > 0:
                     logger.info(f"📝 Paragraph: replaced {replaced} placeholder(s) in '{paragraph_text[:60]}...'")
 
-        # Body paragraphs
+        # Process body paragraphs
+        logger.info("Processing body paragraphs...")
         process_paragraphs(doc.paragraphs)
 
-        # Tables
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    process_paragraphs(cell.paragraphs)
+        # Process tables
+        logger.info("Processing tables...")
+        for table_idx, table in enumerate(doc.tables):
+            for row_idx, row in enumerate(table.rows):
+                for cell_idx, cell in enumerate(row.cells):
+                    for paragraph in cell.paragraphs:
+                        paragraph_text = paragraph.text
+                        if not paragraph_text:
+                            continue
+                        
+                        # Check if paragraph has placeholders
+                        has_placeholder = False
+                        for placeholder in data.keys():
+                            patterns = pattern_cache.get(placeholder, [])
+                            for pattern in patterns:
+                                if pattern.search(paragraph_text):
+                                    has_placeholder = True
+                                    break
+                            if has_placeholder:
+                                break
+                        
+                        if has_placeholder:
+                            replaced = replace_in_runs(paragraph.runs, data, pattern_cache)
+                            replacements_made += replaced
+                            if replaced > 0:
+                                logger.debug(f"Table[{table_idx}][{row_idx}][{cell_idx}]: {replaced} replacement(s)")
 
-        # Headers and footers
+        # Process headers and footers
+        logger.info("Processing headers and footers...")
         for section in doc.sections:
-            process_paragraphs(section.header.paragraphs)
-            process_paragraphs(section.footer.paragraphs)
+            for paragraph in section.header.paragraphs:
+                paragraph_text = paragraph.text
+                if paragraph_text:
+                    has_placeholder = False
+                    for placeholder in data.keys():
+                        patterns = pattern_cache.get(placeholder, [])
+                        for pattern in patterns:
+                            if pattern.search(paragraph_text):
+                                has_placeholder = True
+                                break
+                        if has_placeholder:
+                            break
+                    if has_placeholder:
+                        replaced = replace_in_runs(paragraph.runs, data, pattern_cache)
+                        replacements_made += replaced
+            
+            for paragraph in section.footer.paragraphs:
+                paragraph_text = paragraph.text
+                if paragraph_text:
+                    has_placeholder = False
+                    for placeholder in data.keys():
+                        patterns = pattern_cache.get(placeholder, [])
+                        for pattern in patterns:
+                            if pattern.search(paragraph_text):
+                                has_placeholder = True
+                                break
+                        if has_placeholder:
+                            break
+                    if has_placeholder:
+                        replaced = replace_in_runs(paragraph.runs, data, pattern_cache)
+                        replacements_made += replaced
 
-        logger.info("Total replacements made: %d", replacements_made)
+        logger.info("=" * 80)
+        logger.info("✅ Total replacements made: %d", replacements_made)
+        logger.info("=" * 80)
 
         output_path = os.path.join(TEMP_DIR, f"processed_{uuid.uuid4().hex}.docx")
         doc.save(output_path)
+        logger.info(f"💾 Saved processed document to: {output_path}")
         return output_path
 
     except Exception as e:
-        logger.error("Error processing document: %s", e)
+        logger.error("❌ Error processing document: %s", e)
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
