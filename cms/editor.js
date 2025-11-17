@@ -603,6 +603,11 @@ class TemplateEditor {
         }
 
         try {
+            console.log('💾 Saving placeholder settings...');
+            console.log('   Template ID:', this.currentTemplateId);
+            console.log('   Settings count:', Object.keys(this.currentSettings).length);
+            console.log('   Sample settings:', Object.entries(this.currentSettings).slice(0, 3));
+            
             const data = await this.apiJson('/placeholder-settings', {
                 method: 'POST',
                 body: JSON.stringify({
@@ -612,9 +617,14 @@ class TemplateEditor {
             });
 
             if (data && data.success) {
-                alert('Placeholder settings saved successfully!');
+                console.log('✅ Settings saved successfully!', data);
+                alert(`Placeholder settings saved successfully! (${data.saved_count || Object.keys(this.currentSettings).length} settings)`);
+            } else {
+                console.error('❌ Save failed:', data);
+                alert('Failed to save placeholder settings: Invalid response');
             }
         } catch (error) {
+            console.error('❌ Error saving settings:', error);
             alert(`Failed to save placeholder settings: ${error.message}`);
         }
     }

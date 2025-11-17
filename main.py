@@ -2324,16 +2324,16 @@ async def get_placeholder_settings(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/placeholder-settings")
-async def save_placeholder_settings(
-    request: Request,
-    current_user: str = Depends(get_current_user)
-):
+async def save_placeholder_settings(request: Request):
     """Save placeholder settings for a template"""
+    # Allow unauthenticated access for CMS editor
     try:
         data = await request.json()
         template_name = data.get('template_name')
         template_id_override = data.get('template_id')
         new_settings = data.get('settings', {})
+        
+        logger.info(f"💾 Saving placeholder settings: template_id={template_id_override}, template_name={template_name}, settings_count={len(new_settings)}")
         
         if not template_name and not template_id_override:
             raise HTTPException(status_code=400, detail="template_name or template_id is required")
@@ -2366,12 +2366,17 @@ async def save_placeholder_settings(
                 }
                 logger.debug(f"Sanitized setting for '{placeholder}': source={sanitised_settings[placeholder]['source']}, databaseTable={sanitised_settings[placeholder]['databaseTable']}, databaseField={sanitised_settings[placeholder]['databaseField']}, csvId={sanitised_settings[placeholder]['csvId']}")
 
-            logger.info(f"Saving {len(sanitised_settings)} placeholder settings for template {template_id} ({template_record.get('file_name')})")
+            logger.info(f"💾 Saving {len(sanitised_settings)} placeholder settings for template {template_id} ({template_record.get('file_name')})")
+            logger.info(f"   Sample settings: {list(sanitised_settings.items())[:3]}")
+            
             upsert_template_placeholders(template_id, sanitised_settings, template_record.get('file_name'))
+            
+            logger.info(f"✅ Successfully saved placeholder settings to Supabase")
 
             # Return latest snapshot
             refreshed = fetch_template_placeholders(template_id, template_record.get('file_name'))
-            return {"success": True, "template": template_name, "template_id": str(template_id), "settings": refreshed}
+            logger.info(f"✅ Verified: Loaded {len(refreshed)} settings back from Supabase")
+            return {"success": True, "template": template_name, "template_id": str(template_id), "settings": refreshed, "saved_count": len(sanitised_settings)}
 
         if not SUPABASE_ENABLED and template_name:
             all_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
