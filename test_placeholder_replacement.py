@@ -2,6 +2,14 @@
 """
 Test script to diagnose placeholder replacement issues.
 Tests placeholder extraction, CMS settings loading, and data mapping.
+
+Usage:
+    # Use venv Python directly (recommended):
+    venv/bin/python3 test_placeholder_replacement.py "ICPO TEMPLATE.docx"
+    
+    # OR activate venv first:
+    source venv/bin/activate
+    python3 test_placeholder_replacement.py "ICPO TEMPLATE.docx"
 """
 
 import os
@@ -10,22 +18,45 @@ import json
 import requests
 from pathlib import Path
 
+# Check if we're in a venv, if not, try to use venv Python
+if not hasattr(sys, 'real_prefix') and not (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+    # Not in venv, check if venv exists
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    venv_python = os.path.join(script_dir, 'venv', 'bin', 'python3')
+    if os.path.exists(venv_python):
+        print("⚠️  Not running in virtual environment.")
+        print(f"   Please run: {venv_python} {sys.argv[0]} {' '.join(sys.argv[1:])}")
+        print("   OR activate venv: source venv/bin/activate")
+        sys.exit(1)
+
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import functions from main.py
-from main import (
-    extract_placeholders_from_docx,
-    fetch_template_placeholders,
-    resolve_template_record,
-    get_vessel_data,
-    resolve_placeholder_setting,
-    normalise_placeholder_key,
-    normalize_template_name,
-    read_json_file,
-    PLACEHOLDER_SETTINGS_PATH,
-    TEMPLATES_DIR
-)
+# Try to import functions from main.py
+try:
+    from main import (
+        extract_placeholders_from_docx,
+        fetch_template_placeholders,
+        resolve_template_record,
+        get_vessel_data,
+        resolve_placeholder_setting,
+        normalise_placeholder_key,
+        normalize_template_name,
+        read_json_file,
+        PLACEHOLDER_SETTINGS_PATH,
+        TEMPLATES_DIR
+    )
+    DIRECT_IMPORTS_AVAILABLE = True
+except ImportError as e:
+    print(f"❌ Error: Cannot import from main.py: {e}")
+    print("\nThis usually means:")
+    print("  1. Virtual environment is not activated")
+    print("  2. Dependencies are not installed (run: pip install -r requirements.txt)")
+    print("\nTo fix:")
+    print("  source venv/bin/activate")
+    print("  pip install -r requirements.txt")
+    print(f"  python3 {sys.argv[0]} {' '.join(sys.argv[1:])}")
+    sys.exit(1)
 
 def test_placeholder_extraction(template_name):
     """Test placeholder extraction from a template"""
