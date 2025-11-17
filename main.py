@@ -1499,7 +1499,42 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
         created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
         placeholders = extract_placeholders_from_docx(file_path)
         metadata_entry = metadata_map.get(docx_name, {})
-        placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {}).get(docx_name, {})
+        
+        # Load placeholder settings - try multiple template name formats
+        placeholder_settings_raw = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+        placeholder_settings = {}
+        
+        # Try to find settings using various template name formats
+        candidates = [
+            docx_name,
+            normalize_template_name(docx_name, with_extension=True, for_key=False),
+            normalize_template_name(docx_name, with_extension=False, for_key=False),
+        ]
+        
+        for candidate in candidates:
+            if candidate in placeholder_settings_raw:
+                placeholder_settings = placeholder_settings_raw[candidate]
+                logger.debug(f"Found placeholder settings for template using key: '{candidate}'")
+                break
+        
+        # If still not found, try normalized key matching
+        if not placeholder_settings:
+            docx_key = normalize_template_name(docx_name, with_extension=False, for_key=True)
+            for key in placeholder_settings_raw.keys():
+                key_normalized = normalize_template_name(key, with_extension=False, for_key=True)
+                if key_normalized == docx_key:
+                    placeholder_settings = placeholder_settings_raw[key]
+                    logger.debug(f"Found placeholder settings for template using normalized key: '{key}' -> '{docx_key}'")
+                    break
+        
+        # Also try to load from Supabase if available
+        if SUPABASE_ENABLED:
+            template_record = resolve_template_record(docx_name)
+            if template_record:
+                supabase_settings = fetch_template_placeholders(template_record['id'], docx_name)
+                # Merge: Supabase settings override disk settings
+                placeholder_settings.update(supabase_settings)
+                logger.debug(f"Merged Supabase placeholder settings for template {docx_name}")
 
         return {
             "name": docx_name,
