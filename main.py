@@ -3293,7 +3293,7 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     # Build patterns that match the placeholder WITH brackets
     # Match: {placeholder}, {{placeholder}}, [placeholder], etc.
     wrappers = [
-        rf"\{{\{{\s*{inner_pattern}\s*\}}\}}",   # {{placeholder}}
+        rf"\{\{{\s*{inner_pattern}\s*\}\}}",     # {{placeholder}} - DOUBLE BRACES (fixed)
         rf"\{{\s*{inner_pattern}\s*\}}",         # {placeholder} - MOST COMMON
         rf"\[\[\s*{inner_pattern}\s*\]\]",       # [[placeholder]]
         rf"\[\s*{inner_pattern}\s*\]",           # [placeholder]
