@@ -209,7 +209,8 @@ def test_vessel_data_matching(placeholders, vessel_imo="TEST001"):
     matched_fields = []
     unmatched_fields = []
     
-    for placeholder in placeholders[:30]:  # Test first 30
+    # Test ALL placeholders, not just first 30
+    for placeholder in placeholders:
         field, value = _intelligent_field_match(placeholder, vessel)
         if field and value:
             matched_fields.append((placeholder, field, value))
