@@ -2427,12 +2427,15 @@ async def get_user_downloadable_templates(request: Request):
                     ''
                 )
                 
-                # Get title/name - prefer Supabase title, fallback to metadata display_name
-                template_title = (
-                    details.get('title') or 
+                # Get display_name - prioritize metadata display_name, then Supabase title, then file_name
+                display_name = (
                     metadata_entry.get('display_name') or 
+                    details.get('title') or 
                     (file_name.replace('.docx', '') if file_name else 'Unknown')
                 )
+                
+                # Get title (fallback to display_name)
+                template_title = details.get('title') or display_name
                 
                 # If user can download, use their plan name, otherwise try to get plan info for template
                 plan_name = None
@@ -2450,12 +2453,13 @@ async def get_user_downloadable_templates(request: Request):
                             if plan_detail_res.data:
                                 plan_name = plan_detail_res.data[0].get('plan_name') or plan_detail_res.data[0].get('name') or plan_detail_res.data[0].get('plan_tier')
                                 plan_tier_val = plan_detail_res.data[0].get('plan_tier')
+                                logger.info(f"Found plan for locked template {template_id}: {plan_name} (tier: {plan_tier_val})")
                     except Exception as e:
                         logger.warning(f"Could not fetch plan info for template {template_id}: {e}")
                 
                 enhanced_templates.append({
                     "id": str(template_id),
-                    "name": template_title,
+                    "name": display_name,  # Use display_name as primary name
                     "title": template_title,
                     "file_name": file_name,
                     "description": description,
@@ -2464,11 +2468,11 @@ async def get_user_downloadable_templates(request: Request):
                     "max_downloads": t['max_downloads'],
                     "current_downloads": t['current_downloads'],
                     "remaining_downloads": t['remaining_downloads'],
-                    "plan_name": plan_name,
+                    "plan_name": plan_name,  # Always include plan_name (even if None)
                     "plan_tier": plan_tier_val,
                     "metadata": {
-                        "display_name": metadata_entry.get('display_name', template_title),
-                        "description": metadata_entry.get('description', description)
+                        "display_name": display_name,  # Always include display_name
+                        "description": description or metadata_entry.get('description', '')  # Always include description
                     }
                 })
             
