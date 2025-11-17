@@ -4184,6 +4184,7 @@ async def generate_document(request: Request):
                     logger.warning(f"   No similar keys found. This placeholder will use random data.")
             else:
                 matched_placeholders.append(placeholder)
+                logger.debug(f"✅ Found CMS setting for '{placeholder}' (matched key: '{setting_key}')")
 
             if setting:
                 # Validate setting structure
@@ -4194,10 +4195,13 @@ async def generate_document(request: Request):
                 
                 source = setting.get('source', 'random')
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source})")
-                logger.debug(f"Full CMS setting for '{placeholder}': {setting}")
-                logger.debug(f"   customValue: '{setting.get('customValue')}'")
-                logger.debug(f"   databaseField: '{setting.get('databaseField')}'")
-                logger.debug(f"   csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
+                logger.info(f"📋 FULL CMS SETTING for '{placeholder}':")
+                logger.info(f"   source: '{source}'")
+                logger.info(f"   customValue: '{setting.get('customValue')}'")
+                logger.info(f"   databaseTable: '{setting.get('databaseTable')}'")
+                logger.info(f"   databaseField: '{setting.get('databaseField')}'")
+                logger.info(f"   csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
+                logger.info(f"   randomOption: '{setting.get('randomOption')}'")
 
                 try:
                     # If source is 'random' but databaseField is empty, try intelligent matching first
