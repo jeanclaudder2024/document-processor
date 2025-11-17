@@ -123,12 +123,20 @@ class TemplateEditor {
 
     async loadDatabaseTables() {
         try {
+            console.log('Loading database tables from:', `${this.apiBaseUrl}/database-tables`);
             const data = await this.apiJson('/database-tables');
+            console.log('Database tables response:', data);
             if (data && data.tables) {
                 this.databaseTables = data.tables;
+                console.log(`Loaded ${data.tables.length} database tables:`, data.tables.map(t => t.name));
+            } else {
+                console.warn('No tables found in response:', data);
+                this.databaseTables = [];
             }
         } catch (error) {
             console.error('Failed to load database tables:', error);
+            // Set empty array to prevent errors
+            this.databaseTables = [];
         }
     }
 
@@ -151,16 +159,24 @@ class TemplateEditor {
 
     async loadCsvFiles() {
         try {
+            console.log('Loading CSV files from:', `${this.apiBaseUrl}/csv-files`);
             const data = await this.apiJson('/csv-files');
+            console.log('CSV files response:', data);
             if (data && data.csv_files) {
                 this.csvFiles = data.csv_files;
+                console.log(`Loaded ${data.csv_files.length} CSV files:`, data.csv_files.map(f => f.id));
                 // Load fields for each CSV
                 for (const csvFile of this.csvFiles) {
                     await this.loadCsvFields(csvFile.id);
                 }
+            } else {
+                console.warn('No CSV files found in response:', data);
+                this.csvFiles = [];
             }
         } catch (error) {
             console.error('Failed to load CSV files:', error);
+            // Set empty array to prevent errors
+            this.csvFiles = [];
         }
     }
 

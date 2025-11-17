@@ -937,8 +937,9 @@ async def get_vessel_fields():
 
 
 @app.get("/database-tables")
-async def get_database_tables():
+async def get_database_tables(request: Request):
     """Get list of all available database tables that can be used as data sources"""
+    # Allow unauthenticated access for CMS editor
     try:
         # List of available tables with their display names
         tables = [
@@ -951,6 +952,7 @@ async def get_database_tables():
         
         # If Supabase is enabled, we could dynamically fetch table names
         # For now, return the predefined list
+        logger.info(f"Returning {len(tables)} database tables")
         return {"success": True, "tables": tables}
     except Exception as e:
         logger.error(f"Error getting database tables: {e}")
@@ -958,7 +960,7 @@ async def get_database_tables():
 
 
 @app.get("/database-tables/{table_name}/columns")
-async def get_database_table_columns(table_name: str):
+async def get_database_table_columns(table_name: str, request: Request):
     """Get list of columns for a specific database table"""
     try:
         if not SUPABASE_ENABLED:
@@ -3003,8 +3005,9 @@ async def get_all_data(current_user: str = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/csv-files")
-async def get_csv_files(current_user: str = Depends(get_current_user)):
+async def get_csv_files(request: Request):
     """Get list of available CSV files"""
+    # Allow unauthenticated access for CMS editor
     try:
         csv_files = []
         for dataset in list_csv_datasets():
@@ -3015,13 +3018,14 @@ async def get_csv_files(current_user: str = Depends(get_current_user)):
                     "display_name": dataset.get("display_name") or dataset["id"].replace('_', ' ').title()
                 })
 
+        logger.info(f"Returning {len(csv_files)} CSV files")
         return {"success": True, "csv_files": csv_files}
     except Exception as e:
         logger.error(f"Error getting CSV files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/csv-fields/{csv_id}")
-async def get_csv_fields(csv_id: str, current_user: str = Depends(get_current_user)):
+async def get_csv_fields(csv_id: str, request: Request):
     """Get columns/fields from a CSV file"""
     try:
         dataset_id = normalise_dataset_id(csv_id)
