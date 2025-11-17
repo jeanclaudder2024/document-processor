@@ -199,24 +199,33 @@ def fetch_template_placeholders(template_id: str,
     template_hint: Optional[str] = None) -> Dict[str,
     Dict[str,
      Optional[str]]]:
-    """Fetch placeholder configuration for a template"""
+    """
+    Fetch placeholder settings for a template from Supabase and disk.
+    Merges settings with priority: Supabase > disk.
+    Returns normalized settings dict.
+    """
+    # Load disk settings first as fallback
     disk_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+    disk_result = _lookup_placeholder_settings_from_disk(
+        disk_settings, template_id, template_hint)
 
     if not SUPABASE_ENABLED:
-        return _lookup_placeholder_settings_from_disk(
-            disk_settings, template_id, template_hint)
+        logger.info(f"Supabase not enabled, using disk settings only for template {template_id}")
+        return disk_result
 
+    # Try to load from Supabase
+    supabase_settings: Dict[str, Dict[str, Optional[str]]] = {}
     try:
         response = supabase.table('template_placeholders').select(
             'placeholder, source, custom_value, database_field, csv_id, csv_field, csv_row, random_option'
         ).eq('template_id', template_id).execute()
-        settings: Dict[str, Dict[str, Optional[str]]] = {}
+        
         for row in response.data or []:
             placeholder_key = row.get('placeholder', '')
             if not placeholder_key:
                 continue
                 
-            settings[placeholder_key] = {
+            supabase_settings[placeholder_key] = {
                 'source': row.get('source', 'random'),
                 'customValue': str(row.get('custom_value') or '').strip(),
                 'databaseField': str(row.get('database_field') or '').strip(),
@@ -225,44 +234,79 @@ def fetch_template_placeholders(template_id: str,
                 'csvRow': int(row['csv_row']) if row.get('csv_row') is not None else 0,
                 'randomOption': row.get('random_option', 'auto') or 'auto'
             }
-            logger.debug(f"Loaded placeholder setting for '{placeholder_key}': source={settings[placeholder_key]['source']}, databaseField={settings[placeholder_key]['databaseField']}, csvId={settings[placeholder_key]['csvId']}")
+            logger.debug(f"Loaded placeholder setting from Supabase for '{placeholder_key}': source={supabase_settings[placeholder_key]['source']}")
         
-        if settings:
-            logger.info(f"Loaded {len(settings)} placeholder settings from Supabase for template {template_id}")
-            return settings
-        else:
-            logger.warning(f"No placeholder settings found in Supabase for template {template_id}, falling back to disk")
+        if supabase_settings:
+            logger.info(f"Loaded {len(supabase_settings)} placeholder settings from Supabase for template {template_id}")
     except Exception as exc:
-        logger.error(
-            f"Failed to fetch template placeholders for {template_id}: {exc}")
-    return _lookup_placeholder_settings_from_disk(
-        disk_settings, template_id, template_hint)
+        logger.error(f"Failed to fetch template placeholders from Supabase for {template_id}: {exc}")
+        logger.info(f"Falling back to disk settings")
+
+    # Merge settings: Supabase takes priority, but fill in missing placeholders from disk
+    merged_settings = {}
+    
+    # First, add all disk settings
+    merged_settings.update(disk_result)
+    
+    # Then, override with Supabase settings (higher priority)
+    merged_settings.update(supabase_settings)
+    
+    if merged_settings:
+        logger.info(f"Merged {len(merged_settings)} placeholder settings (Supabase: {len(supabase_settings)}, Disk: {len(disk_result)})")
+    
+    return merged_settings
 
 
 def _lookup_placeholder_settings_from_disk(
     disk_settings: Dict[str, Dict], template_id: str, template_hint: Optional[str]) -> Dict[str, Dict[str, Optional[str]]]:
-    """Internal helper to find placeholder config from disk storage."""
+    """
+    Internal helper to find placeholder config from disk storage.
+    Uses unified normalization for consistent matching.
+    """
+    if not disk_settings:
+        return {}
+    
     candidates = []
     if template_hint:
+        # Try various formats of template_hint
         candidates.extend([
             template_hint,
-            ensure_docx_filename(template_hint),
-            normalise_template_key(template_hint),
+            normalize_template_name(template_hint, with_extension=True, for_key=False),
+            normalize_template_name(template_hint, with_extension=False, for_key=False),
+            normalize_template_name(template_hint, with_extension=False, for_key=True),
         ])
     if template_id:
         candidates.append(str(template_id))
+        # Also try normalized versions
+        candidates.append(normalize_template_name(str(template_id), with_extension=True, for_key=False))
 
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_candidates = []
     for candidate in candidates:
-        if not candidate:
-            continue
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique_candidates.append(candidate)
+
+    # Try direct matches first
+    for candidate in unique_candidates:
         if candidate in disk_settings:
+            logger.debug(f"Found disk settings using direct match: '{candidate}'")
             return disk_settings[candidate]
-        if ensure_docx_filename(candidate) in disk_settings:
-            return disk_settings[ensure_docx_filename(candidate)]
-        normalised = normalise_template_key(candidate)
+    
+    # Try normalized key matching
+    for candidate in unique_candidates:
+        candidate_key = normalize_template_name(candidate, with_extension=False, for_key=True)
+        if not candidate_key:
+            continue
+        
         for key in disk_settings.keys():
-            if normalise_template_key(key) == normalised:
+            key_normalized = normalize_template_name(key, with_extension=False, for_key=True)
+            if key_normalized == candidate_key:
+                logger.debug(f"Found disk settings using normalized match: '{candidate}' -> '{key}'")
                 return disk_settings[key]
+    
+    logger.debug(f"No disk settings found for template_id={template_id}, template_hint={template_hint}")
     return {}
 
 
@@ -598,22 +642,48 @@ def list_csv_datasets() -> List[Dict[str, str]]:
     return datasets
 
 
-def normalise_template_key(value: Optional[str]) -> str:
-    """Normalise template identifiers to a consistent filesystem key."""
+def normalize_template_name(value: Optional[str], with_extension: bool = True, for_key: bool = False) -> str:
+    """
+    Unified template name normalization function.
+    
+    Args:
+        value: Template name (with or without .docx extension)
+        with_extension: If True, ensure .docx extension is present. If False, remove it.
+        for_key: If True, normalize for use as a dictionary key (lowercase, no extension)
+    
+    Returns:
+        Normalized template name
+    """
     if not value:
         return ""
+    
+    # Strip whitespace and get basename
     name = value.strip()
     name = os.path.basename(name)
+    
+    # Remove extension if present
     if name.lower().endswith('.docx'):
         name = name[:-5]
-    return name.strip().lower()
+    
+    # For dictionary keys, return lowercase without extension
+    if for_key:
+        return name.strip().lower()
+    
+    # Add extension if requested
+    if with_extension:
+        return f"{name.strip()}.docx"
+    
+    return name.strip()
+
+
+def normalise_template_key(value: Optional[str]) -> str:
+    """Normalise template identifiers to a consistent filesystem key (deprecated - use normalize_template_name with for_key=True)."""
+    return normalize_template_name(value, with_extension=False, for_key=True)
 
 
 def ensure_docx_filename(value: str) -> str:
-    """Ensure filename ends with .docx"""
-    if not value:
-        return value
-    return value if value.lower().endswith('.docx') else f"{value}.docx"
+    """Ensure filename ends with .docx (deprecated - use normalize_template_name with with_extension=True)."""
+    return normalize_template_name(value, with_extension=True, for_key=False)
 
 
 # ============================================================================
@@ -926,14 +996,31 @@ def extract_placeholders_from_docx(file_path: str) -> List[str]:
 
 
 def normalise_placeholder_key(value: Optional[str]) -> str:
-    """Normalise placeholder identifiers for matching (case and punctuation insensitive)."""
+    """
+    Normalise placeholder identifiers for matching (case and punctuation insensitive).
+    Handles spaces, underscores, hyphens, and special characters.
+    """
     if not value:
         return ""
-    # Lowercase, replace whitespace with underscore, then strip
-    # non-alphanumeric/underscore
+    
+    # Strip and lowercase
     cleaned = value.strip().lower()
+    
+    # Replace all whitespace (spaces, tabs, newlines) with underscores
     cleaned = re.sub(r'\s+', '_', cleaned)
+    
+    # Replace hyphens and other common separators with underscores
+    cleaned = re.sub(r'[-–—]+', '_', cleaned)
+    
+    # Remove all non-alphanumeric characters except underscores
     cleaned = re.sub(r'[^a-z0-9_]', '', cleaned)
+    
+    # Collapse multiple underscores into one
+    cleaned = re.sub(r'_+', '_', cleaned)
+    
+    # Remove leading/trailing underscores
+    cleaned = cleaned.strip('_')
+    
     return cleaned
 
 
@@ -942,30 +1029,78 @@ def resolve_placeholder_setting(
     """
     Resolve a placeholder setting using multiple normalisation strategies.
     Returns the matched key and the setting dict.
+    
+    Matching strategies (in order of priority):
+    1. Direct exact match
+    2. Case-insensitive match
+    3. Space/underscore/hyphen variant matches
+    4. Normalized key comparison
+    5. Fuzzy matching (contains/contained in)
     """
     if not template_settings or not placeholder:
         return None, None
 
-    # Direct match
+    # Strategy 1: Direct exact match
     if placeholder in template_settings:
         return placeholder, template_settings[placeholder]
 
-    # Common variants
-    variants = [
-        placeholder.lower(),
-        placeholder.replace(' ', '_'),
-        placeholder.replace(' ', '_').lower(),
-    ]
+    # Strategy 2: Case-insensitive direct match
+    placeholder_lower = placeholder.lower()
+    for key in template_settings.keys():
+        if key.lower() == placeholder_lower:
+            return key, template_settings[key]
 
+    # Strategy 3: Common variants (spaces, underscores, hyphens)
+    variants = [
+        placeholder.replace(' ', '_'),
+        placeholder.replace('_', ' '),
+        placeholder.replace('-', '_'),
+        placeholder.replace('_', '-'),
+        placeholder.replace(' ', '-'),
+        placeholder.replace('-', ' '),
+        placeholder.replace(' ', '_').lower(),
+        placeholder.replace('_', ' ').lower(),
+        placeholder.replace('-', '_').lower(),
+        placeholder.replace('_', '-').lower(),
+    ]
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_variants = []
     for variant in variants:
+        if variant not in seen and variant != placeholder:
+            seen.add(variant)
+            unique_variants.append(variant)
+    
+    for variant in unique_variants:
         if variant in template_settings:
             return variant, template_settings[variant]
+        # Also try case-insensitive variant match
+        variant_lower = variant.lower()
+        for key in template_settings.keys():
+            if key.lower() == variant_lower:
+                return key, template_settings[key]
 
-    # Normalised comparison
+    # Strategy 4: Normalised comparison
     target_norm = normalise_placeholder_key(placeholder)
-    for key, value in template_settings.items():
-        if normalise_placeholder_key(key) == target_norm:
-            return key, value
+    if target_norm:
+        for key, value in template_settings.items():
+            key_norm = normalise_placeholder_key(key)
+            if key_norm == target_norm:
+                return key, value
+
+    # Strategy 5: Fuzzy matching (one contains the other, minimum 4 chars)
+    if len(target_norm) >= 4:
+        for key, value in template_settings.items():
+            key_norm = normalise_placeholder_key(key)
+            if key_norm and len(key_norm) >= 4:
+                # Check if one is contained in the other
+                if target_norm in key_norm or key_norm in target_norm:
+                    # Additional check: ensure significant overlap (at least 70% of shorter string)
+                    shorter = min(len(target_norm), len(key_norm))
+                    longer = max(len(target_norm), len(key_norm))
+                    if shorter >= longer * 0.7:
+                        return key, value
 
     return None, None
 
@@ -2793,6 +2928,43 @@ def get_vessel_data(imo: str) -> Optional[Dict]:
             'flag': 'Panama',
         }
 
+def validate_placeholder_setting(setting: Dict) -> Tuple[bool, List[str]]:
+    """
+    Validate a placeholder setting structure.
+    Returns (is_valid, list_of_errors).
+    """
+    errors = []
+    
+    if not isinstance(setting, dict):
+        return False, ["Setting must be a dictionary"]
+    
+    source = setting.get('source', 'random')
+    valid_sources = ['random', 'database', 'csv', 'custom']
+    
+    if source not in valid_sources:
+        errors.append(f"Invalid source '{source}'. Must be one of: {', '.join(valid_sources)}")
+    
+    if source == 'custom':
+        custom_value = setting.get('customValue', '')
+        if not custom_value or not str(custom_value).strip():
+            errors.append("Custom source requires a non-empty customValue")
+    
+    if source == 'database':
+        database_field = setting.get('databaseField', '')
+        # Empty databaseField is OK - will use intelligent matching
+        pass
+    
+    if source == 'csv':
+        csv_id = setting.get('csvId', '')
+        csv_field = setting.get('csvField', '')
+        if not csv_id or not str(csv_id).strip():
+            errors.append("CSV source requires a non-empty csvId")
+        if not csv_field or not str(csv_field).strip():
+            errors.append("CSV source requires a non-empty csvField")
+    
+    return len(errors) == 0, errors
+
+
 def _calculate_similarity(str1: str, str2: str) -> float:
     """
     Calculate similarity ratio between two strings using Levenshtein distance.
@@ -3540,6 +3712,12 @@ async def generate_document(request: Request):
                         logger.warning(f"   Similar key found: '{key}' (consider using this exact name)")
 
             if setting:
+                # Validate setting structure
+                is_valid, validation_errors = validate_placeholder_setting(setting)
+                if not is_valid:
+                    logger.warning(f"⚠️  Invalid placeholder setting for '{placeholder}': {', '.join(validation_errors)}")
+                    logger.warning(f"   Will use random data as fallback")
+                
                 source = setting.get('source', 'random')
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source})")
                 logger.debug(f"Full CMS setting for '{placeholder}': {setting}")
@@ -3547,93 +3725,94 @@ async def generate_document(request: Request):
                 logger.debug(f"   databaseField: '{setting.get('databaseField')}'")
                 logger.debug(f"   csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
 
-                if source == 'custom':
-                    custom_value = str(setting.get('customValue', '')).strip()
-                    if custom_value:
-                        data_mapping[placeholder] = custom_value
-                        found = True
-                        logger.info(f"✅ {placeholder} -> '{custom_value}' (CMS custom value)")
-                    else:
-                        logger.warning(f"⚠️  Placeholder '{placeholder}' has custom source but customValue is empty")
-
-                elif source == 'database':
-                    database_field = (setting.get('databaseField') or '').strip()
-                    logger.info(f"  🗄️  DATABASE source configured for '{placeholder}'")
-                    logger.info(f"     databaseField='{database_field}'")
-                    logger.info(f"     vessel_imo='{vessel_imo}' (from page)")
-                    logger.info(f"  📋 Available vessel fields: {list(vessel.keys())}")
-
-                    matched_field = None
-                    matched_value = None
-
-                    if database_field:
-                        if database_field in vessel:
-                            value = vessel[database_field]
-                            if value is not None and str(value).strip() != '':
-                                matched_field = database_field
-                                matched_value = str(value).strip()
-                                logger.info(f"  ✅ Exact match found: '{database_field}'")
+                try:
+                    if source == 'custom':
+                        custom_value = str(setting.get('customValue', '')).strip()
+                        if custom_value:
+                            data_mapping[placeholder] = custom_value
+                            found = True
+                            logger.info(f"✅ {placeholder} -> '{custom_value}' (CMS custom value)")
                         else:
-                            database_field_lower = database_field.lower()
-                            for key, value in vessel.items():
-                                if key.lower() == database_field_lower and value is not None and str(value).strip() != '':
-                                    matched_field = key
-                                    matched_value = str(value).strip()
-                                    logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}'")
-                                    break
+                            logger.warning(f"⚠️  Placeholder '{placeholder}' has custom source but customValue is empty")
 
-                    if not matched_field and not database_field:
-                        logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
-                        matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
-                        if matched_field:
-                            logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
-                        else:
-                            logger.warning(f"  ⚠️  Intelligent matching failed for '{placeholder}'")
+                    elif source == 'database':
+                        database_field = (setting.get('databaseField') or '').strip()
+                        logger.info(f"  🗄️  DATABASE source configured for '{placeholder}'")
+                        logger.info(f"     databaseField='{database_field}'")
+                        logger.info(f"     vessel_imo='{vessel_imo}' (from page)")
+                        logger.info(f"  📋 Available vessel fields: {list(vessel.keys())}")
 
-                    if not matched_field and database_field:
-                        logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")
-                        matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
-                        if matched_field:
-                            logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
-                        else:
-                            logger.warning(f"  ⚠️  Intelligent fallback matching failed for '{placeholder}'")
+                        matched_field = None
+                        matched_value = None
 
-                    if matched_field and matched_value:
-                        data_mapping[placeholder] = matched_value
-                        found = True
-                        logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}')")
-                    else:
-                        logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any vessel field!")
                         if database_field:
-                            logger.error(f"  ❌ Explicit field '{database_field}' not found in vessel data")
-                        logger.error(f"  ❌ Available vessel fields: {list(vessel.keys())[:20]}...")  # Show first 20
-                        logger.error(f"  ❌ This will use RANDOM data!")
-                        logger.error(f"  💡 TIP: Check if databaseField in CMS matches vessel field names exactly (case-insensitive)")
+                            if database_field in vessel:
+                                value = vessel[database_field]
+                                if value is not None and str(value).strip() != '':
+                                    matched_field = database_field
+                                    matched_value = str(value).strip()
+                                    logger.info(f"  ✅ Exact match found: '{database_field}'")
+                            else:
+                                database_field_lower = database_field.lower()
+                                for key, value in vessel.items():
+                                    if key.lower() == database_field_lower and value is not None and str(value).strip() != '':
+                                        matched_field = key
+                                        matched_value = str(value).strip()
+                                        logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}'")
+                                        break
 
-                elif source == 'csv':
-                    csv_id = setting.get('csvId', '')
-                    csv_field = setting.get('csvField', '')
-                    csv_row = setting.get('csvRow', 0)
+                        if not matched_field and not database_field:
+                            logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
+                            matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+                            if matched_field:
+                                logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
+                            else:
+                                logger.warning(f"  ⚠️  Intelligent matching failed for '{placeholder}'")
 
-                    logger.info(f"  📊 CSV source configured for '{placeholder}'")
-                    logger.info(f"     csvId='{csv_id}', csvField='{csv_field}', csvRow={csv_row}")
+                        if not matched_field and database_field:
+                            logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")
+                            matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+                            if matched_field:
+                                logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
+                            else:
+                                logger.warning(f"  ⚠️  Intelligent fallback matching failed for '{placeholder}'")
 
-                    if csv_id and csv_field:
-                        try:
-                            csv_row_int = int(csv_row) if csv_row is not None else 0
-                            csv_data = get_csv_data(csv_id, csv_row_int)
-                            
-                            if csv_data:
-                                logger.info(f"  ✅ CSV data retrieved for '{csv_id}' at row {csv_row_int}")
-                                logger.info(f"     Available fields: {list(csv_data.keys())[:10]}...")
+                        if matched_field and matched_value:
+                            data_mapping[placeholder] = matched_value
+                            found = True
+                            logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}')")
+                        else:
+                            logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any vessel field!")
+                            if database_field:
+                                logger.error(f"  ❌ Explicit field '{database_field}' not found in vessel data")
+                            logger.error(f"  ❌ Available vessel fields: {list(vessel.keys())[:20]}...")  # Show first 20
+                            logger.error(f"  ❌ This will use RANDOM data!")
+                            logger.error(f"  💡 TIP: Check if databaseField in CMS matches vessel field names exactly (case-insensitive)")
+
+                    elif source == 'csv':
+                        csv_id = setting.get('csvId', '')
+                        csv_field = setting.get('csvField', '')
+                        csv_row = setting.get('csvRow', 0)
+
+                        logger.info(f"  📊 CSV source configured for '{placeholder}'")
+                        logger.info(f"     csvId='{csv_id}', csvField='{csv_field}', csvRow={csv_row}")
+
+                        if csv_id and csv_field:
+                            try:
+                                csv_row_int = int(csv_row) if csv_row is not None else 0
+                                csv_data = get_csv_data(csv_id, csv_row_int)
                                 
-                                # Try exact match first
-                                if csv_field in csv_data:
-                                    value = csv_data[csv_field]
-                                    if value is not None and str(value).strip() != '':
-                                        data_mapping[placeholder] = str(value).strip()
-                                        found = True
-                                        logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{csv_field})")
+                                if csv_data:
+                                    logger.info(f"  ✅ CSV data retrieved for '{csv_id}' at row {csv_row_int}")
+                                    logger.info(f"     Available fields: {list(csv_data.keys())[:10]}...")
+                                    
+                                    # Try exact match first
+                                    if csv_field in csv_data:
+                                        value = csv_data[csv_field]
+                                        if value is not None and str(value).strip() != '':
+                                            data_mapping[placeholder] = str(value).strip()
+                                            found = True
+                                            logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{csv_field})")
                                     else:
                                         logger.warning(f"  ⚠️  CSV field '{csv_field}' exists but is empty")
                                 else:
@@ -3653,15 +3832,21 @@ async def generate_document(request: Request):
                                     if not matched_field:
                                         logger.error(f"  ❌❌❌ FAILED: CSV field '{csv_field}' not found in CSV data!")
                                         logger.error(f"  ❌ Available fields: {list(csv_data.keys())}")
-                            else:
-                                logger.error(f"  ❌❌❌ FAILED: Could not retrieve CSV data for '{csv_id}' at row {csv_row_int}")
-                        except Exception as csv_exc:
-                            logger.error(f"  ❌❌❌ ERROR processing CSV data for '{placeholder}': {csv_exc}")
-                            import traceback
-                            logger.error(traceback.format_exc())
-                    else:
-                        logger.warning(f"  ⚠️  {placeholder}: CSV source selected but csvId or csvField missing in CMS")
-                        logger.warning(f"     csvId='{csv_id}', csvField='{csv_field}'")
+                                else:
+                                    logger.error(f"  ❌❌❌ FAILED: Could not retrieve CSV data for '{csv_id}' at row {csv_row_int}")
+                            except Exception as csv_exc:
+                                logger.error(f"  ❌❌❌ ERROR processing CSV data for '{placeholder}': {csv_exc}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                        else:
+                            logger.warning(f"  ⚠️  {placeholder}: CSV source selected but csvId or csvField missing in CMS")
+                            logger.warning(f"     csvId='{csv_id}', csvField='{csv_field}'")
+
+                except Exception as resolve_exc:
+                    logger.error(f"  ❌❌❌ ERROR resolving data source for '{placeholder}': {resolve_exc}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    logger.warning(f"   Will use random data as fallback")
 
             if not found:
                 if setting:

@@ -530,11 +530,17 @@ class DocumentEditor {
             this.updatePlaceholderSetting(ph);
         });
 
+        // Normalize template name to ensure consistent format
+        let normalizedTemplateName = this.currentTemplate;
+        if (!normalizedTemplateName.endsWith('.docx')) {
+            normalizedTemplateName = normalizedTemplateName + '.docx';
+        }
+
         try {
             const data = await this.apiJson('/placeholder-settings', {
                 method: 'POST',
                 body: JSON.stringify({
-                    template_name: this.currentTemplate,
+                    template_name: normalizedTemplateName,
                     template_id: this.currentTemplateId,
                     settings: this.currentSettings
                 })
