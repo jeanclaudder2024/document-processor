@@ -3094,6 +3094,7 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
         # Ownership & Operations
         'vesselowner': 'owner_name', 'vessel_owner': 'owner_name', 'owner': 'owner_name',
         'ownername': 'owner_name', 'owner_name': 'owner_name',
+        # Note: 'owner' can also map to vessel_owner field if owner_name doesn't exist
         'vesseloperator': 'operator_name', 'vessel_operator': 'operator_name',
         'operator': 'operator_name', 'operatorname': 'operator_name', 'operator_name': 'operator_name',
         'ismmanager': 'ism_manager', 'ism_manager': 'ism_manager',
@@ -3146,6 +3147,16 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
             if value is not None and str(value).strip() != '':
                 logger.debug(f"  ✅ Direct mapping: '{placeholder}' -> '{mapped_field}'")
                 return (mapped_field, str(value).strip())
+        
+        # Try alternative field names if primary doesn't exist
+        # Special handling for 'owner' - try multiple field variations
+        if placeholder_normalized == 'owner':
+            for alt_field in ['vessel_owner', 'owner_name', 'owner']:
+                if alt_field in vessel:
+                    value = vessel[alt_field]
+                    if value is not None and str(value).strip() != '':
+                        logger.debug(f"  ✅ Alternative owner mapping: '{placeholder}' -> '{alt_field}'")
+                        return (alt_field, str(value).strip())
     
     # Strategy 2: Exact match after normalization (high priority)
     best_match = None
@@ -3906,17 +3917,29 @@ async def generate_document(request: Request):
                     logger.warning(f"   Will use random data as fallback")
 
             if not found:
-                if setting:
-                    random_option = setting.get('randomOption', 'auto')
-                    source = setting.get('source', 'random')
-                    logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
+                # Try intelligent matching even if not configured in CMS
+                # This helps match common vessel fields automatically
+                logger.info(f"  🔍 {placeholder}: Not found in configured sources, trying intelligent database matching...")
+                intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
+                
+                if intelligent_field and intelligent_value:
+                    data_mapping[placeholder] = intelligent_value
+                    found = True
+                    logger.info(f"  ✅✅✅ AUTO-MATCHED: {placeholder} = '{intelligent_value}' (from vessel field '{intelligent_field}')")
+                    logger.info(f"  💡 TIP: Configure this in CMS for more control over data source")
                 else:
-                    random_option = 'auto'
-                    logger.info(f"  {placeholder}: Not configured in CMS, using random data (mode: {random_option})")
+                    # Fall back to random data
+                    if setting:
+                        random_option = setting.get('randomOption', 'auto')
+                        source = setting.get('source', 'random')
+                        logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
+                    else:
+                        random_option = 'auto'
+                        logger.warning(f"  ⚠⚠⚠ {placeholder}: Not configured in CMS and no intelligent match found, using random data")
 
-                seed_imo = None if random_option == 'fixed' else vessel_imo
-                data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo)
-                logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
+                    seed_imo = None if random_option == 'fixed' else vessel_imo
+                    data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo)
+                    logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
