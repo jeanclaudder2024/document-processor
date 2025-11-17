@@ -1,5 +1,5 @@
-// Advanced Document Editor
-class DocumentEditor {
+// Template Editor - Rebuilt for new CMS system
+class TemplateEditor {
     constructor() {
         const origin = window.location.origin || '';
         const hostname = window.location.hostname || '';
@@ -16,68 +16,35 @@ class DocumentEditor {
         }
 
         this.apiBaseUrl = apiBase;
-        this.currentTemplate = null;
         this.currentTemplateId = null;
+        this.currentTemplate = null;
         this.currentSettings = {};
         this.placeholders = [];
-        this.vesselFields = [];  // Store available vessel fields
-        this.csvFiles = [];  // Store available CSV files
-        this.csvFields = {};  // Store CSV fields by file ID
+        this.databaseTables = [];
+        this.databaseColumns = {};  // {tableName: [columns]}
+        this.csvFiles = [];
+        this.csvFields = {};  // {csvId: [fields]}
+        this.plans = {};
         this.init();
     }
 
-    init() {
-        this.loadTemplates();
-        this.loadVessels();
-        this.loadVesselFields();  // Load vessel fields
-        this.loadCsvFiles();  // Load CSV files
-        
-        // Get template from URL parameter
+    async init() {
+        // Get template_id from URL parameter
         const urlParams = new URLSearchParams(window.location.search);
-        const templateParam = urlParams.get('template');
-        if (templateParam) {
-            setTimeout(() => {
-                document.getElementById('templateSelect').value = templateParam;
-                this.loadTemplate();
-            }, 500);
+        const templateId = urlParams.get('template_id');
+        
+        if (templateId) {
+            await this.loadTemplateById(templateId);
+        } else {
+            document.getElementById('templateTitle').textContent = 'No template selected';
+            document.getElementById('placeholdersContainer').innerHTML = 
+                '<div class="alert alert-warning">Please open this editor from the template list with a template selected.</div>';
         }
-    }
-
-    async loadVesselFields() {
-        try {
-            const data = await this.apiJson('/vessel-fields');
-            if (data && data.fields) {
-                this.vesselFields = data.fields;
-            }
-        } catch (error) {
-            console.error('Failed to load vessel fields:', error);
-        }
-    }
-
-    async loadCsvFiles() {
-        try {
-            const data = await this.apiJson('/csv-files');
-            if (data && data.csv_files) {
-                this.csvFiles = data.csv_files;
-                // Load fields for each CSV file
-                for (const csvFile of this.csvFiles) {
-                    await this.loadCsvFields(csvFile.id);
-                }
-            }
-        } catch (error) {
-            console.error('Failed to load CSV files:', error);
-        }
-    }
-
-    async loadCsvFields(csvId) {
-        try {
-            const data = await this.apiJson(`/csv-fields/${csvId}`);
-            if (data && data.fields) {
-                this.csvFields[csvId] = data.fields;
-            }
-        } catch (error) {
-            console.error(`Failed to load CSV fields for ${csvId}:`, error);
-        }
+        
+        // Load supporting data
+        await this.loadDatabaseTables();
+        await this.loadCsvFiles();
+        await this.loadPlans();
     }
 
     async apiJson(path, options = {}) {
@@ -98,464 +65,435 @@ class DocumentEditor {
             }
             return await response.json();
         } catch (error) {
-            alert(`Error: ${error.message}`);
-            return null;
+            console.error(`API Error (${path}):`, error);
+            throw error;
         }
     }
 
-    async loadTemplates() {
+    async loadTemplateById(templateId) {
         try {
-            const data = await this.apiJson('/templates');
-            if (data && data.templates) {
-                const select = document.getElementById('templateSelect');
-                select.innerHTML = '<option value="">Select template...</option>';
-                data.templates.forEach(t => {
-                    const option = document.createElement('option');
-                    option.value = t.name;
-                    option.textContent = t.name;
-                    select.appendChild(option);
-                });
+            // Try to get template by ID
+            const templateData = await this.apiJson(`/templates/${encodeURIComponent(templateId)}`);
+            if (!templateData) {
+                throw new Error('Template not found');
             }
-        } catch (error) {
-            console.error('Failed to load templates:', error);
-        }
-    }
 
-    async loadVessels() {
-        try {
-            const data = await this.apiJson('/vessels');
-            if (data && data.vessels) {
-                const select = document.getElementById('vesselSelect');
-                select.innerHTML = '<option value="">Select vessel...</option>';
-                data.vessels.forEach(v => {
-                    const option = document.createElement('option');
-                    option.value = v.imo;
-                    option.textContent = `${v.name} (${v.imo})`;
-                    select.appendChild(option);
-                });
-            }
-        } catch (error) {
-            console.error('Failed to load vessels:', error);
-        }
-    }
-
-    async loadTemplate() {
-        const templateName = document.getElementById('templateSelect').value;
-        if (!templateName) return;
-
-        try {
-            const templateData = await this.apiJson(`/templates/${encodeURIComponent(templateName)}`);
-            if (!templateData) return;
-
-            this.currentTemplate = templateName;
-            this.currentTemplateId = templateData?.template_id || null;
+            this.currentTemplateId = templateData.template_id || templateId;
+            this.currentTemplate = templateData;
             this.placeholders = templateData.placeholders || [];
             
-            document.getElementById('documentTitle').textContent = templateName;
-
-            // Load existing settings
-            const settingsData = await this.apiJson(`/placeholder-settings?template_name=${encodeURIComponent(templateName)}`);
+            // Update UI
+            document.getElementById('templateTitle').textContent = 
+                templateData.metadata?.display_name || templateData.title || templateData.name || 'Untitled Template';
+            
+            // Load template settings
+            document.getElementById('templateDisplayName').value = 
+                templateData.metadata?.display_name || templateData.title || '';
+            document.getElementById('templateDescription').value = 
+                templateData.metadata?.description || templateData.description || '';
+            document.getElementById('templateFontFamily').value = 
+                templateData.metadata?.font_family || templateData.font_family || '';
+            document.getElementById('templateFontSize').value = 
+                templateData.metadata?.font_size || templateData.font_size || '';
+            
+            // Load placeholder settings
+            const settingsData = await this.apiJson(`/placeholder-settings?template_id=${encodeURIComponent(templateId)}`);
             if (settingsData && settingsData.settings) {
                 this.currentSettings = settingsData.settings;
-                this.currentTemplateId = settingsData.template_id || this.currentTemplateId;
             } else {
                 this.currentSettings = {};
             }
-
+            
+            // Display placeholders
             this.displayPlaceholders();
-            this.displayDocumentPreview();
+            
+            // Load plan assignments for this template (after plans are loaded)
+            if (this.plans && Object.keys(this.plans).length > 0) {
+                await this.loadTemplatePlans();
+            } else {
+                // If plans not loaded yet, load them first
+                await this.loadPlans();
+                await this.loadTemplatePlans();
+            }
         } catch (error) {
+            console.error('Failed to load template:', error);
             alert(`Failed to load template: ${error.message}`);
         }
     }
 
+    async loadDatabaseTables() {
+        try {
+            const data = await this.apiJson('/database-tables');
+            if (data && data.tables) {
+                this.databaseTables = data.tables;
+            }
+        } catch (error) {
+            console.error('Failed to load database tables:', error);
+        }
+    }
+
+    async loadTableColumns(tableName) {
+        if (this.databaseColumns[tableName]) {
+            return this.databaseColumns[tableName];
+        }
+        
+        try {
+            const data = await this.apiJson(`/database-tables/${encodeURIComponent(tableName)}/columns`);
+            if (data && data.columns) {
+                this.databaseColumns[tableName] = data.columns;
+                return data.columns;
+            }
+        } catch (error) {
+            console.error(`Failed to load columns for ${tableName}:`, error);
+        }
+        return [];
+    }
+
+    async loadCsvFiles() {
+        try {
+            const data = await this.apiJson('/csv-files');
+            if (data && data.csv_files) {
+                this.csvFiles = data.csv_files;
+                // Load fields for each CSV
+                for (const csvFile of this.csvFiles) {
+                    await this.loadCsvFields(csvFile.id);
+                }
+            }
+        } catch (error) {
+            console.error('Failed to load CSV files:', error);
+        }
+    }
+
+    async loadCsvFields(csvId) {
+        try {
+            const data = await this.apiJson(`/csv-fields/${csvId}`);
+            if (data && data.fields) {
+                this.csvFields[csvId] = data.fields;
+            }
+        } catch (error) {
+            console.error(`Failed to load CSV fields for ${csvId}:`, error);
+        }
+    }
+
+    async loadPlans() {
+        try {
+            const data = await this.apiJson('/plans');
+            if (data && data.plans) {
+                this.plans = data.plans;
+                this.populatePlanCheckboxes();
+            }
+        } catch (error) {
+            console.error('Failed to load plans:', error);
+        }
+    }
+
+    async loadTemplatePlans() {
+        // Load which plans have access to this template
+        if (!this.currentTemplateId) {
+            this.populatePlanCheckboxes([]);
+            return;
+        }
+        
+        try {
+            // Get plan assignments for this template
+            const data = await this.apiJson(`/templates/${encodeURIComponent(this.currentTemplateId)}/plan-info`);
+            if (data && data.plans) {
+                const assignedPlanIds = data.plans.map(p => p.plan_id || p.id);
+                this.populatePlanCheckboxes(assignedPlanIds);
+            } else {
+                this.populatePlanCheckboxes([]);
+            }
+        } catch (error) {
+            console.error('Failed to load template plan assignments:', error);
+            this.populatePlanCheckboxes([]);
+        }
+    }
+
+    populatePlanCheckboxes(assignedPlanIds = []) {
+        const container = document.getElementById('planCheckboxes');
+        if (!container) return;
+        
+        if (!this.plans || Object.keys(this.plans).length === 0) {
+            container.innerHTML = '<div class="text-muted small">Loading plans...</div>';
+            return;
+        }
+        
+        container.innerHTML = Object.entries(this.plans).map(([planId, plan]) => {
+            const isChecked = assignedPlanIds.includes(planId) || assignedPlanIds.includes(String(planId));
+            return `
+            <div class="form-check">
+                <input type="checkbox" class="form-check-input" id="plan_${planId}" value="${planId}" ${isChecked ? 'checked' : ''}>
+                <label class="form-check-label" for="plan_${planId}">
+                    ${plan.name || planId}
+                </label>
+            </div>
+        `;
+        }).join('');
+    }
+
     displayPlaceholders() {
-        const container = document.getElementById('placeholdersList');
+        const container = document.getElementById('placeholdersContainer');
         
         if (this.placeholders.length === 0) {
-            container.innerHTML = '<div class="text-muted small">No placeholders found</div>';
+            container.innerHTML = '<div class="alert alert-info">No placeholders found in this template.</div>';
             return;
         }
 
         container.innerHTML = this.placeholders.map(ph => {
-            const setting = this.currentSettings[ph] || { source: 'random', customValue: '', databaseField: '', csvId: '', csvField: '', csvRow: 0, randomOption: 'auto' };
+            const setting = this.currentSettings[ph] || { 
+                source: 'random', 
+                customValue: '', 
+                databaseTable: '',
+                databaseField: '', 
+                csvId: '', 
+                csvField: '', 
+                csvRow: 0, 
+                randomOption: 'auto' 
+            };
+            
             return `
-                <div class="placeholder-item" data-placeholder="${ph}">
-                    <strong>${ph}</strong>
-                    <select class="data-source-select form-select form-select-sm" 
-                            data-placeholder="${ph}"
-                            onchange="editor.handleSourceChange('${ph}')">
-                        <option value="random" ${setting.source === 'random' ? 'selected' : ''}>Random</option>
-                        <option value="database" ${setting.source === 'database' ? 'selected' : ''}>Database</option>
-                        <option value="csv" ${setting.source === 'csv' ? 'selected' : ''}>CSV</option>
-                        <option value="custom" ${setting.source === 'custom' ? 'selected' : ''}>Custom</option>
-                    </select>
-                    
-                    <!-- Random option selection -->
-                    <div class="random-option-group mt-1" data-placeholder="${ph}" ${setting.source === 'random' ? '' : 'style="display:none;"'}>
-                        <select class="random-option-select form-select form-select-sm" 
-                                data-placeholder="${ph}"
-                                onchange="editor.updatePlaceholderSetting('${ph}')">
-                            <option value="auto" ${setting.randomOption === 'auto' ? 'selected' : ''}>Auto (different per vessel)</option>
-                            <option value="fixed" ${setting.randomOption === 'fixed' ? 'selected' : ''}>Fixed (same for all vessels)</option>
+                <div class="placeholder-config" data-placeholder="${ph}">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <strong><code>${ph}</code></strong>
+                        <select class="form-select form-select-sm" style="width: 150px;" 
+                                onchange="editor.handleSourceChange('${ph}', this.value)">
+                            <option value="random" ${setting.source === 'random' ? 'selected' : ''}>Random</option>
+                            <option value="custom" ${setting.source === 'custom' ? 'selected' : ''}>Custom</option>
+                            <option value="database" ${setting.source === 'database' ? 'selected' : ''}>Database</option>
+                            <option value="csv" ${setting.source === 'csv' ? 'selected' : ''}>CSV</option>
                         </select>
                     </div>
                     
-                    <!-- Database field selection -->
-                    <select class="database-field-select form-select form-select-sm mt-1" 
-                            data-placeholder="${ph}"
-                            onchange="editor.updatePlaceholderSetting('${ph}')"
-                            ${setting.source === 'database' ? '' : 'style="display:none;"'}>
-                        <option value="">-- Select database field --</option>
-                        ${this.vesselFields.map(f => 
-                            `<option value="${f.name}" ${setting.databaseField === f.name ? 'selected' : ''}>${f.label} (${f.name})</option>`
-                        ).join('')}
-                    </select>
+                    <!-- Custom Value -->
+                    <div class="source-option ${setting.source === 'custom' ? 'active' : ''}" data-source="custom">
+                        <label class="form-label small">Custom Value:</label>
+                        <input type="text" class="form-control form-control-sm" 
+                               value="${setting.customValue || ''}" 
+                               placeholder="Enter custom value..."
+                               onchange="editor.updateSetting('${ph}', 'customValue', this.value)">
+                    </div>
                     
-                    <!-- CSV file selection -->
-                    <select class="csv-file-select form-select form-select-sm mt-1" 
-                            data-placeholder="${ph}"
-                            onchange="editor.handleCsvFileChange('${ph}')"
-                            ${setting.source === 'csv' ? '' : 'style="display:none;"'}>
-                        <option value="">-- Select CSV file --</option>
-                        ${this.csvFiles.map(f => 
-                            `<option value="${f.id}" ${setting.csvId === f.id ? 'selected' : ''}>${f.display_name}</option>`
-                        ).join('')}
-                    </select>
+                    <!-- Database Source -->
+                    <div class="source-option ${setting.source === 'database' ? 'active' : ''}" data-source="database">
+                        <label class="form-label small">Database Table:</label>
+                        <select class="form-select form-select-sm mb-2" 
+                                onchange="editor.handleDatabaseTableChange('${ph}', this.value)">
+                            <option value="">-- Select table --</option>
+                            ${this.databaseTables.map(t => 
+                                `<option value="${t.name}" ${setting.databaseTable === t.name ? 'selected' : ''}>
+                                    ${t.label}${t.description ? ` - ${t.description}` : ''}
+                                </option>`
+                            ).join('')}
+                        </select>
+                        <label class="form-label small">Database Field:</label>
+                        <select class="form-select form-select-sm" id="dbField_${ph}"
+                                onchange="editor.updateSetting('${ph}', 'databaseField', this.value)">
+                            <option value="">-- Select field --</option>
+                        </select>
+                    </div>
                     
-                    <!-- CSV field selection -->
-                    <select class="csv-field-select form-select form-select-sm mt-1" 
-                            data-placeholder="${ph}"
-                            ${setting.source === 'csv' && setting.csvId ? '' : 'style="display:none;"'}>
-                        <option value="">-- Select CSV field --</option>
-                        ${setting.csvId && this.csvFields[setting.csvId] ? 
-                            this.csvFields[setting.csvId].map(f => 
-                                `<option value="${f.name}" ${setting.csvField === f.name ? 'selected' : ''}>${f.label} (${f.name})</option>`
-                            ).join('') : ''}
-                    </select>
+                    <!-- CSV Source -->
+                    <div class="source-option ${setting.source === 'csv' ? 'active' : ''}" data-source="csv">
+                        <label class="form-label small">CSV File:</label>
+                        <select class="form-select form-select-sm mb-2" 
+                                onchange="editor.handleCsvFileChange('${ph}', this.value)">
+                            <option value="">-- Select CSV file --</option>
+                            ${this.csvFiles.map(f => 
+                                `<option value="${f.id}" ${setting.csvId === f.id ? 'selected' : ''}>
+                                    ${f.display_name || f.id}
+                                </option>`
+                            ).join('')}
+                        </select>
+                        <label class="form-label small">CSV Field:</label>
+                        <select class="form-select form-select-sm mb-2" id="csvField_${ph}"
+                                onchange="editor.updateSetting('${ph}', 'csvField', this.value)">
+                            <option value="">-- Select field --</option>
+                        </select>
+                        <label class="form-label small">Row Index (optional):</label>
+                        <input type="number" class="form-control form-control-sm" 
+                               value="${setting.csvRow || 0}" 
+                               min="0"
+                               placeholder="0"
+                               onchange="editor.updateSetting('${ph}', 'csvRow', parseInt(this.value) || 0)">
+                    </div>
                     
-                    <!-- CSV row selection -->
-                    <select class="csv-row-select form-select form-select-sm mt-1" 
-                            data-placeholder="${ph}"
-                            onchange="editor.updatePlaceholderSetting('${ph}')"
-                            ${setting.source === 'csv' && setting.csvId && setting.csvField ? '' : 'style="display:none;"'}>
-                        <option value="">-- Select specific value --</option>
-                    </select>
-                    
-                    <!-- Custom value input -->
-                    <input type="text" 
-                           class="custom-value-input form-control form-control-sm mt-1" 
-                           data-placeholder="${ph}"
-                           value="${setting.customValue || ''}"
-                           placeholder="Enter custom value..."
-                           onchange="editor.updatePlaceholderSetting('${ph}')"
-                           ${setting.source === 'custom' ? '' : 'style="display:none;"'}>
+                    <!-- Random Source -->
+                    <div class="source-option ${setting.source === 'random' ? 'active' : ''}" data-source="random">
+                        <label class="form-label small">Random Mode:</label>
+                        <select class="form-select form-select-sm" 
+                                onchange="editor.updateSetting('${ph}', 'randomOption', this.value)">
+                            <option value="auto" ${setting.randomOption === 'auto' ? 'selected' : ''}>
+                                Auto (different per vessel)
+                            </option>
+                            <option value="fixed" ${setting.randomOption === 'fixed' ? 'selected' : ''}>
+                                Fixed (same for all vessels)
+                            </option>
+                        </select>
+                    </div>
                 </div>
             `;
         }).join('');
-
-        // Attach change handlers
-        container.querySelectorAll('.data-source-select').forEach(select => {
-            const placeholder = select.dataset.placeholder;
-            const fieldSelect = container.querySelector(`select.database-field-select[data-placeholder="${placeholder}"]`);
-            const csvFileSelect = container.querySelector(`select.csv-file-select[data-placeholder="${placeholder}"]`);
-            const csvFieldSelect = container.querySelector(`select.csv-field-select[data-placeholder="${placeholder}"]`);
-            const csvRowSelect = container.querySelector(`select.csv-row-select[data-placeholder="${placeholder}"]`);
-            const randomOptionGroup = container.querySelector(`.random-option-group[data-placeholder="${placeholder}"]`);
-            const customInput = container.querySelector(`input[data-placeholder="${placeholder}"]`);
-            
-            select.addEventListener('change', () => {
-                if (select.value === 'database') {
-                    fieldSelect.style.display = 'block';
-                    csvFileSelect.style.display = 'none';
-                    csvFieldSelect.style.display = 'none';
-                    csvRowSelect.style.display = 'none';
-                    if (randomOptionGroup) randomOptionGroup.style.display = 'none';
-                    customInput.style.display = 'none';
-                } else if (select.value === 'csv') {
-                    fieldSelect.style.display = 'none';
-                    csvFileSelect.style.display = 'block';
-                    csvFieldSelect.style.display = 'none';
-                    csvRowSelect.style.display = 'none';
-                    if (randomOptionGroup) randomOptionGroup.style.display = 'none';
-                    customInput.style.display = 'none';
-                } else if (select.value === 'custom') {
-                    fieldSelect.style.display = 'none';
-                    csvFileSelect.style.display = 'none';
-                    csvFieldSelect.style.display = 'none';
-                    csvRowSelect.style.display = 'none';
-                    if (randomOptionGroup) randomOptionGroup.style.display = 'none';
-                    customInput.style.display = 'block';
-                } else if (select.value === 'random') {
-                    fieldSelect.style.display = 'none';
-                    csvFileSelect.style.display = 'none';
-                    csvFieldSelect.style.display = 'none';
-                    csvRowSelect.style.display = 'none';
-                    if (randomOptionGroup) randomOptionGroup.style.display = 'block';
-                    customInput.style.display = 'none';
-                } else {
-                    fieldSelect.style.display = 'none';
-                    csvFileSelect.style.display = 'none';
-                    csvFieldSelect.style.display = 'none';
-                    csvRowSelect.style.display = 'none';
-                    if (randomOptionGroup) randomOptionGroup.style.display = 'none';
-                    customInput.style.display = 'none';
-                }
-                this.updatePlaceholderSetting(placeholder);
-            });
-        });
         
-        // Attach CSV field change handlers
-        container.querySelectorAll('.csv-field-select').forEach(select => {
-            const placeholder = select.dataset.placeholder;
-            select.addEventListener('change', () => {
-                this.handleCsvFieldChange(placeholder);
-            });
-        });
-    }
-
-    handleSourceChange(placeholder) {
-        // This is called from the inline onclick handler
-        const container = document.getElementById('placeholdersList');
-        const select = container.querySelector(`select.data-source-select[data-placeholder="${placeholder}"]`);
-        const fieldSelect = container.querySelector(`select.database-field-select[data-placeholder="${placeholder}"]`);
-        const csvFileSelect = container.querySelector(`select.csv-file-select[data-placeholder="${placeholder}"]`);
-        const csvFieldSelect = container.querySelector(`select.csv-field-select[data-placeholder="${placeholder}"]`);
-        const csvRowSelect = container.querySelector(`select.csv-row-select[data-placeholder="${placeholder}"]`);
-        const randomOptionGroup = container.querySelector(`.random-option-group[data-placeholder="${placeholder}"]`);
-        const customInput = container.querySelector(`input[data-placeholder="${placeholder}"]`);
-        
-        if (select.value === 'database') {
-            fieldSelect.style.display = 'block';
-            csvFileSelect.style.display = 'none';
-            csvFieldSelect.style.display = 'none';
-            csvRowSelect.style.display = 'none';
-            if (randomOptionGroup) randomOptionGroup.style.display = 'none';
-            customInput.style.display = 'none';
-        } else if (select.value === 'csv') {
-            fieldSelect.style.display = 'none';
-            csvFileSelect.style.display = 'block';
-            csvFieldSelect.style.display = 'none';
-            csvRowSelect.style.display = 'none';
-            if (randomOptionGroup) randomOptionGroup.style.display = 'none';
-            customInput.style.display = 'none';
-        } else if (select.value === 'custom') {
-            fieldSelect.style.display = 'none';
-            csvFileSelect.style.display = 'none';
-            csvFieldSelect.style.display = 'none';
-            csvRowSelect.style.display = 'none';
-            if (randomOptionGroup) randomOptionGroup.style.display = 'none';
-            customInput.style.display = 'block';
-        } else if (select.value === 'random') {
-            fieldSelect.style.display = 'none';
-            csvFileSelect.style.display = 'none';
-            csvFieldSelect.style.display = 'none';
-            csvRowSelect.style.display = 'none';
-            if (randomOptionGroup) randomOptionGroup.style.display = 'block';
-            customInput.style.display = 'none';
-        } else {
-            fieldSelect.style.display = 'none';
-            csvFileSelect.style.display = 'none';
-            csvFieldSelect.style.display = 'none';
-            csvRowSelect.style.display = 'none';
-            if (randomOptionGroup) randomOptionGroup.style.display = 'none';
-            customInput.style.display = 'none';
-        }
-        this.updatePlaceholderSetting(placeholder);
-    }
-
-    handleCsvFileChange(placeholder) {
-        const container = document.getElementById('placeholdersList');
-        const csvFileSelect = container.querySelector(`select.csv-file-select[data-placeholder="${placeholder}"]`);
-        const csvFieldSelect = container.querySelector(`select.csv-field-select[data-placeholder="${placeholder}"]`);
-        const csvRowSelect = container.querySelector(`select.csv-row-select[data-placeholder="${placeholder}"]`);
-        
-        const csvId = csvFileSelect.value;
-        
-        if (csvId && this.csvFields[csvId]) {
-            csvFieldSelect.innerHTML = '<option value="">-- Select CSV field --</option>' +
-                this.csvFields[csvId].map(f => 
-                    `<option value="${f.name}">${f.label} (${f.name})</option>`
-                ).join('');
-            csvFieldSelect.style.display = 'block';
-        } else {
-            csvFieldSelect.style.display = 'none';
-        }
-        
-        csvRowSelect.innerHTML = '<option value="">-- Select specific value --</option>';
-        csvRowSelect.style.display = 'none';
-        
-        this.updatePlaceholderSetting(placeholder);
-    }
-
-    async handleCsvFieldChange(placeholder) {
-        const container = document.getElementById('placeholdersList');
-        const csvFileSelect = container.querySelector(`select.csv-file-select[data-placeholder="${placeholder}"]`);
-        const csvFieldSelect = container.querySelector(`select.csv-field-select[data-placeholder="${placeholder}"]`);
-        const csvRowSelect = container.querySelector(`select.csv-row-select[data-placeholder="${placeholder}"]`);
-        
-        const csvId = csvFileSelect.value;
-        const csvField = csvFieldSelect.value;
-        
-        if (csvId && csvField) {
-            // Load rows for this field
-            csvRowSelect.innerHTML = '<option value="">Loading...</option>';
-            csvRowSelect.style.display = 'block';
-            
-            try {
-                const data = await this.apiJson(`/csv-rows/${csvId}/${csvField}`);
-                if (data && data.rows) {
-                    csvRowSelect.innerHTML = '<option value="">-- Select specific value --</option>' +
-                        data.rows.map(row => 
-                            `<option value="${row.row_index}">${row.preview}</option>`
-                        ).join('');
-                }
-            } catch (error) {
-                csvRowSelect.innerHTML = '<option value="">Error loading rows</option>';
-                console.error('Error loading CSV rows:', error);
+        // Load initial database columns if database source is selected
+        this.placeholders.forEach(ph => {
+            const setting = this.currentSettings[ph];
+            if (setting && setting.source === 'database' && setting.databaseTable) {
+                this.handleDatabaseTableChange(ph, setting.databaseTable, setting.databaseField);
             }
-        } else {
-            csvRowSelect.innerHTML = '<option value="">-- Select specific value --</option>';
-            csvRowSelect.style.display = 'none';
-        }
-        
-        this.updatePlaceholderSetting(placeholder);
+            if (setting && setting.source === 'csv' && setting.csvId) {
+                this.handleCsvFileChange(ph, setting.csvId, setting.csvField);
+            }
+        });
     }
 
-    updatePlaceholderSetting(placeholder) {
-        const sourceSelect = document.querySelector(`select.data-source-select[data-placeholder="${placeholder}"]`);
-        const fieldSelect = document.querySelector(`select.database-field-select[data-placeholder="${placeholder}"]`);
-        const csvFileSelect = document.querySelector(`select.csv-file-select[data-placeholder="${placeholder}"]`);
-        const csvFieldSelect = document.querySelector(`select.csv-field-select[data-placeholder="${placeholder}"]`);
-        const csvRowSelect = document.querySelector(`select.csv-row-select[data-placeholder="${placeholder}"]`);
-        const randomOptionSelect = document.querySelector(`select.random-option-select[data-placeholder="${placeholder}"]`);
-        const customInput = document.querySelector(`input[data-placeholder="${placeholder}"]`);
-        
-        const source = sourceSelect ? sourceSelect.value : 'random';
-        const databaseField = fieldSelect ? fieldSelect.value : '';
-        const csvId = csvFileSelect ? csvFileSelect.value : '';
-        const csvField = csvFieldSelect ? csvFieldSelect.value : '';
-        const csvRow = csvRowSelect ? parseInt(csvRowSelect.value) || 0 : 0;
-        const randomOption = randomOptionSelect ? randomOptionSelect.value : 'auto';
-        const customValue = source === 'custom' && customInput ? customInput.value : '';
-
+    async handleSourceChange(placeholder, source) {
         if (!this.currentSettings[placeholder]) {
             this.currentSettings[placeholder] = {};
         }
-        
         this.currentSettings[placeholder].source = source;
-        this.currentSettings[placeholder].customValue = customValue;
         
-        if (source === 'database' && databaseField) {
-            this.currentSettings[placeholder].databaseField = databaseField;
-        } else {
-            this.currentSettings[placeholder].databaseField = '';
-        }
-        
-        if (source === 'csv') {
-            this.currentSettings[placeholder].csvId = csvId || '';
-            this.currentSettings[placeholder].csvField = csvField || '';
-            this.currentSettings[placeholder].csvRow = csvRow;
-        } else {
-            this.currentSettings[placeholder].csvId = '';
-            this.currentSettings[placeholder].csvField = '';
-            this.currentSettings[placeholder].csvRow = 0;
-        }
-        
-        if (source === 'random') {
-            this.currentSettings[placeholder].randomOption = randomOption;
-        } else {
-            this.currentSettings[placeholder].randomOption = 'auto';
+        // Show/hide source options
+        const config = document.querySelector(`.placeholder-config[data-placeholder="${placeholder}"]`);
+        if (config) {
+            config.querySelectorAll('.source-option').forEach(opt => {
+                opt.classList.toggle('active', opt.dataset.source === source);
+            });
         }
     }
 
-    displayDocumentPreview() {
-        const container = document.getElementById('documentContent');
-        if (!this.currentTemplate) {
-            container.innerHTML = '<div class="text-center text-muted py-5">Select a template</div>';
-            return;
+    async handleDatabaseTableChange(placeholder, tableName, selectedField = '') {
+        if (!this.currentSettings[placeholder]) {
+            this.currentSettings[placeholder] = {};
         }
-
-        // Simple preview showing placeholders
-        container.innerHTML = `
-            <div class="card">
-                <div class="card-header">
-                    <h5>${this.currentTemplate}</h5>
-                </div>
-                <div class="card-body">
-                    <p class="text-muted">This template contains ${this.placeholders.length} placeholders:</p>
-                    <div class="mb-3">
-                        ${this.placeholders.map(ph => {
-                            const setting = this.currentSettings[ph] || { source: 'database' };
-                            const sourceBadge = {
-                                'database': '<span class="badge bg-primary">Database</span>',
-                                'csv': '<span class="badge bg-success">CSV</span>',
-                                'random': '<span class="badge bg-warning">Random</span>',
-                                'custom': '<span class="badge bg-info">Custom</span>'
-                            }[setting.source] || '<span class="badge bg-secondary">Unknown</span>';
-                            
-                            return `
-                                <div class="mb-2 p-2 border rounded">
-                                    <code>${ph}</code> ${sourceBadge}
-                                    ${setting.source === 'database' && setting.databaseField ? 
-                                        `<br><small class="text-muted">Field: ${setting.databaseField}</small>` : ''}
-                                    ${setting.source === 'csv' && setting.csvId && setting.csvField ? 
-                                        `<br><small class="text-muted">CSV: ${setting.csvId}[${setting.csvRow || 0}].${setting.csvField}</small>` : ''}
-                                    ${setting.source === 'random' && setting.randomOption ? 
-                                        `<br><small class="text-muted">Mode: ${setting.randomOption === 'auto' ? 'Different per vessel' : 'Fixed for all'}</small>` : ''}
-                                    ${setting.source === 'custom' && setting.customValue ? 
-                                        `<br><small class="text-muted">Value: ${setting.customValue}</small>` : ''}
-                                </div>
-                            `;
-                        }).join('')}
-                    </div>
-                    <p class="text-muted small">
-                        <i class="fas fa-info-circle me-1"></i>
-                        Configure each placeholder's data source in the sidebar. 
-                        Custom values override all other sources.
-                    </p>
-                </div>
-            </div>
-        `;
+        this.currentSettings[placeholder].databaseTable = tableName;
+        
+        const fieldSelect = document.getElementById(`dbField_${placeholder}`);
+        if (!fieldSelect) return;
+        
+        if (tableName) {
+            fieldSelect.innerHTML = '<option value="">Loading...</option>';
+            const columns = await this.loadTableColumns(tableName);
+            fieldSelect.innerHTML = '<option value="">-- Select field --</option>' +
+                columns.map(col => 
+                    `<option value="${col.name}" ${selectedField === col.name ? 'selected' : ''}>
+                        ${col.label} (${col.name})
+                    </option>`
+                ).join('');
+        } else {
+            fieldSelect.innerHTML = '<option value="">-- Select field --</option>';
+        }
+        
+        this.updateSetting(placeholder, 'databaseTable', tableName);
     }
 
-    async saveSettings() {
-        if (!this.currentTemplate) {
-            alert('Please select a template first');
-            return;
+    async handleCsvFileChange(placeholder, csvId, selectedField = '') {
+        if (!this.currentSettings[placeholder]) {
+            this.currentSettings[placeholder] = {};
         }
+        this.currentSettings[placeholder].csvId = csvId;
+        
+        const fieldSelect = document.getElementById(`csvField_${placeholder}`);
+        if (!fieldSelect) return;
+        
+        if (csvId && this.csvFields[csvId]) {
+            fieldSelect.innerHTML = '<option value="">-- Select field --</option>' +
+                this.csvFields[csvId].map(f => 
+                    `<option value="${f.name}" ${selectedField === f.name ? 'selected' : ''}>
+                        ${f.label || f.name} (${f.name})
+                    </option>`
+                ).join('');
+        } else {
+            fieldSelect.innerHTML = '<option value="">-- Select field --</option>';
+        }
+        
+        this.updateSetting(placeholder, 'csvId', csvId);
+    }
 
-        // Update all settings from current form state
-        this.placeholders.forEach(ph => {
-            this.updatePlaceholderSetting(ph);
+
+    updateSetting(placeholder, key, value) {
+        if (!this.currentSettings[placeholder]) {
+            this.currentSettings[placeholder] = { source: 'random' };
+        }
+        this.currentSettings[placeholder][key] = value;
+    }
+
+    filterPlaceholders() {
+        const searchTerm = document.getElementById('searchPlaceholders').value.toLowerCase();
+        const configs = document.querySelectorAll('.placeholder-config');
+        
+        configs.forEach(config => {
+            const placeholder = config.dataset.placeholder.toLowerCase();
+            config.style.display = placeholder.includes(searchTerm) ? 'block' : 'none';
         });
+    }
 
-        // Normalize template name to ensure consistent format
-        let normalizedTemplateName = this.currentTemplate;
-        if (!normalizedTemplateName.endsWith('.docx')) {
-            normalizedTemplateName = normalizedTemplateName + '.docx';
+    async saveTemplateSettings() {
+        if (!this.currentTemplateId) {
+            alert('No template selected');
+            return;
+        }
+
+        const displayName = document.getElementById('templateDisplayName').value;
+        const description = document.getElementById('templateDescription').value;
+        const fontFamily = document.getElementById('templateFontFamily').value;
+        const fontSize = document.getElementById('templateFontSize').value;
+        
+        // Get selected plan IDs
+        const planCheckboxes = document.querySelectorAll('#planCheckboxes input[type="checkbox"]:checked');
+        const planIds = Array.from(planCheckboxes).map(cb => cb.value);
+
+        try {
+            const data = await this.apiJson(`/templates/${encodeURIComponent(this.currentTemplateId)}/metadata`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    display_name: displayName,
+                    description: description,
+                    font_family: fontFamily || null,
+                    font_size: fontSize ? parseInt(fontSize) : null,
+                    plan_ids: planIds
+                })
+            });
+
+            if (data && data.success) {
+                alert('Template settings saved successfully!');
+                document.getElementById('templateTitle').textContent = displayName || 'Untitled Template';
+            }
+        } catch (error) {
+            alert(`Failed to save template settings: ${error.message}`);
+        }
+    }
+
+    async savePlaceholderSettings() {
+        if (!this.currentTemplateId) {
+            alert('No template selected');
+            return;
         }
 
         try {
             const data = await this.apiJson('/placeholder-settings', {
                 method: 'POST',
                 body: JSON.stringify({
-                    template_name: normalizedTemplateName,
                     template_id: this.currentTemplateId,
                     settings: this.currentSettings
                 })
             });
 
             if (data && data.success) {
-                alert('Settings saved successfully!');
-                this.displayDocumentPreview();
+                alert('Placeholder settings saved successfully!');
             }
         } catch (error) {
-            alert(`Failed to save settings: ${error.message}`);
+            alert(`Failed to save placeholder settings: ${error.message}`);
         }
+    }
+
+    async saveAll() {
+        await this.saveTemplateSettings();
+        await this.savePlaceholderSettings();
     }
 }
 
 // Global instance
-const editor = new DocumentEditor();
+const editor = new TemplateEditor();
+
+
 

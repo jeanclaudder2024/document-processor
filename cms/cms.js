@@ -95,8 +95,30 @@ class DocumentCMS {
         if (this.dataInitialized && !force) return;
         this.loadTemplates();
         this.loadDataSources();
-        this.loadPlans();
+        this.loadPlans().then(() => {
+            // After plans are loaded, populate plan checkboxes in upload form
+            this.populatePlanCheckboxes();
+        });
         this.dataInitialized = true;
+    }
+    
+    populatePlanCheckboxes() {
+        const container = document.getElementById('planCheckboxes');
+        if (!container) return;
+        
+        if (!this.allPlans || Object.keys(this.allPlans).length === 0) {
+            container.innerHTML = '<div class="text-muted small">No plans available. Plans will be loaded automatically.</div>';
+            return;
+        }
+        
+        container.innerHTML = Object.entries(this.allPlans).map(([planId, plan]) => `
+            <div class="form-check">
+                <input type="checkbox" class="form-check-input" id="plan_${planId}" value="${planId}">
+                <label class="form-check-label" for="plan_${planId}">
+                    ${plan.name || planId}
+                </label>
+            </div>
+        `).join('');
     }
 
     findTemplateByName(name) {
@@ -540,7 +562,7 @@ class DocumentCMS {
                                 <button class="btn btn-sm btn-success w-100" onclick="cms.testGenerateDocument('${template.name}')">
                                     <i class="fas fa-vial me-1"></i>Test
                                 </button>
-                                <button class="btn btn-sm btn-primary w-100" onclick="window.open('editor.html?template=${encodeURIComponent(template.name)}', '_blank')">
+                                <button class="btn btn-sm btn-primary w-100" onclick="window.open('editor.html?template_id=${template.id || template.name}', '_blank')">
                                     <i class="fas fa-edit me-1"></i>Edit Rules
                                 </button>
                                 <button class="btn btn-sm btn-outline-secondary w-100" onclick="cms.viewPlaceholders('${template.name}')">
@@ -598,6 +620,13 @@ class DocumentCMS {
         }
         if (fontSizeInput && fontSizeInput.value) {
             formData.append('font_size', fontSizeInput.value);
+        }
+        
+        // Get selected plan IDs
+        const planCheckboxes = document.querySelectorAll('#planCheckboxes input[type="checkbox"]:checked');
+        const selectedPlanIds = Array.from(planCheckboxes).map(cb => cb.value).filter(v => v);
+        if (selectedPlanIds.length > 0) {
+            formData.append('plan_ids', JSON.stringify(selectedPlanIds));
         }
 
         // Show loading state
@@ -923,9 +952,12 @@ class DocumentCMS {
             if (data && data.plans) {
                 console.log('Displaying plans from', source, ':', Object.keys(data.plans));
                 this.displayPlans(data.plans);
+                // Update plan checkboxes in upload form
+                this.populatePlanCheckboxes();
             } else {
                 console.warn('No plans data received');
                 this.displayPlans({});
+                this.populatePlanCheckboxes();
             }
         } catch (error) {
             console.error('Error loading plans:', error);

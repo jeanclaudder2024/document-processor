@@ -156,7 +156,7 @@ def resolve_template_record(template_name: str) -> Optional[Dict]:
     if template_uuid:
         try:
             response = supabase.table('document_templates') \
-                .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at') \
+                .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at, font_family, font_size') \
                 .eq('id', str(template_uuid)) \
                 .limit(1) \
                 .execute()
@@ -175,7 +175,7 @@ def resolve_template_record(template_name: str) -> Optional[Dict]:
 
     try:
         response = supabase.table('document_templates') \
-            .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at') \
+            .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at, font_family, font_size') \
             .in_('file_name', candidates) \
             .limit(1) \
             .execute()
@@ -183,7 +183,7 @@ def resolve_template_record(template_name: str) -> Optional[Dict]:
             return response.data[0]
 
         response = supabase.table('document_templates') \
-            .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at') \
+            .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at, font_family, font_size') \
             .in_('title', [name_without_ext, name_with_ext]) \
             .limit(1) \
             .execute()
@@ -217,7 +217,7 @@ def fetch_template_placeholders(template_id: str,
     supabase_settings: Dict[str, Dict[str, Optional[str]]] = {}
     try:
         response = supabase.table('template_placeholders').select(
-            'placeholder, source, custom_value, database_field, csv_id, csv_field, csv_row, random_option'
+            'placeholder, source, custom_value, database_table, database_field, csv_id, csv_field, csv_row, random_option'
         ).eq('template_id', template_id).execute()
         
         for row in response.data or []:
@@ -228,6 +228,7 @@ def fetch_template_placeholders(template_id: str,
             supabase_settings[placeholder_key] = {
                 'source': row.get('source', 'random'),
                 'customValue': str(row.get('custom_value') or '').strip(),
+                'databaseTable': str(row.get('database_table') or '').strip(),
                 'databaseField': str(row.get('database_field') or '').strip(),
                 'csvId': str(row.get('csv_id') or '').strip(),
                 'csvField': str(row.get('csv_field') or '').strip(),
@@ -323,11 +324,12 @@ def upsert_template_placeholders(template_id: str,
                 'placeholder': placeholder,
                 'source': cfg.get('source', 'random'),
                 'custom_value': cfg.get('customValue'),
-                'database_field': cfg.get('databaseField'),
-                'csv_id': cfg.get('csvId'),
-                'csv_field': cfg.get('csvField'),
-                'csv_row': cfg.get('csvRow'),
-                'random_option': cfg.get('randomOption', 'auto')
+                'database_table': cfg.get('databaseTable') or cfg.get('database_table'),
+                'database_field': cfg.get('databaseField') or cfg.get('database_field'),
+                'csv_id': cfg.get('csvId') or cfg.get('csv_id'),
+                'csv_field': cfg.get('csvField') or cfg.get('csv_field'),
+                'csv_row': cfg.get('csvRow') or cfg.get('csv_row', 0),
+                'random_option': cfg.get('randomOption') or cfg.get('random_option', 'auto')
             })
 
         try:
@@ -933,6 +935,124 @@ async def get_vessel_fields():
         logger.error(f"Error getting vessel fields: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/database-tables")
+async def get_database_tables():
+    """Get list of all available database tables that can be used as data sources"""
+    try:
+        # List of available tables with their display names
+        tables = [
+            {'name': 'vessels', 'label': 'Vessels', 'description': 'Vessel information and specifications'},
+            {'name': 'ports', 'label': 'Ports', 'description': 'Port information and details'},
+            {'name': 'refineries', 'label': 'Refineries', 'description': 'Refinery information'},
+            {'name': 'companies', 'label': 'Companies', 'description': 'Company information'},
+            {'name': 'brokers', 'label': 'Brokers', 'description': 'Broker information'},
+        ]
+        
+        # If Supabase is enabled, we could dynamically fetch table names
+        # For now, return the predefined list
+        return {"success": True, "tables": tables}
+    except Exception as e:
+        logger.error(f"Error getting database tables: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/database-tables/{table_name}/columns")
+async def get_database_table_columns(table_name: str):
+    """Get list of columns for a specific database table"""
+    try:
+        if not SUPABASE_ENABLED:
+            raise HTTPException(status_code=503, detail="Supabase not available")
+        
+        # Try to get column information from Supabase
+        # We'll query the table with LIMIT 0 to get column names without data
+        try:
+            # Get a sample row to infer column names
+            response = supabase.table(table_name).select('*').limit(1).execute()
+            
+            if response.data and len(response.data) > 0:
+                # Extract column names from the first row
+                columns = []
+                for key in response.data[0].keys():
+                    # Create a human-readable label
+                    label = key.replace('_', ' ').title()
+                    columns.append({
+                        'name': key,
+                        'label': label,
+                        'type': 'text'  # Default type, could be enhanced with actual type detection
+                    })
+                
+                return {"success": True, "table": table_name, "columns": columns}
+            else:
+                # Table exists but is empty, try to get schema info
+                # For now, return empty list
+                return {"success": True, "table": table_name, "columns": []}
+        except Exception as table_exc:
+            logger.error(f"Error querying table {table_name}: {table_exc}")
+            # Fallback to predefined column lists for known tables
+            predefined_columns = _get_predefined_table_columns(table_name)
+            if predefined_columns:
+                return {"success": True, "table": table_name, "columns": predefined_columns}
+            else:
+                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found or not accessible")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting table columns for {table_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
+    """Get predefined column list for known tables (fallback)"""
+    predefined = {
+        'vessels': [
+            {'name': 'id', 'label': 'ID', 'type': 'integer'},
+            {'name': 'name', 'label': 'Vessel Name', 'type': 'text'},
+            {'name': 'imo', 'label': 'IMO Number', 'type': 'text'},
+            {'name': 'mmsi', 'label': 'MMSI', 'type': 'text'},
+            {'name': 'vessel_type', 'label': 'Vessel Type', 'type': 'text'},
+            {'name': 'flag', 'label': 'Flag', 'type': 'text'},
+            {'name': 'built', 'label': 'Year Built', 'type': 'integer'},
+            {'name': 'deadweight', 'label': 'Deadweight', 'type': 'numeric'},
+            {'name': 'cargo_capacity', 'label': 'Cargo Capacity', 'type': 'numeric'},
+            {'name': 'length', 'label': 'Length', 'type': 'numeric'},
+            {'name': 'width', 'label': 'Width', 'type': 'numeric'},
+            {'name': 'beam', 'label': 'Beam', 'type': 'numeric'},
+            {'name': 'draft', 'label': 'Draft', 'type': 'numeric'},
+            {'name': 'gross_tonnage', 'label': 'Gross Tonnage', 'type': 'numeric'},
+            {'name': 'owner_name', 'label': 'Owner Name', 'type': 'text'},
+            {'name': 'operator_name', 'label': 'Operator Name', 'type': 'text'},
+            {'name': 'callsign', 'label': 'Call Sign', 'type': 'text'},
+        ],
+        'ports': [
+            {'name': 'id', 'label': 'ID', 'type': 'integer'},
+            {'name': 'name', 'label': 'Port Name', 'type': 'text'},
+            {'name': 'country', 'label': 'Country', 'type': 'text'},
+            {'name': 'city', 'label': 'City', 'type': 'text'},
+            {'name': 'latitude', 'label': 'Latitude', 'type': 'numeric'},
+            {'name': 'longitude', 'label': 'Longitude', 'type': 'numeric'},
+        ],
+        'refineries': [
+            {'name': 'id', 'label': 'ID', 'type': 'uuid'},
+            {'name': 'name', 'label': 'Refinery Name', 'type': 'text'},
+            {'name': 'location', 'label': 'Location', 'type': 'text'},
+            {'name': 'capacity', 'label': 'Capacity', 'type': 'numeric'},
+        ],
+        'companies': [
+            {'name': 'id', 'label': 'ID', 'type': 'integer'},
+            {'name': 'name', 'label': 'Company Name', 'type': 'text'},
+            {'name': 'country', 'label': 'Country', 'type': 'text'},
+            {'name': 'type', 'label': 'Company Type', 'type': 'text'},
+        ],
+        'brokers': [
+            {'name': 'id', 'label': 'ID', 'type': 'integer'},
+            {'name': 'name', 'label': 'Broker Name', 'type': 'text'},
+            {'name': 'email', 'label': 'Email', 'type': 'text'},
+            {'name': 'phone', 'label': 'Phone', 'type': 'text'},
+        ],
+    }
+    return predefined.get(table_name.lower(), [])
+
 # ============================================================================
 # STEP 3: PLACEHOLDER EXTRACTION (from DOCX files)
 # ============================================================================
@@ -1183,7 +1303,7 @@ async def get_templates(request: Request):
         if SUPABASE_ENABLED:
             try:
                 db_templates = supabase.table('document_templates').select(
-                    'id, title, description, file_name, placeholders, is_active, created_at'
+                    'id, title, description, file_name, placeholders, is_active, created_at, font_family, font_size'
                 ).eq('is_active', True).execute()
 
                 for record in db_templates.data or []:
@@ -1235,6 +1355,10 @@ async def get_templates(request: Request):
                         except Exception as sync_exc:
                             logger.warning(f"Could not sync display_name to Supabase: {sync_exc}")
 
+                    # Get font settings - prioritize database, then metadata
+                    font_family = record.get('font_family') or metadata_entry.get('font_family')
+                    font_size = record.get('font_size') or metadata_entry.get('font_size')
+                    
                     template_payload = {
                         "id": str(template_id),
                         "name": file_name,
@@ -1245,9 +1369,11 @@ async def get_templates(request: Request):
                         "metadata": {
                             "display_name": display_name,  # Use the resolved display_name
                             "description": metadata_entry.get('description') or record.get('description') or '',
-                            "font_family": metadata_entry.get('font_family'),
-                            "font_size": metadata_entry.get('font_size')
+                            "font_family": font_family,
+                            "font_size": font_size
                         },
+                        "font_family": font_family,  # Also include at top level for easy access
+                        "font_size": font_size,  # Also include at top level for easy access
                         "size": size or 0,
                         "created_at": created_at,
                         "placeholders": placeholders,
@@ -1470,8 +1596,13 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
                 file_meta = fetch_template_file_record(template_record['id']) or {}
                 metadata_entry = metadata_map.get(docx_name, {})
 
+                # Get font settings - prioritize database, then metadata
+                font_family = template_record.get('font_family') or metadata_entry.get('font_family')
+                font_size = template_record.get('font_size') or metadata_entry.get('font_size')
+                
                 response = {
                     "id": str(template_record['id']),
+                    "template_id": str(template_record['id']),  # Also include as template_id for consistency
                     "name": docx_name,
                     "title": metadata_entry.get('display_name') or template_record.get('title') or docx_name.replace('.docx', ''),
                     "file_name": docx_name.replace('.docx', ''),
@@ -1481,11 +1612,14 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
                     "placeholders": placeholders,
                     "placeholder_count": len(placeholders),
                     "settings": placeholder_settings,
+                    "description": metadata_entry.get('description') or template_record.get('description') or '',
+                    "font_family": font_family,
+                    "font_size": font_size,
                     "metadata": {
                         "display_name": metadata_entry.get('display_name') or template_record.get('title'),
-                        "description": metadata_entry.get('description') or template_record.get('description'),
-                        "font_family": metadata_entry.get('font_family'),
-                        "font_size": metadata_entry.get('font_size')
+                        "description": metadata_entry.get('description') or template_record.get('description') or '',
+                        "font_family": font_family,
+                        "font_size": font_size
                     }
                 }
                 return response
@@ -1559,16 +1693,15 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
         logger.error(f"Error getting template: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/templates/{template_name}/metadata")
+@app.post("/templates/{template_id}/metadata")
 async def update_template_metadata(
-    template_name: str,
+    template_id: str,
     payload: Dict = Body(...),
     current_user: str = Depends(get_current_user)
 ):
-    """Update template metadata (display name, description, fonts)."""
+    """Update template metadata (display name, description, fonts, plan assignments)."""
     try:
-        docx_name = ensure_docx_filename(template_name)
-        display_name = (payload.get('display_name') or "").strip()
+        display_name = (payload.get('display_name') or payload.get('name') or "").strip()
         description = (payload.get('description') or "").strip()
         font_family = (payload.get('font_family') or "").strip() or None
         font_size_raw = payload.get('font_size')
@@ -1578,48 +1711,103 @@ async def update_template_metadata(
                 font_size = int(font_size_raw)
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="font_size must be an integer")
+        
+        plan_ids = payload.get('plan_ids', [])  # Array of plan IDs
+        if not isinstance(plan_ids, list):
+            plan_ids = []
 
         # Update Supabase metadata when available
+        template_record = None
         if SUPABASE_ENABLED:
-            template_record = resolve_template_record(docx_name)
+            # Try to resolve by template_id (UUID) first
+            try:
+                template_uuid = uuid.UUID(str(template_id))
+                response = supabase.table('document_templates').select('id, title, description, file_name, font_family, font_size').eq('id', str(template_uuid)).limit(1).execute()
+                if response.data:
+                    template_record = response.data[0]
+            except (ValueError, TypeError):
+                # If not a UUID, try by file_name
+                template_record = resolve_template_record(template_id)
+            
             if template_record:
+                template_id_uuid = template_record['id']
                 update_data = {}
                 if display_name:
                     update_data['title'] = display_name
-                    logger.info(f"Updating Supabase title for {docx_name} to: {display_name}")
+                    logger.info(f"Updating Supabase title for template {template_id_uuid} to: {display_name}")
                 if description:
                     update_data['description'] = description
-                    logger.info(f"Updating Supabase description for {docx_name}")
+                    logger.info(f"Updating Supabase description for template {template_id_uuid}")
+                if font_family is not None:
+                    update_data['font_family'] = font_family
+                    logger.info(f"Updating Supabase font_family for template {template_id_uuid} to: {font_family}")
+                if font_size is not None:
+                    update_data['font_size'] = font_size
+                    logger.info(f"Updating Supabase font_size for template {template_id_uuid} to: {font_size}")
+                
                 if update_data:
                     try:
-                        result = supabase.table('document_templates').update(update_data).eq('id', template_record['id']).execute()
+                        result = supabase.table('document_templates').update(update_data).eq('id', template_id_uuid).execute()
                         if result.data:
-                            logger.info(f"Successfully updated Supabase metadata for {docx_name}: {update_data}")
+                            logger.info(f"Successfully updated Supabase metadata for template {template_id_uuid}: {update_data}")
                         else:
-                            logger.warning(f"Supabase update returned no data for {docx_name}")
+                            logger.warning(f"Supabase update returned no data for template {template_id_uuid}")
                     except Exception as exc:
                         logger.error(f"Failed to update template metadata in Supabase: {exc}")
                         import traceback
                         logger.error(traceback.format_exc())
+                
+                # Update plan assignments
+                if plan_ids is not None:
+                    try:
+                        # Delete existing permissions
+                        supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
+                        
+                        # Insert new permissions
+                        if plan_ids:
+                            permission_rows = []
+                            for plan_id in plan_ids:
+                                if plan_id:  # Only add non-empty plan IDs
+                                    permission_rows.append({
+                                        'plan_id': str(plan_id),
+                                        'template_id': str(template_id_uuid),
+                                        'can_download': True
+                                    })
+                            
+                            if permission_rows:
+                                permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
+                                if getattr(permissions_response, "error", None):
+                                    logger.error(f"Plan permissions insert error: {permissions_response.error}")
+                                else:
+                                    logger.info(f"Updated plan permissions for {len(permission_rows)} plans")
+                    except Exception as perm_exc:
+                        logger.error(f"Error updating plan permissions: {perm_exc}")
+            else:
+                raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
 
-        metadata_updates = {
-            "display_name": display_name or None,
-            "description": description or None,
-            "font_family": font_family,
-            "font_size": font_size,
-            "updated_at": datetime.utcnow().isoformat()
-        }
-        update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
+        # Also update local metadata file if template_record has file_name
+        if template_record and template_record.get('file_name'):
+            docx_name = ensure_docx_filename(template_record['file_name'])
+            metadata_updates = {
+                "display_name": display_name or None,
+                "description": description or None,
+                "font_family": font_family,
+                "font_size": font_size,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
 
         return {
             "success": True,
-            "template": docx_name,
+            "template_id": str(template_record['id']) if template_record else template_id,
+            "template": template_record.get('file_name') if template_record else template_id,
             "metadata": {
                 "display_name": display_name or None,
                 "description": description or None,
                 "font_family": font_family,
                 "font_size": font_size
-            }
+            },
+            "plan_ids": plan_ids
         }
     except HTTPException:
         raise
@@ -1634,6 +1822,7 @@ async def upload_template(
     description: Optional[str] = Form(None),
     font_family: Optional[str] = Form(None),
     font_size: Optional[str] = Form(None),
+    plan_ids: Optional[str] = Form(None),  # JSON array string of plan IDs
     current_user: str = Depends(get_current_user)
 ):
     """Upload a new template"""
@@ -1695,6 +1884,27 @@ async def upload_template(
         template_id = None
         template_record = None
 
+        # Parse font settings
+        font_family_value = (font_family or "").strip() or None
+        font_size_value: Optional[int] = None
+        if font_size is not None and font_size != "":
+            try:
+                font_size_value = int(font_size)
+            except ValueError:
+                warnings.append("Invalid font size value; ignored")
+                font_size_value = None
+
+        # Parse plan_ids (JSON array string)
+        plan_ids_list = []
+        if plan_ids:
+            try:
+                plan_ids_list = json.loads(plan_ids)
+                if not isinstance(plan_ids_list, list):
+                    plan_ids_list = []
+            except (json.JSONDecodeError, TypeError):
+                warnings.append("Invalid plan_ids format; ignoring")
+                plan_ids_list = []
+
         if SUPABASE_ENABLED:
             try:
                 existing_record = resolve_template_record(docx_filename)
@@ -1706,6 +1916,12 @@ async def upload_template(
                     'is_active': True,
                     'updated_at': datetime.utcnow().isoformat()
                 }
+                
+                # Add font settings to database if provided
+                if font_family_value:
+                    template_payload['font_family'] = font_family_value
+                if font_size_value is not None:
+                    template_payload['font_size'] = font_size_value
 
                 upsert_response = supabase.table('document_templates').upsert(
                     template_payload,
@@ -1752,6 +1968,33 @@ async def upload_template(
                         if getattr(placeholders_response, "error", None):
                             warnings.append("Supabase placeholder sync error; using local settings")
                             logger.error(f"Supabase placeholder insert error: {placeholders_response.error}")
+                    
+                    # Create plan_template_permissions entries for selected plans
+                    if plan_ids_list and template_id:
+                        try:
+                            # Delete existing permissions first
+                            supabase.table('plan_template_permissions').delete().eq('template_id', template_id).execute()
+                            
+                            # Insert new permissions
+                            permission_rows = []
+                            for plan_id in plan_ids_list:
+                                if plan_id:  # Only add non-empty plan IDs
+                                    permission_rows.append({
+                                        'plan_id': str(plan_id),
+                                        'template_id': str(template_id),
+                                        'can_download': True
+                                    })
+                            
+                            if permission_rows:
+                                permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
+                                if getattr(permissions_response, "error", None):
+                                    warnings.append("Failed to set plan permissions")
+                                    logger.error(f"Plan permissions insert error: {permissions_response.error}")
+                                else:
+                                    logger.info(f"Set plan permissions for {len(permission_rows)} plans")
+                        except Exception as perm_exc:
+                            warnings.append(f"Failed to set plan permissions: {str(perm_exc)}")
+                            logger.error(f"Error setting plan permissions: {perm_exc}")
                 else:
                     warnings.append("Supabase metadata sync failed; template served from local storage")
                     logger.warning("Unable to retrieve template metadata after Supabase upsert")
@@ -1782,15 +2025,7 @@ async def upload_template(
             unmark_template_as_deleted(title_value)
         logger.info(f"Removed {docx_filename} from deleted templates list (if present)")
 
-        # Persist metadata locally
-        font_family_value = (font_family or "").strip() or None
-        font_size_value: Optional[int] = None
-        if font_size is not None and font_size != "":
-            try:
-                font_size_value = int(font_size)
-            except ValueError:
-                warnings.append("Invalid font size value; ignored")
-
+        # Persist metadata locally (font settings already parsed above)
         metadata_payload = {
             "display_name": title_value,
             "description": description_value,
@@ -2056,7 +2291,7 @@ async def get_placeholder_settings(
 
         if SUPABASE_ENABLED and not template_name:
             response = supabase.table('template_placeholders').select(
-                'template_id, placeholder, source, custom_value, database_field, csv_id, csv_field, csv_row, random_option'
+                'template_id, placeholder, source, custom_value, database_table, database_field, csv_id, csv_field, csv_row, random_option'
             ).execute()
 
             aggregated: Dict[str, Dict[str, Dict]] = {}
@@ -2065,6 +2300,7 @@ async def get_placeholder_settings(
                 aggregated.setdefault(template_id, {})[row['placeholder']] = {
                     'source': row.get('source', 'random'),
                     'customValue': row.get('custom_value') or '',
+                    'databaseTable': row.get('database_table') or '',
                     'databaseField': row.get('database_field') or '',
                     'csvId': row.get('csv_id') or '',
                     'csvField': row.get('csv_field') or '',
@@ -2119,13 +2355,14 @@ async def save_placeholder_settings(
                 sanitised_settings[placeholder] = {
                     'source': cfg.get('source', 'random'),
                     'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
+                    'databaseTable': str(cfg.get('databaseTable', '')).strip() if cfg.get('databaseTable') else '',
                     'databaseField': str(cfg.get('databaseField', '')).strip() if cfg.get('databaseField') else '',
                     'csvId': str(cfg.get('csvId', '')).strip() if cfg.get('csvId') else '',
                     'csvField': str(cfg.get('csvField', '')).strip() if cfg.get('csvField') else '',
                     'csvRow': int(cfg.get('csvRow', 0)) if cfg.get('csvRow') is not None else 0,
                     'randomOption': cfg.get('randomOption', 'auto') or 'auto'
                 }
-                logger.debug(f"Sanitized setting for '{placeholder}': source={sanitised_settings[placeholder]['source']}, databaseField={sanitised_settings[placeholder]['databaseField']}, csvId={sanitised_settings[placeholder]['csvId']}")
+                logger.debug(f"Sanitized setting for '{placeholder}': source={sanitised_settings[placeholder]['source']}, databaseTable={sanitised_settings[placeholder]['databaseTable']}, databaseField={sanitised_settings[placeholder]['databaseField']}, csvId={sanitised_settings[placeholder]['csvId']}")
 
             logger.info(f"Saving {len(sanitised_settings)} placeholder settings for template {template_id} ({template_record.get('file_name')})")
             upsert_template_placeholders(template_id, sanitised_settings, template_record.get('file_name'))
@@ -2418,26 +2655,38 @@ async def options_user_downloadable_templates(request: Request):
     """Handle CORS preflight for user-downloadable-templates endpoint"""
     return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
-@app.get("/templates/{template_name}/plan-info")
-async def get_template_plan_info(template_name: str):
+@app.get("/templates/{template_identifier}/plan-info")
+async def get_template_plan_info(template_identifier: str):
     """Get plan information for a specific template (which plans can download it)"""
     try:
         if not supabase:
             return {
                 "success": True,
-                "template_name": template_name,
+                "template_name": template_identifier,
                 "plans": [],
                 "source": "json_fallback"
             }
         
-        # Get template ID
-        template_file_name = template_name.replace('.docx', '')
-        template_res = supabase.table('document_templates').select('id, file_name').eq('file_name', template_file_name).eq('is_active', True).limit(1).execute()
+        # Try to resolve by template_id (UUID) first
+        template_id = None
+        template_record = None
         
-        if not template_res.data:
+        try:
+            template_uuid = uuid.UUID(str(template_identifier))
+            template_res = supabase.table('document_templates').select('id, file_name').eq('id', str(template_uuid)).eq('is_active', True).limit(1).execute()
+            if template_res.data:
+                template_record = template_res.data[0]
+                template_id = template_record['id']
+        except (ValueError, TypeError):
+            # Not a UUID, try by file_name
+            template_file_name = template_identifier.replace('.docx', '')
+            template_res = supabase.table('document_templates').select('id, file_name').eq('file_name', template_file_name).eq('is_active', True).limit(1).execute()
+            if template_res.data:
+                template_record = template_res.data[0]
+                template_id = template_record['id']
+        
+        if not template_id:
             raise HTTPException(status_code=404, detail="Template not found")
-        
-        template_id = template_res.data[0]['id']
         
         # Get all plans that can download this template
         permissions_res = supabase.table('plan_template_permissions').select(
@@ -2490,7 +2739,8 @@ async def get_template_plan_info(template_name: str):
             
             return {
                 "success": True,
-                "template_name": template_name,
+                "template_id": str(template_id),
+                "template_name": template_record.get('file_name') if template_record else template_identifier,
                 "plans": unique_plans,
                 "plan_name": unique_plans[0]['plan_name'] if unique_plans else None,
                 "plan_tier": unique_plans[0]['plan_tier'] if unique_plans else None,
@@ -2499,7 +2749,8 @@ async def get_template_plan_info(template_name: str):
         else:
             return {
                 "success": True,
-                "template_name": template_name,
+                "template_id": str(template_id),
+                "template_name": template_record.get('file_name') if template_record else template_identifier,
                 "plans": [],
                 "plan_name": None,
                 "plan_tier": None,
@@ -2560,7 +2811,7 @@ async def get_user_downloadable_templates(request: Request):
         if templates_res.data:
             # Enhance with template details
             template_ids = [t['template_id'] for t in templates_res.data]
-            details_res = supabase.table('document_templates').select('id, title, description, file_name, placeholders').in_('id', template_ids).execute()
+            details_res = supabase.table('document_templates').select('id, title, description, file_name, placeholders, font_family, font_size').in_('id', template_ids).execute()
             
             details_map = {d['id']: d for d in (details_res.data or [])}
             
@@ -2607,6 +2858,10 @@ async def get_user_downloadable_templates(request: Request):
                 # Get title (fallback to display_name)
                 template_title = details.get('title') or display_name
                 
+                # Get font settings - prioritize database, then metadata
+                font_family = details.get('font_family') or metadata_entry.get('font_family')
+                font_size = details.get('font_size') or metadata_entry.get('font_size')
+                
                 # If user can download, use their plan name, otherwise try to get plan info for template
                 plan_name = None
                 plan_tier_val = None
@@ -2629,10 +2884,13 @@ async def get_user_downloadable_templates(request: Request):
                 
                 enhanced_templates.append({
                     "id": str(template_id),
+                    "template_id": str(template_id),  # Also include as template_id for consistency
                     "name": display_name,  # Use display_name as primary name
                     "title": template_title,
                     "file_name": file_name,
                     "description": description,
+                    "font_family": font_family,
+                    "font_size": font_size,
                     "placeholders": details.get('placeholders', []),
                     "can_download": t['can_download'],
                     "max_downloads": t['max_downloads'],
@@ -2642,7 +2900,9 @@ async def get_user_downloadable_templates(request: Request):
                     "plan_tier": plan_tier_val,
                     "metadata": {
                         "display_name": display_name,  # Always include display_name
-                        "description": description or metadata_entry.get('description', '')  # Always include description
+                        "description": description or metadata_entry.get('description', ''),  # Always include description
+                        "font_family": font_family,
+                        "font_size": font_size
                     }
                 })
             
@@ -2914,6 +3174,38 @@ def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
 # STEP 7: DOCUMENT GENERATION (with PDF export)
 # ============================================================================
 
+def get_data_from_table(table_name: str, lookup_field: str, lookup_value: str) -> Optional[Dict]:
+    """
+    Get data from any database table using a lookup field and value.
+    
+    Args:
+        table_name: Name of the table (e.g., 'vessels', 'ports', 'refineries')
+        lookup_field: Field name to search by (e.g., 'imo', 'id', 'name')
+        lookup_value: Value to search for
+    
+    Returns:
+        Dictionary with table data or None if not found
+    """
+    if not supabase:
+        logger.warning(f"Supabase not available, cannot fetch data from {table_name}")
+        return None
+    
+    try:
+        logger.info(f"Fetching data from {table_name} table: {lookup_field}={lookup_value}")
+        response = supabase.table(table_name).select('*').eq(lookup_field, lookup_value).limit(1).execute()
+        
+        if response.data and len(response.data) > 0:
+            data = response.data[0]
+            logger.info(f"Found data in {table_name}: {data.get('name', data.get('id', 'Unknown'))}")
+            return data
+        else:
+            logger.warning(f"No data found in {table_name} for {lookup_field}={lookup_value}")
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching data from {table_name} for {lookup_field}={lookup_value}: {e}")
+        return None
+
+
 def get_vessel_data(imo: str) -> Optional[Dict]:
     """Get vessel data from Supabase database using IMO number"""
     if not imo:
@@ -2936,10 +3228,9 @@ def get_vessel_data(imo: str) -> Optional[Dict]:
             }
         
         logger.info(f"Fetching vessel data from database for IMO: {imo}")
-        response = supabase.table('vessels').select('*').eq('imo', imo).execute()
+        vessel_data = get_data_from_table('vessels', 'imo', imo)
         
-        if response.data and len(response.data) > 0:
-            vessel_data = response.data[0]
+        if vessel_data:
             logger.info(f"Found vessel in database: {vessel_data.get('name', 'Unknown')} (IMO: {imo})")
             # Ensure IMO is always in the returned data
             vessel_data['imo'] = imo
@@ -3623,13 +3914,14 @@ async def generate_document(request: Request):
     template_record: Optional[Dict] = None
     try:
         body = await request.json()
-        template_name = body.get('template_name')
+        template_id = body.get('template_id')  # New: prefer template_id
+        template_name = body.get('template_name')  # Fallback for backward compatibility
         vessel_imo = body.get('vessel_imo')
         user_id = body.get('user_id')  # Optional: for permission checking
         
         # Validate required fields
-        if not template_name:
-            raise HTTPException(status_code=422, detail="template_name is required")
+        if not template_id and not template_name:
+            raise HTTPException(status_code=422, detail="template_id or template_name is required")
         
         if not vessel_imo:
             raise HTTPException(status_code=422, detail="vessel_imo is required. Please provide the IMO number of the vessel.")
@@ -3637,7 +3929,8 @@ async def generate_document(request: Request):
         # Log the vessel IMO being used - CRITICAL for debugging
         logger.info("=" * 80)
         logger.info(f"🚢 GENERATING DOCUMENT")
-        logger.info(f"   Template: {template_name}")
+        logger.info(f"   Template ID: {template_id}")
+        logger.info(f"   Template Name: {template_name}")
         logger.info(f"   Vessel IMO: {vessel_imo} (from vessel detail page)")
         logger.info(f"   User ID: {user_id}")
         logger.info("=" * 80)
@@ -3648,9 +3941,25 @@ async def generate_document(request: Request):
         template_record: Optional[Dict] = None
 
         if SUPABASE_ENABLED:
-            template_record = resolve_template_record(template_name)
+            # Try to resolve by template_id first (UUID)
+            if template_id:
+                try:
+                    template_uuid = uuid.UUID(str(template_id))
+                    response = supabase.table('document_templates').select('id, title, description, file_name, placeholders, is_active, created_at, updated_at').eq('id', str(template_uuid)).limit(1).execute()
+                    if response.data:
+                        template_record = response.data[0]
+                        logger.info(f"Found template by ID: {template_id}")
+                except (ValueError, TypeError):
+                    # Not a valid UUID, try as template_name
+                    logger.info(f"template_id '{template_id}' is not a valid UUID, trying as template_name")
+                    template_record = resolve_template_record(template_id)
+            
+            # Fallback to template_name if template_id didn't work
+            if not template_record and template_name:
+                template_record = resolve_template_record(template_name)
+            
             if not template_record:
-                raise HTTPException(status_code=404, detail=f"Template not found: {template_name}")
+                raise HTTPException(status_code=404, detail=f"Template not found: {template_id or template_name}")
 
             template_settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
 
@@ -3834,58 +4143,112 @@ async def generate_document(request: Request):
                             logger.warning(f"⚠️  Placeholder '{placeholder}' has custom source but customValue is empty")
 
                     elif source == 'database':
+                        database_table = (setting.get('databaseTable') or '').strip()
                         database_field = (setting.get('databaseField') or '').strip()
                         logger.info(f"  🗄️  DATABASE source configured for '{placeholder}'")
+                        logger.info(f"     databaseTable='{database_table}'")
                         logger.info(f"     databaseField='{database_field}'")
                         logger.info(f"     vessel_imo='{vessel_imo}' (from page)")
-                        logger.info(f"  📋 Available vessel fields: {list(vessel.keys())}")
 
                         matched_field = None
                         matched_value = None
+                        source_data = vessel  # Default to vessel data
 
-                        if database_field:
-                            if database_field in vessel:
-                                value = vessel[database_field]
-                                if value is not None and str(value).strip() != '':
-                                    matched_field = database_field
-                                    matched_value = str(value).strip()
-                                    logger.info(f"  ✅ Exact match found: '{database_field}'")
+                        # If database_table is specified and it's not 'vessels', fetch data from that table
+                        if database_table and database_table.lower() != 'vessels':
+                            logger.info(f"  🔍 Fetching data from table '{database_table}'...")
+                            
+                            # Determine lookup field and value based on table
+                            # For now, we'll try common lookup strategies
+                            lookup_field = None
+                            lookup_value = None
+                            
+                            if database_table.lower() == 'ports':
+                                # Try to get port_id from vessel data
+                                lookup_field = 'id'
+                                if 'departure_port' in vessel and vessel.get('departure_port'):
+                                    # If vessel has port name, we might need to look it up by name first
+                                    # For now, assume we have port_id
+                                    lookup_value = vessel.get('port_id') or vessel.get('departure_port_id')
+                                elif 'currentport' in vessel:
+                                    lookup_value = vessel.get('port_id')
+                            elif database_table.lower() == 'refineries':
+                                lookup_field = 'id'
+                                lookup_value = vessel.get('refinery_id') or vessel.get('target_refinery_id')
+                            elif database_table.lower() == 'companies':
+                                lookup_field = 'id'
+                                lookup_value = vessel.get('company_id') or vessel.get('owner_company_id')
+                            elif database_table.lower() == 'brokers':
+                                lookup_field = 'id'
+                                lookup_value = vessel.get('broker_id')
                             else:
-                                database_field_lower = database_field.lower()
-                                for key, value in vessel.items():
-                                    if key.lower() == database_field_lower and value is not None and str(value).strip() != '':
-                                        matched_field = key
-                                        matched_value = str(value).strip()
-                                        logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}'")
-                                        break
-
-                        if not matched_field and not database_field:
-                            logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
-                            matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
-                            if matched_field:
-                                logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
+                                # Generic lookup - try 'id' field
+                                lookup_field = 'id'
+                                lookup_value = vessel.get(f'{database_table.lower()}_id')
+                            
+                            if lookup_field and lookup_value:
+                                source_data = get_data_from_table(database_table, lookup_field, str(lookup_value))
+                                if not source_data:
+                                    logger.warning(f"  ⚠️  Could not fetch data from {database_table} using {lookup_field}={lookup_value}")
+                                    source_data = vessel  # Fallback to vessel data
                             else:
-                                logger.warning(f"  ⚠️  Intelligent matching failed for '{placeholder}'")
-
-                        if not matched_field and database_field:
-                            logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")
-                            matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
-                            if matched_field:
-                                logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
-                            else:
-                                logger.warning(f"  ⚠️  Intelligent fallback matching failed for '{placeholder}'")
-
-                        if matched_field and matched_value:
-                            data_mapping[placeholder] = matched_value
-                            found = True
-                            logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}')")
+                                logger.warning(f"  ⚠️  Could not determine lookup field/value for table {database_table}, using vessel data")
+                                source_data = vessel
                         else:
-                            logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any vessel field!")
+                            # Use vessel data (default or explicitly 'vessels' table)
+                            logger.info(f"  📋 Using vessel data (table: {database_table or 'vessels'})")
+                            logger.info(f"  📋 Available fields: {list(vessel.keys())[:20]}...")
+
+                        if source_data:
                             if database_field:
-                                logger.error(f"  ❌ Explicit field '{database_field}' not found in vessel data")
-                            logger.error(f"  ❌ Available vessel fields: {list(vessel.keys())[:20]}...")  # Show first 20
+                                # Try exact match first
+                                if database_field in source_data:
+                                    value = source_data[database_field]
+                                    if value is not None and str(value).strip() != '':
+                                        matched_field = database_field
+                                        matched_value = str(value).strip()
+                                        logger.info(f"  ✅ Exact match found: '{database_field}' = '{matched_value}'")
+                                else:
+                                    # Try case-insensitive match
+                                    database_field_lower = database_field.lower()
+                                    for key, value in source_data.items():
+                                        if key.lower() == database_field_lower and value is not None and str(value).strip() != '':
+                                            matched_field = key
+                                            matched_value = str(value).strip()
+                                            logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}' = '{matched_value}'")
+                                            break
+
+                            if not matched_field and not database_field:
+                                logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
+                                matched_field, matched_value = _intelligent_field_match(placeholder, source_data)
+                                if matched_field:
+                                    logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
+                                else:
+                                    logger.warning(f"  ⚠️  Intelligent matching failed for '{placeholder}'")
+
+                            if not matched_field and database_field:
+                                logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")
+                                matched_field, matched_value = _intelligent_field_match(placeholder, source_data)
+                                if matched_field:
+                                    logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
+                                else:
+                                    logger.warning(f"  ⚠️  Intelligent fallback matching failed for '{placeholder}'")
+
+                            if matched_field and matched_value:
+                                data_mapping[placeholder] = matched_value
+                                found = True
+                                table_info = f" from {database_table}" if database_table and database_table.lower() != 'vessels' else ""
+                                logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}'{table_info})")
+                            else:
+                                logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any field in {database_table or 'vessels'}!")
+                                if database_field:
+                                    logger.error(f"  ❌ Explicit field '{database_field}' not found in data")
+                                logger.error(f"  ❌ Available fields: {list(source_data.keys())[:20]}...")  # Show first 20
+                                logger.error(f"  ❌ This will use RANDOM data!")
+                                logger.error(f"  💡 TIP: Check if databaseField in CMS matches field names exactly (case-insensitive)")
+                        else:
+                            logger.error(f"  ❌❌❌ FAILED: No data available from {database_table or 'vessels'} table!")
                             logger.error(f"  ❌ This will use RANDOM data!")
-                            logger.error(f"  💡 TIP: Check if databaseField in CMS matches vessel field names exactly (case-insensitive)")
 
                     elif source == 'csv':
                         csv_id = setting.get('csvId', '')
