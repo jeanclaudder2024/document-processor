@@ -3100,11 +3100,18 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
 
 
 def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
-    """Replace placeholders in a DOCX file - ONLY replaces placeholder patterns, preserves all other text and formatting."""
+    """
+    Replace placeholders in a DOCX file.
+    ONLY replaces placeholder patterns WITH brackets (e.g., {placeholder}).
+    Replaces the ENTIRE pattern (including brackets) with just the value (no brackets).
+    Preserves all other text and formatting.
+    """
     try:
-        logger.info("Starting replacement with %d mappings", len(data))
+        logger.info("=" * 80)
+        logger.info("Starting placeholder replacement with %d mappings", len(data))
+        logger.info("=" * 80)
         for key, value in data.items():
-            logger.debug("Planned replacement: %s -> %s", key, value)
+            logger.info("📋 Planned replacement: '%s' -> '%s'", key, str(value))
 
         doc = Document(docx_path)
         replacements_made = 0
@@ -3412,11 +3419,13 @@ async def generate_document(request: Request):
                 logger.debug(f"   csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
 
                 if source == 'custom':
-                    custom_value = setting.get('customValue', '')
+                    custom_value = str(setting.get('customValue', '')).strip()
                     if custom_value:
                         data_mapping[placeholder] = custom_value
                         found = True
-                        logger.info(f"{placeholder} -> {custom_value} (CMS custom value)")
+                        logger.info(f"✅ {placeholder} -> '{custom_value}' (CMS custom value)")
+                    else:
+                        logger.warning(f"⚠️  Placeholder '{placeholder}' has custom source but customValue is empty")
 
                 elif source == 'database':
                     database_field = (setting.get('databaseField') or '').strip()
