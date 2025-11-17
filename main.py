@@ -2676,22 +2676,39 @@ def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
         if csv_id in metadata:
             # Use dataset_id_to_filename to get the actual filename
             filename = dataset_id_to_filename(csv_id)
+            logger.debug(f"Found CSV '{csv_id}' in metadata, filename: {filename}")
         else:
+            # Try to find in metadata by case-insensitive match
+            csv_id_lower = csv_id.lower()
+            for key in metadata.keys():
+                if key.lower() == csv_id_lower:
+                    filename = dataset_id_to_filename(key)
+                    logger.debug(f"Found CSV '{csv_id}' in metadata (case-insensitive match with '{key}'), filename: {filename}")
+                    break
+            
             # Fallback to legacy hardcoded mapping for backward compatibility
-            csv_mapping = {
-                "buyers_sellers": "buyers_sellers_data_220.csv",
-                "bank_accounts": "bank_accounts.csv",
-                "icpo": "icpo_section4_6_data_230.csv"
-            }
-            filename = csv_mapping.get(csv_id)
+            if not filename:
+                csv_mapping = {
+                    "buyers_sellers": "buyers_sellers_data_220.csv",
+                    "buyers_sellers_data_220": "buyers_sellers_data_220.csv",  # Add direct mapping
+                    "bank_accounts": "bank_accounts.csv",
+                    "icpo": "icpo_section4_6_data_230.csv",
+                    "icpo_section4_6_data_230": "icpo_section4_6_data_230.csv"  # Add direct mapping
+                }
+                filename = csv_mapping.get(csv_id)
+                if filename:
+                    logger.debug(f"Found CSV '{csv_id}' in legacy mapping, filename: {filename}")
         
         if not filename:
-            logger.warning(f"CSV dataset '{csv_id}' not found in metadata or legacy mapping")
+            logger.error(f"❌ CSV dataset '{csv_id}' not found in metadata or legacy mapping")
+            logger.error(f"   Available datasets in metadata: {list(metadata.keys())[:10]}...")
+            logger.error(f"   💡 TIP: Check if csvId in CMS matches dataset ID in data_sources.json")
             return None
         
         file_path = os.path.join(DATA_DIR, filename)
         if not os.path.exists(file_path):
-            logger.warning(f"CSV file not found: {file_path}")
+            logger.error(f"❌ CSV file not found: {file_path}")
+            logger.error(f"   💡 TIP: Check if CSV file exists in {DATA_DIR} directory")
             return None
         
         # Read CSV data
@@ -2699,17 +2716,22 @@ def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
             reader = csv.DictReader(f)
             rows = list(reader)
             
+            if not rows:
+                logger.warning(f"⚠️  CSV file '{filename}' is empty (no data rows)")
+                return None
+            
             if row_index < 0:
                 row_index = 0
             if row_index < len(rows):
-                logger.debug(f"Retrieved CSV data from {csv_id}[{row_index}]: {list(rows[row_index].keys())[:5]}...")
+                logger.debug(f"✅ Retrieved CSV data from {csv_id}[{row_index}]: {list(rows[row_index].keys())[:5]}...")
                 return rows[row_index]
             else:
-                logger.warning(f"Row index {row_index} out of range for CSV {csv_id} (has {len(rows)} rows)")
+                logger.error(f"❌ Row index {row_index} out of range for CSV {csv_id} (file has {len(rows)} rows, requested row {row_index})")
+                logger.error(f"   💡 TIP: Check csvRow in CMS - valid range is 0 to {len(rows)-1}")
         
         return None
     except Exception as e:
-        logger.error(f"Error reading CSV data for '{csv_id}' at row {row_index}: {e}")
+        logger.error(f"❌ Error reading CSV data for '{csv_id}' at row {row_index}: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return None
