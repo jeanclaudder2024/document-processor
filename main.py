@@ -4204,12 +4204,21 @@ async def generate_document(request: Request):
                 logger.info(f"   randomOption: '{setting.get('randomOption')}'")
 
                 try:
-                    # If source is 'random' but databaseField is empty, try intelligent matching first
-                    # This allows placeholders with source=random to still get vessel data if available
+                    # IMPORTANT: Respect the user's explicit CMS settings
+                    # Only use intelligent matching if source is 'random' AND no databaseField is configured
                     if source == 'random':
                         database_field = (setting.get('databaseField') or '').strip()
-                        if not database_field:
-                            logger.info(f"  🎲 Source is 'random' but no databaseField configured, trying intelligent matching first...")
+                        database_table = (setting.get('databaseTable') or '').strip()
+                        
+                        # If user explicitly set databaseField or databaseTable, they want random data
+                        # Don't override their choice with intelligent matching
+                        if database_field or database_table:
+                            logger.info(f"  🎲 Source is 'random' with explicit databaseField='{database_field}' or databaseTable='{database_table}'")
+                            logger.info(f"  🎲 RESPECTING USER CHOICE: Will use random data (user explicitly configured this)")
+                            # Don't set found = True, let it fall through to random data generation
+                        elif not database_field:
+                            # Only try intelligent matching if user didn't configure anything
+                            logger.info(f"  🎲 Source is 'random' with NO databaseField configured, trying intelligent matching first...")
                             matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
                             if matched_field and matched_value:
                                 data_mapping[placeholder] = matched_value
@@ -4219,10 +4228,6 @@ async def generate_document(request: Request):
                             else:
                                 logger.info(f"  ⚠️  Intelligent matching failed, will use random data as configured")
                                 # Don't set found = True, let it fall through to random data generation
-                        else:
-                            # If databaseField is set but source is random, respect the random setting
-                            # (This allows users to force random even if field exists)
-                            logger.info(f"  🎲 Source is 'random' with databaseField='{database_field}', will use random data (respecting CMS setting)")
                     
                     elif source == 'custom':
                         custom_value = str(setting.get('customValue', '')).strip()
