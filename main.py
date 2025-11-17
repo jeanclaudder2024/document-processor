@@ -3694,7 +3694,12 @@ async def generate_document(request: Request):
             logger.info(f"   Configured placeholders: {list(template_settings.keys())[:10]}...")
         
         # Log all extracted placeholders for debugging
-        logger.info(f"   Extracted placeholders: {placeholders[:20]}...")  # Show first 20
+        logger.info(f"   Extracted placeholders ({len(placeholders)} total): {placeholders[:30]}...")  # Show first 30
+        logger.info(f"   Configured CMS placeholders ({len(template_settings)} total): {list(template_settings.keys())[:30]}...")  # Show first 30
+        
+        # Create a mapping report
+        matched_placeholders = []
+        unmatched_placeholders = []
         
         for placeholder in placeholders:
             found = False
@@ -3702,14 +3707,31 @@ async def generate_document(request: Request):
             
             # Log all available settings keys for debugging
             if not setting and template_settings:
+                unmatched_placeholders.append(placeholder)
                 logger.warning(f"⚠️  Placeholder '{placeholder}' not found in template_settings")
-                logger.warning(f"   Available settings keys: {list(template_settings.keys())[:10]}...")
+                logger.warning(f"   Available settings keys: {list(template_settings.keys())[:20]}...")
                 logger.warning(f"   Trying to match using normalization...")
-                # Try to find similar placeholder names
-                placeholder_lower = placeholder.lower().strip()
+                
+                # Try to find similar placeholder names using normalization
+                placeholder_norm = normalise_placeholder_key(placeholder)
+                logger.warning(f"   Normalized placeholder: '{placeholder_norm}'")
+                
+                similar_keys = []
                 for key in template_settings.keys():
-                    if placeholder_lower in key.lower() or key.lower() in placeholder_lower:
-                        logger.warning(f"   Similar key found: '{key}' (consider using this exact name)")
+                    key_norm = normalise_placeholder_key(key)
+                    if placeholder_norm == key_norm:
+                        similar_keys.append(f"'{key}' (exact normalized match)")
+                    elif placeholder_norm in key_norm or key_norm in placeholder_norm:
+                        similarity = len(set(placeholder_norm) & set(key_norm)) / max(len(placeholder_norm), len(key_norm))
+                        if similarity > 0.5:
+                            similar_keys.append(f"'{key}' (similarity: {similarity:.2f})")
+                
+                if similar_keys:
+                    logger.warning(f"   Similar keys found: {', '.join(similar_keys[:5])}")
+                else:
+                    logger.warning(f"   No similar keys found. This placeholder will use random data.")
+            else:
+                matched_placeholders.append(placeholder)
 
             if setting:
                 # Validate setting structure
@@ -3864,6 +3886,19 @@ async def generate_document(request: Request):
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
         logger.info(f"Generated data mapping for {len(data_mapping)} placeholders")
+        
+        # Log matching summary
+        logger.info("=" * 80)
+        logger.info("📊 PLACEHOLDER MATCHING SUMMARY")
+        logger.info("=" * 80)
+        logger.info(f"✅ Matched with CMS settings: {len(matched_placeholders)} placeholders")
+        if matched_placeholders:
+            logger.info(f"   Matched: {matched_placeholders[:20]}...")
+        logger.info(f"⚠️  Unmatched (using random data): {len(unmatched_placeholders)} placeholders")
+        if unmatched_placeholders:
+            logger.info(f"   Unmatched: {unmatched_placeholders[:20]}...")
+            logger.warning("💡 TIP: Configure these placeholders in the CMS editor to use proper data sources")
+        logger.info("=" * 80)
         
         # Replace placeholders
         processed_docx = replace_placeholders_in_docx(template_path, data_mapping)
