@@ -3,19 +3,34 @@ class TemplateEditor {
     constructor() {
         const origin = window.location.origin || '';
         const hostname = window.location.hostname || '';
+        const protocol = window.location.protocol || 'http:';
         let apiBase = 'http://localhost:8000';
 
+        // Check for explicit API base URL
         if (window.__CMS_API_BASE__) {
             apiBase = window.__CMS_API_BASE__;
-        } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        } 
+        // If accessing CMS from same origin, use relative path
+        else if (hostname === 'localhost' || hostname === '127.0.0.1') {
             apiBase = 'http://localhost:8000';
-        } else if (hostname === 'control.petrodealhub.com') {
+        } 
+        // Production domains
+        else if (hostname === 'control.petrodealhub.com' || hostname === 'petrodealhub.com' || hostname === 'www.petrodealhub.com') {
             apiBase = 'https://petrodealhub.com/api';
-        } else if (origin && origin.startsWith('http')) {
+        } 
+        // If CMS is served from /cms/, API should be at root
+        else if (window.location.pathname.startsWith('/cms/')) {
+            // Remove /cms/ from path and use root
+            const baseUrl = origin.replace(/\/cms.*$/, '');
+            apiBase = `${baseUrl}/api`;
+        }
+        // Fallback: try to construct API URL from current origin
+        else if (origin && origin.startsWith('http')) {
             apiBase = `${origin.replace(/\/$/, '')}/api`;
         }
 
         this.apiBaseUrl = apiBase;
+        console.log('CMS Editor initialized with API base URL:', this.apiBaseUrl);
         this.currentTemplateId = null;
         this.currentTemplate = null;
         this.currentSettings = {};
@@ -29,10 +44,31 @@ class TemplateEditor {
     }
 
     async init() {
+        console.log('🚀 Initializing CMS Editor...');
+        console.log('📍 Current URL:', window.location.href);
+        console.log('🌐 API Base URL:', this.apiBaseUrl);
+        
         // Get template_id from URL parameter
         const urlParams = new URLSearchParams(window.location.search);
         const templateId = urlParams.get('template_id');
         
+        console.log('📋 Template ID from URL:', templateId);
+        
+        // Load supporting data FIRST (needed for dropdowns)
+        console.log('📦 Loading supporting data...');
+        try {
+            await Promise.all([
+                this.loadDatabaseTables(),
+                this.loadCsvFiles(),
+                this.loadPlans()
+            ]);
+            console.log('✅ Supporting data loaded');
+        } catch (error) {
+            console.error('❌ Error loading supporting data:', error);
+            this.showError('Failed to load some data. Please refresh the page.');
+        }
+        
+        // Then load template
         if (templateId) {
             await this.loadTemplateById(templateId);
         } else {
@@ -40,14 +76,10 @@ class TemplateEditor {
             document.getElementById('placeholdersContainer').innerHTML = 
                 '<div class="alert alert-warning">Please open this editor from the template list with a template selected.</div>';
         }
-        
-        // Load supporting data
-        await this.loadDatabaseTables();
-        await this.loadCsvFiles();
-        await this.loadPlans();
     }
 
     async apiJson(path, options = {}) {
+        const url = `${this.apiBaseUrl}${path}`;
         const opts = {
             ...options,
             credentials: 'include',
@@ -57,15 +89,32 @@ class TemplateEditor {
             }
         };
         
+        console.log(`API Request: ${opts.method || 'GET'} ${url}`);
+        
         try {
-            const response = await fetch(`${this.apiBaseUrl}${path}`, opts);
+            const response = await fetch(url, opts);
+            console.log(`API Response: ${response.status} ${response.statusText} for ${path}`);
+            
             if (!response.ok) {
-                const error = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-                throw new Error(error.detail || `HTTP ${response.status}`);
+                const errorText = await response.text();
+                let errorData;
+                try {
+                    errorData = JSON.parse(errorText);
+                } catch {
+                    errorData = { detail: errorText || `HTTP ${response.status}` };
+                }
+                console.error(`API Error (${path}):`, errorData);
+                throw new Error(errorData.detail || errorData.message || `HTTP ${response.status}`);
             }
-            return await response.json();
+            
+            const data = await response.json();
+            console.log(`API Success (${path}):`, data);
+            return data;
         } catch (error) {
             console.error(`API Error (${path}):`, error);
+            if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                throw new Error(`Cannot connect to API at ${url}. Please check if the API server is running.`);
+            }
             throw error;
         }
     }
@@ -123,20 +172,51 @@ class TemplateEditor {
 
     async loadDatabaseTables() {
         try {
-            console.log('Loading database tables from:', `${this.apiBaseUrl}/database-tables`);
+            console.log('🔄 Loading database tables from:', `${this.apiBaseUrl}/database-tables`);
             const data = await this.apiJson('/database-tables');
-            console.log('Database tables response:', data);
-            if (data && data.tables) {
+            console.log('✅ Database tables response:', data);
+            if (data && data.tables && Array.isArray(data.tables)) {
                 this.databaseTables = data.tables;
-                console.log(`Loaded ${data.tables.length} database tables:`, data.tables.map(t => t.name));
+                console.log(`✅ Loaded ${data.tables.length} database tables:`, data.tables.map(t => t.name));
+                
+                // Update UI if dropdowns are already rendered
+                this.updateDatabaseTableDropdowns();
             } else {
-                console.warn('No tables found in response:', data);
+                console.warn('⚠️ No tables found in response:', data);
                 this.databaseTables = [];
+                this.showError('Failed to load database tables: Invalid response format');
             }
         } catch (error) {
-            console.error('Failed to load database tables:', error);
-            // Set empty array to prevent errors
+            console.error('❌ Failed to load database tables:', error);
             this.databaseTables = [];
+            this.showError(`Failed to load database tables: ${error.message}`);
+        }
+    }
+    
+    updateDatabaseTableDropdowns() {
+        // Update all database table dropdowns in the UI
+        document.querySelectorAll('select[onchange*="handleDatabaseTableChange"]').forEach(select => {
+            const currentValue = select.value;
+            select.innerHTML = '<option value="">-- Select table --</option>' +
+                this.databaseTables.map(t => 
+                    `<option value="${t.name}" ${currentValue === t.name ? 'selected' : ''}>
+                        ${t.label}${t.description ? ` - ${t.description}` : ''}
+                    </option>`
+                ).join('');
+        });
+    }
+    
+    showError(message) {
+        // Show error message in UI
+        const errorDiv = document.getElementById('errorMessage');
+        if (errorDiv) {
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        } else {
+            console.error('Error:', message);
         }
     }
 
@@ -159,25 +239,58 @@ class TemplateEditor {
 
     async loadCsvFiles() {
         try {
-            console.log('Loading CSV files from:', `${this.apiBaseUrl}/csv-files`);
+            console.log('🔄 Loading CSV files from:', `${this.apiBaseUrl}/csv-files`);
             const data = await this.apiJson('/csv-files');
-            console.log('CSV files response:', data);
-            if (data && data.csv_files) {
+            console.log('✅ CSV files response:', data);
+            if (data && data.csv_files && Array.isArray(data.csv_files)) {
                 this.csvFiles = data.csv_files;
-                console.log(`Loaded ${data.csv_files.length} CSV files:`, data.csv_files.map(f => f.id));
+                console.log(`✅ Loaded ${data.csv_files.length} CSV files:`, data.csv_files.map(f => f.id));
                 // Load fields for each CSV
                 for (const csvFile of this.csvFiles) {
                     await this.loadCsvFields(csvFile.id);
                 }
+                // Update UI if dropdowns are already rendered
+                this.updateCsvFileDropdowns();
             } else {
-                console.warn('No CSV files found in response:', data);
+                console.warn('⚠️ No CSV files found in response:', data);
                 this.csvFiles = [];
             }
         } catch (error) {
-            console.error('Failed to load CSV files:', error);
-            // Set empty array to prevent errors
+            console.error('❌ Failed to load CSV files:', error);
             this.csvFiles = [];
+            this.showError(`Failed to load CSV files: ${error.message}`);
         }
+    }
+    
+    updateCsvFileDropdowns() {
+        // Update all CSV file dropdowns in the UI
+        if (!this.csvFiles || this.csvFiles.length === 0) {
+            console.log('⚠️ No CSV files available to update dropdowns');
+            return;
+        }
+        
+        document.querySelectorAll('select[id^="csvFile_"]').forEach(select => {
+            const currentValue = select.value;
+            select.innerHTML = '<option value="">-- Select CSV file --</option>' +
+                this.csvFiles.map(f => 
+                    `<option value="${f.id}" ${currentValue === f.id ? 'selected' : ''}>
+                        ${f.display_name || f.id}
+                    </option>`
+                ).join('');
+        });
+        
+        // Also update dropdowns with onchange handler
+        document.querySelectorAll('select[onchange*="handleCsvFileChange"]').forEach(select => {
+            if (select.id && !select.id.startsWith('csvFile_')) {
+                const currentValue = select.value;
+                select.innerHTML = '<option value="">-- Select CSV file --</option>' +
+                    this.csvFiles.map(f => 
+                        `<option value="${f.id}" ${currentValue === f.id ? 'selected' : ''}>
+                            ${f.display_name || f.id}
+                        </option>`
+                    ).join('');
+            }
+        });
     }
 
     async loadCsvFields(csvId) {
@@ -292,14 +405,14 @@ class TemplateEditor {
                     <!-- Database Source -->
                     <div class="source-option ${setting.source === 'database' ? 'active' : ''}" data-source="database">
                         <label class="form-label small">Database Table:</label>
-                        <select class="form-select form-select-sm mb-2" 
+                        <select class="form-select form-select-sm mb-2" id="dbTable_${ph}"
                                 onchange="editor.handleDatabaseTableChange('${ph}', this.value)">
                             <option value="">-- Select table --</option>
-                            ${this.databaseTables.map(t => 
+                            ${(this.databaseTables && this.databaseTables.length > 0) ? this.databaseTables.map(t => 
                                 `<option value="${t.name}" ${setting.databaseTable === t.name ? 'selected' : ''}>
                                     ${t.label}${t.description ? ` - ${t.description}` : ''}
                                 </option>`
-                            ).join('')}
+                            ).join('') : '<option value="">Loading tables...</option>'}
                         </select>
                         <label class="form-label small">Database Field:</label>
                         <select class="form-select form-select-sm" id="dbField_${ph}"
@@ -311,14 +424,14 @@ class TemplateEditor {
                     <!-- CSV Source -->
                     <div class="source-option ${setting.source === 'csv' ? 'active' : ''}" data-source="csv">
                         <label class="form-label small">CSV File:</label>
-                        <select class="form-select form-select-sm mb-2" 
+                        <select class="form-select form-select-sm mb-2" id="csvFile_${ph}"
                                 onchange="editor.handleCsvFileChange('${ph}', this.value)">
                             <option value="">-- Select CSV file --</option>
-                            ${this.csvFiles.map(f => 
+                            ${(this.csvFiles && this.csvFiles.length > 0) ? this.csvFiles.map(f => 
                                 `<option value="${f.id}" ${setting.csvId === f.id ? 'selected' : ''}>
                                     ${f.display_name || f.id}
                                 </option>`
-                            ).join('')}
+                            ).join('') : '<option value="">Loading CSV files...</option>'}
                         </select>
                         <label class="form-label small">CSV Field:</label>
                         <select class="form-select form-select-sm mb-2" id="csvField_${ph}"
@@ -349,6 +462,10 @@ class TemplateEditor {
                 </div>
             `;
         }).join('');
+        
+        // Update dropdowns with loaded data
+        this.updateDatabaseTableDropdowns();
+        this.updateCsvFileDropdowns();
         
         // Load initial database columns if database source is selected
         this.placeholders.forEach(ph => {
