@@ -3560,25 +3560,29 @@ async def generate_document(request: Request):
                         logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
                         matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
                         if matched_field:
-                            logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}'")
+                            logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
+                        else:
+                            logger.warning(f"  ⚠️  Intelligent matching failed for '{placeholder}'")
 
                     if not matched_field and database_field:
                         logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")
                         matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
                         if matched_field:
-                            logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}'")
+                            logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
+                        else:
+                            logger.warning(f"  ⚠️  Intelligent fallback matching failed for '{placeholder}'")
 
                     if matched_field and matched_value:
                         data_mapping[placeholder] = matched_value
                         found = True
-                        logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}'")
-                        logger.info(f"     ✓ Used database field '{matched_field}' from vessel IMO {vessel_imo}")
+                        logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}')")
                     else:
                         logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any vessel field!")
                         if database_field:
                             logger.error(f"  ❌ Explicit field '{database_field}' not found in vessel data")
-                        logger.error(f"  ❌ Available fields: {list(vessel.keys())}")
+                        logger.error(f"  ❌ Available vessel fields: {list(vessel.keys())[:20]}...")  # Show first 20
                         logger.error(f"  ❌ This will use RANDOM data!")
+                        logger.error(f"  💡 TIP: Check if databaseField in CMS matches vessel field names exactly (case-insensitive)")
 
                 elif source == 'csv':
                     csv_id = setting.get('csvId', '')
