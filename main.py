@@ -3017,16 +3017,20 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
 
 def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     """
-    Construct flexible regular expression patterns that match a placeholder
-    regardless of spacing, underscores, or case.
+    Construct flexible regular expression patterns that match a placeholder WITH brackets.
+    Placeholder name comes from CMS (without brackets), but we need to match it WITH brackets in document.
     """
     if not placeholder:
         return []
 
+    # Normalize placeholder name (remove any brackets if present, as CMS stores without brackets)
     normalized = placeholder.strip()
+    # Remove any existing brackets from placeholder name
+    normalized = re.sub(r'^[{\[<%#_]+|[}\])%>#_]+$', '', normalized).strip()
     if not normalized:
         return []
 
+    # Build pattern parts - allow flexible spacing/underscores
     pattern_parts: List[str] = []
     for char in normalized:
         if char in {' ', '\u00A0', '_', '-'}:
@@ -3035,8 +3039,10 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
             pattern_parts.append(re.escape(char))
 
     inner_pattern = ''.join(pattern_parts)
+    
     # Build patterns that match the placeholder WITH its wrapper brackets
-    # This ensures we only replace what's inside brackets, not the placeholder name itself
+    # These patterns will match: {placeholder}, {{placeholder}}, [placeholder], etc.
+    # The placeholder name in CMS is without brackets, but in document it's WITH brackets
     wrappers = [
         rf"\{{\{{\s*{inner_pattern}\s*\}}\}}",   # {{placeholder}}
         rf"\{{\s*{inner_pattern}\s*\}}",         # {placeholder}
@@ -3049,11 +3055,17 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     ]
     # DO NOT include raw placeholder without wrapper - this would replace text outside brackets!
 
-    return [re.compile(wrap, re.IGNORECASE) for wrap in wrappers]
+    compiled_patterns = [re.compile(wrap, re.IGNORECASE) for wrap in wrappers]
+    logger.debug(f"Built {len(compiled_patterns)} patterns for placeholder '{placeholder}' (normalized: '{normalized}')")
+    return compiled_patterns
 
 
 def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache: Dict[str, List[re.Pattern]]) -> Tuple[str, int]:
-    """Apply placeholder replacements to a block of text - ONLY replaces placeholder patterns WITH brackets, preserves all other text."""
+    """
+    Apply placeholder replacements to a block of text.
+    ONLY replaces placeholder patterns WITH brackets (e.g., {placeholder}), preserves all other text.
+    Replaces the ENTIRE pattern (including brackets) with just the value (no brackets).
+    """
     total_replacements = 0
     updated_text = text
 
@@ -3061,12 +3073,13 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
         if value is None or not value:
             continue
 
+        # Get or build patterns for this placeholder
         patterns = pattern_cache.get(placeholder)
         if patterns is None:
             patterns = _build_placeholder_pattern(placeholder)
             pattern_cache[placeholder] = patterns
 
-        # Replace each placeholder pattern (WITH brackets) with the value
+        # Replace each placeholder pattern (WITH brackets) with the value (WITHOUT brackets)
         # Use finditer and replace from end to start to preserve positions
         for pattern in patterns:
             matches = list(pattern.finditer(updated_text))
@@ -3074,12 +3087,14 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
                 # Replace from end to start to preserve string positions
                 for match in reversed(matches):
                     start, end = match.span()
-                    # Only replace if this is actually a placeholder pattern match (includes brackets)
+                    # Get the matched text (includes brackets, e.g., "{Vessel Name}")
                     matched_text = updated_text[start:end]
-                    # Replace the ENTIRE pattern (including brackets) with just the value
+                    
+                    # Replace the ENTIRE pattern (including brackets) with just the value (NO brackets)
+                    # Example: "{Vessel Name}" -> "Titanic" (not "{Titanic}")
                     updated_text = updated_text[:start] + str(value) + updated_text[end:]
                     total_replacements += 1
-                    logger.debug("Replaced placeholder pattern '%s' (matched: '%s') with '%s'", pattern.pattern, matched_text, str(value))
+                    logger.debug("Replaced: '%s' -> '%s' (pattern: '%s')", matched_text, str(value), pattern.pattern)
 
     return updated_text, total_replacements
 
