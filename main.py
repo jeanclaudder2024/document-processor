@@ -3813,25 +3813,25 @@ async def generate_document(request: Request):
                                             data_mapping[placeholder] = str(value).strip()
                                             found = True
                                             logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{csv_field})")
+                                        else:
+                                            logger.warning(f"  ⚠️  CSV field '{csv_field}' exists but is empty")
                                     else:
-                                        logger.warning(f"  ⚠️  CSV field '{csv_field}' exists but is empty")
-                                else:
-                                    # Try case-insensitive match
-                                    csv_field_lower = csv_field.lower()
-                                    matched_field = None
-                                    for key in csv_data.keys():
-                                        if key.lower() == csv_field_lower:
-                                            value = csv_data[key]
-                                            if value is not None and str(value).strip() != '':
-                                                matched_field = key
-                                                data_mapping[placeholder] = str(value).strip()
-                                                found = True
-                                                logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{matched_field} - case-insensitive match)")
-                                                break
-                                    
-                                    if not matched_field:
-                                        logger.error(f"  ❌❌❌ FAILED: CSV field '{csv_field}' not found in CSV data!")
-                                        logger.error(f"  ❌ Available fields: {list(csv_data.keys())}")
+                                        # Try case-insensitive match
+                                        csv_field_lower = csv_field.lower()
+                                        matched_field = None
+                                        for key in csv_data.keys():
+                                            if key.lower() == csv_field_lower:
+                                                value = csv_data[key]
+                                                if value is not None and str(value).strip() != '':
+                                                    matched_field = key
+                                                    data_mapping[placeholder] = str(value).strip()
+                                                    found = True
+                                                    logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{matched_field} - case-insensitive match)")
+                                                    break
+                                        
+                                        if not matched_field:
+                                            logger.error(f"  ❌❌❌ FAILED: CSV field '{csv_field}' not found in CSV data!")
+                                            logger.error(f"  ❌ Available fields: {list(csv_data.keys())}")
                                 else:
                                     logger.error(f"  ❌❌❌ FAILED: Could not retrieve CSV data for '{csv_id}' at row {csv_row_int}")
                             except Exception as csv_exc:
