@@ -3017,20 +3017,21 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
 
 def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     """
-    Construct flexible regular expression patterns that match a placeholder WITH brackets.
-    Placeholder name comes from CMS (without brackets), but we need to match it WITH brackets in document.
+    Build regex patterns to match a placeholder WITH brackets in the document.
+    Placeholder name from CMS is without brackets (e.g., "Vessel Name").
+    We need to match it WITH brackets in document (e.g., "{Vessel Name}").
     """
     if not placeholder:
         return []
 
-    # Normalize placeholder name (remove any brackets if present, as CMS stores without brackets)
+    # Normalize: remove any brackets if present (CMS stores without brackets)
     normalized = placeholder.strip()
-    # Remove any existing brackets from placeholder name
     normalized = re.sub(r'^[{\[<%#_]+|[}\])%>#_]+$', '', normalized).strip()
     if not normalized:
         return []
 
-    # Build pattern parts - allow flexible spacing/underscores
+    # Escape special regex characters, but allow flexible spacing/underscores
+    # Convert spaces, underscores, hyphens to flexible pattern
     pattern_parts: List[str] = []
     for char in normalized:
         if char in {' ', '\u00A0', '_', '-'}:
@@ -3040,12 +3041,11 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
 
     inner_pattern = ''.join(pattern_parts)
     
-    # Build patterns that match the placeholder WITH its wrapper brackets
-    # These patterns will match: {placeholder}, {{placeholder}}, [placeholder], etc.
-    # The placeholder name in CMS is without brackets, but in document it's WITH brackets
+    # Build patterns that match the placeholder WITH brackets
+    # Match: {placeholder}, {{placeholder}}, [placeholder], etc.
     wrappers = [
         rf"\{{\{{\s*{inner_pattern}\s*\}}\}}",   # {{placeholder}}
-        rf"\{{\s*{inner_pattern}\s*\}}",         # {placeholder}
+        rf"\{{\s*{inner_pattern}\s*\}}",         # {placeholder} - MOST COMMON
         rf"\[\[\s*{inner_pattern}\s*\]\]",       # [[placeholder]]
         rf"\[\s*{inner_pattern}\s*\]",           # [placeholder]
         rf"%\s*{inner_pattern}\s*%",             # %placeholder%
@@ -3053,24 +3053,25 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
         rf"__\s*{inner_pattern}\s*__",           # __placeholder__
         rf"##\s*{inner_pattern}\s*##",           # ##placeholder##
     ]
-    # DO NOT include raw placeholder without wrapper - this would replace text outside brackets!
 
     compiled_patterns = [re.compile(wrap, re.IGNORECASE) for wrap in wrappers]
     logger.debug(f"Built {len(compiled_patterns)} patterns for placeholder '{placeholder}' (normalized: '{normalized}')")
+    for i, pattern in enumerate(compiled_patterns):
+        logger.debug(f"  Pattern {i+1}: {pattern.pattern}")
     return compiled_patterns
 
 
 def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache: Dict[str, List[re.Pattern]]) -> Tuple[str, int]:
     """
-    Apply placeholder replacements to a block of text.
-    ONLY replaces placeholder patterns WITH brackets (e.g., {placeholder}), preserves all other text.
-    Replaces the ENTIRE pattern (including brackets) with just the value (no brackets).
+    Replace placeholders in text. Only replaces patterns WITH brackets.
+    Example: "{Vessel Name}" -> "Titanic" (replaces entire pattern including brackets with value only)
     """
     total_replacements = 0
     updated_text = text
 
     for placeholder, value in mapping.items():
         if value is None or not value:
+            logger.debug(f"Skipping placeholder '{placeholder}' - value is None or empty")
             continue
 
         # Get or build patterns for this placeholder
@@ -3078,23 +3079,26 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
         if patterns is None:
             patterns = _build_placeholder_pattern(placeholder)
             pattern_cache[placeholder] = patterns
+        
+        if not patterns:
+            logger.warning(f"No patterns built for placeholder '{placeholder}'")
+            continue
 
-        # Replace each placeholder pattern (WITH brackets) with the value (WITHOUT brackets)
-        # Use finditer and replace from end to start to preserve positions
+        # Try each pattern until we find matches
         for pattern in patterns:
             matches = list(pattern.finditer(updated_text))
             if matches:
+                logger.debug(f"Found {len(matches)} match(es) for placeholder '{placeholder}' using pattern: {pattern.pattern}")
                 # Replace from end to start to preserve string positions
                 for match in reversed(matches):
                     start, end = match.span()
-                    # Get the matched text (includes brackets, e.g., "{Vessel Name}")
                     matched_text = updated_text[start:end]
                     
-                    # Replace the ENTIRE pattern (including brackets) with just the value (NO brackets)
-                    # Example: "{Vessel Name}" -> "Titanic" (not "{Titanic}")
+                    # Replace entire match (including brackets) with value only
                     updated_text = updated_text[:start] + str(value) + updated_text[end:]
                     total_replacements += 1
-                    logger.debug("Replaced: '%s' -> '%s' (pattern: '%s')", matched_text, str(value), pattern.pattern)
+                    logger.info(f"✅ Replaced: '{matched_text}' -> '{value}' (placeholder: '{placeholder}')")
+                break  # Only use first matching pattern
 
     return updated_text, total_replacements
 
@@ -3118,7 +3122,7 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
         pattern_cache: Dict[str, List[re.Pattern]] = {}
 
         def replace_in_runs(runs, data_mapping, pattern_cache):
-            """Replace placeholders in runs while preserving formatting - ONLY replaces placeholder patterns"""
+            """Replace placeholders in runs while preserving formatting"""
             total_replacements = 0
             
             for run in runs:
@@ -3126,10 +3130,14 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                 if not original_run_text:
                     continue
                 
-                # Check if this run contains any placeholder pattern
+                # Quick check: does this run contain any placeholder pattern?
                 has_placeholder = False
                 for placeholder in data_mapping.keys():
-                    patterns = _build_placeholder_pattern(placeholder)
+                    patterns = pattern_cache.get(placeholder)
+                    if patterns is None:
+                        patterns = _build_placeholder_pattern(placeholder)
+                        pattern_cache[placeholder] = patterns
+                    
                     for pattern in patterns:
                         if pattern.search(original_run_text):
                             has_placeholder = True
@@ -3140,14 +3148,13 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                 if not has_placeholder:
                     continue  # Skip runs without placeholders
                 
-                # Replace ONLY placeholder patterns in this run
+                # Replace placeholder patterns in this run
                 updated_text, replaced = _replace_text_with_mapping(original_run_text, data_mapping, pattern_cache)
                 
                 if replaced > 0 and updated_text != original_run_text:
-                    # Only replace if we actually found and replaced placeholders
                     run.text = updated_text
                     total_replacements += replaced
-                    logger.debug(f"Replaced {replaced} placeholders in run: '{original_run_text[:30]}...' -> '{updated_text[:30]}...'")
+                    logger.debug(f"Run updated: '{original_run_text[:50]}...' -> '{updated_text[:50]}...' ({replaced} replacements)")
             
             return total_replacements
 
@@ -3162,7 +3169,11 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                 # Quick check: does this paragraph contain any placeholder pattern?
                 has_placeholder = False
                 for placeholder in data.keys():
-                    patterns = _build_placeholder_pattern(placeholder)
+                    patterns = pattern_cache.get(placeholder)
+                    if patterns is None:
+                        patterns = _build_placeholder_pattern(placeholder)
+                        pattern_cache[placeholder] = patterns
+                    
                     for pattern in patterns:
                         if pattern.search(paragraph_text):
                             has_placeholder = True
@@ -3178,7 +3189,7 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                 replacements_made += replaced
                 
                 if replaced > 0:
-                    logger.debug(f"Replaced {replaced} placeholders in paragraph: '{paragraph_text[:50]}...'")
+                    logger.info(f"📝 Paragraph: replaced {replaced} placeholder(s) in '{paragraph_text[:60]}...'")
 
         # Body paragraphs
         process_paragraphs(doc.paragraphs)
