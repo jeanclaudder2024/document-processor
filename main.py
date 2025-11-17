@@ -869,28 +869,33 @@ async def get_vessel_fields():
 
 
 def find_placeholders(text: str) -> List[str]:
-    """Extract placeholders from text using multiple formats"""
+    """
+    Extract placeholders from text using multiple formats.
+    Only extracts COMPLETE placeholders (with both opening and closing brackets).
+    """
     patterns = [
-        r'\{\{([^}]+)\}\}',      # {{placeholder}}
-        r'\{([^}]+)\}',          # {placeholder}
-        r'\[\[([^\]]+)\]\]',     # [[placeholder]]
-        r'\[([^\]]+)\]',         # [placeholder]
-        r'%([^%]+)%',            # %placeholder%
-        r'<([^>]+)>',            # <placeholder>
-        r'__([^_]+)__',          # __placeholder__
-        r'##([^#]+)##',          # ##placeholder##
+        (r'\{\{([^}]+)\}\}', '{{}}'),      # {{placeholder}}
+        (r'\{([^}]+)\}', '{}'),            # {placeholder} - MOST COMMON
+        (r'\[\[([^\]]+)\]\]', '[[]]'),     # [[placeholder]]
+        (r'\[([^\]]+)\]', '[]'),           # [placeholder]
+        (r'%([^%]+)%', '%%'),              # %placeholder%
+        (r'<([^>]+)>', '<>'),              # <placeholder>
+        (r'__([^_]+)__', '__'),            # __placeholder__
+        (r'##([^#]+)##', '##'),            # ##placeholder##
     ]
 
     placeholders = set()
-    for pattern in patterns:
+    for pattern, wrapper_type in patterns:
         matches = re.findall(pattern, text)
         for match in matches:
-            # Clean up match - replace newlines with spaces, remove extra
-            # whitespace
+            # Clean up match - replace newlines with spaces, remove extra whitespace
             cleaned = match.strip().replace('\n', ' ').replace('\r', ' ')
             cleaned = ' '.join(cleaned.split())  # Remove extra spaces
-            if cleaned:
+            
+            # Only add if placeholder is not empty and doesn't contain unclosed brackets
+            if cleaned and not any(char in cleaned for char in ['{', '}', '[', ']', '<', '>']):
                 placeholders.add(cleaned)
+                logger.debug(f"Found placeholder: '{cleaned}' (format: {wrapper_type})")
 
     return sorted(list(placeholders))
 
@@ -3461,13 +3466,27 @@ async def generate_document(request: Request):
         # Extract placeholders
         placeholders = extract_placeholders_from_docx(template_path)
         
+        # Filter out invalid placeholders (those with unclosed brackets or special characters)
+        valid_placeholders = []
+        for ph in placeholders:
+            # Skip placeholders that contain bracket characters (likely incomplete)
+            if any(char in ph for char in ['{', '}', '[', ']', '<', '>']):
+                logger.warning(f"⚠️  Skipping invalid placeholder (contains brackets): '{ph}'")
+                continue
+            valid_placeholders.append(ph)
+        
+        placeholders = valid_placeholders
+        
         # Generate data for each placeholder
         data_mapping = {}
-        logger.info(f"📝 Processing {len(placeholders)} placeholders from document")
+        logger.info(f"📝 Processing {len(placeholders)} valid placeholders from document")
         logger.info(f"⚙️  Template has {len(template_settings)} configured placeholders in CMS")
         
         if template_settings:
             logger.info(f"   Configured placeholders: {list(template_settings.keys())[:10]}...")
+        
+        # Log all extracted placeholders for debugging
+        logger.info(f"   Extracted placeholders: {placeholders[:20]}...")  # Show first 20
         
         for placeholder in placeholders:
             found = False
