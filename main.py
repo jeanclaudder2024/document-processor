@@ -3794,7 +3794,27 @@ async def generate_document(request: Request):
                 logger.debug(f"   csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
 
                 try:
-                    if source == 'custom':
+                    # If source is 'random' but databaseField is empty, try intelligent matching first
+                    # This allows placeholders with source=random to still get vessel data if available
+                    if source == 'random':
+                        database_field = (setting.get('databaseField') or '').strip()
+                        if not database_field:
+                            logger.info(f"  🎲 Source is 'random' but no databaseField configured, trying intelligent matching first...")
+                            matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+                            if matched_field and matched_value:
+                                data_mapping[placeholder] = matched_value
+                                found = True
+                                logger.info(f"  ✅✅✅ AUTO-MATCHED (from random source): {placeholder} = '{matched_value}' (from vessel field '{matched_field}')")
+                                logger.info(f"  💡 TIP: Change source to 'database' and set databaseField='{matched_field}' in CMS for explicit control")
+                            else:
+                                logger.info(f"  ⚠️  Intelligent matching failed, will use random data as configured")
+                                # Don't set found = True, let it fall through to random data generation
+                        else:
+                            # If databaseField is set but source is random, respect the random setting
+                            # (This allows users to force random even if field exists)
+                            logger.info(f"  🎲 Source is 'random' with databaseField='{database_field}', will use random data (respecting CMS setting)")
+                    
+                    elif source == 'custom':
                         custom_value = str(setting.get('customValue', '')).strip()
                         if custom_value:
                             data_mapping[placeholder] = custom_value
