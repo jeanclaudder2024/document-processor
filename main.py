@@ -3292,15 +3292,25 @@ def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     
     # Build patterns that match the placeholder WITH brackets
     # Match: {placeholder}, {{placeholder}}, [placeholder], etc.
+    # Note: Can't use backslashes in f-string expressions, so build patterns with concatenation
+    double_brace = r"\{\{" + r"\s*" + inner_pattern + r"\s*" + r"\}\}"
+    single_brace = r"\{" + r"\s*" + inner_pattern + r"\s*" + r"\}"
+    double_bracket = r"\[\[" + r"\s*" + inner_pattern + r"\s*" + r"\]\]"
+    single_bracket = r"\[" + r"\s*" + inner_pattern + r"\s*" + r"\]"
+    percent = r"%" + r"\s*" + inner_pattern + r"\s*" + r"%"
+    angle = r"<" + r"\s*" + inner_pattern + r"\s*" + r">"
+    double_underscore = r"__" + r"\s*" + inner_pattern + r"\s*" + r"__"
+    double_hash = r"##" + r"\s*" + inner_pattern + r"\s*" + r"##"
+    
     wrappers = [
-        rf"\{\{{\s*{inner_pattern}\s*\}\}}",     # {{placeholder}} - DOUBLE BRACES (fixed)
-        rf"\{{\s*{inner_pattern}\s*\}}",         # {placeholder} - MOST COMMON
-        rf"\[\[\s*{inner_pattern}\s*\]\]",       # [[placeholder]]
-        rf"\[\s*{inner_pattern}\s*\]",           # [placeholder]
-        rf"%\s*{inner_pattern}\s*%",             # %placeholder%
-        rf"<\s*{inner_pattern}\s*>",             # <placeholder>
-        rf"__\s*{inner_pattern}\s*__",           # __placeholder__
-        rf"##\s*{inner_pattern}\s*##",           # ##placeholder##
+        double_brace,      # {{placeholder}} - DOUBLE BRACES
+        single_brace,      # {placeholder} - MOST COMMON
+        double_bracket,    # [[placeholder]]
+        single_bracket,    # [placeholder]
+        percent,           # %placeholder%
+        angle,             # <placeholder>
+        double_underscore, # __placeholder__
+        double_hash,       # ##placeholder##
     ]
 
     compiled_patterns = [re.compile(wrap, re.IGNORECASE) for wrap in wrappers]
