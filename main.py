@@ -3090,9 +3090,11 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
             continue
 
         # Try each pattern until we find matches
+        found_any = False
         for pattern in patterns:
             matches = list(pattern.finditer(updated_text))
             if matches:
+                found_any = True
                 logger.debug(f"Found {len(matches)} match(es) for placeholder '{placeholder}' using pattern: {pattern.pattern}")
                 # Replace from end to start to preserve string positions
                 for match in reversed(matches):
@@ -3104,6 +3106,10 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
                     total_replacements += 1
                     logger.info(f"✅ Replaced: '{matched_text}' -> '{value}' (placeholder: '{placeholder}')")
                 break  # Only use first matching pattern
+        
+        if not found_any:
+            logger.debug(f"⚠️  No matches found for placeholder '{placeholder}' in text (first 200 chars: '{updated_text[:200]}...')")
+            logger.debug(f"   Patterns tried: {[p.pattern for p in patterns]}")
 
     return updated_text, total_replacements
 
@@ -3133,6 +3139,10 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
                 patterns = _build_placeholder_pattern(placeholder)
                 pattern_cache[placeholder] = patterns
                 logger.debug(f"Built {len(patterns)} patterns for '{placeholder}'")
+                if not patterns:
+                    logger.warning(f"⚠️  No patterns built for placeholder '{placeholder}'")
+                else:
+                    logger.debug(f"   First pattern: {patterns[0].pattern if patterns else 'None'}")
 
         def replace_in_runs(runs, data_mapping, pattern_cache):
             """Replace placeholders in runs while preserving formatting"""
