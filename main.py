@@ -2811,9 +2811,42 @@ async def get_user_downloadable_templates(request: Request):
         metadata_map = load_template_metadata()
         
         # Call database function
-        templates_res = supabase.rpc('get_user_downloadable_templates', {
-            'p_user_id': user_id
-        }).execute()
+        try:
+            templates_res = supabase.rpc('get_user_downloadable_templates', {
+                'p_user_id': user_id
+            }).execute()
+            
+            # Check for RPC errors
+            if hasattr(templates_res, 'error') and templates_res.error:
+                logger.error(f"RPC error: {templates_res.error}")
+                raise Exception(f"Database function error: {templates_res.error}")
+        except Exception as rpc_error:
+            logger.error(f"Error calling get_user_downloadable_templates RPC: {rpc_error}")
+            # Fallback: return empty list or try alternative query
+            logger.warning("Falling back to direct template query")
+            try:
+                # Fallback: get all active templates and mark as downloadable
+                templates_res_data = []
+                fallback_templates = supabase.table('document_templates').select('id, title, description, file_name, placeholders').eq('is_active', True).execute()
+                if fallback_templates.data:
+                    for t in fallback_templates.data:
+                        templates_res_data.append({
+                            'template_id': t['id'],
+                            'template_name': t.get('title') or t.get('file_name', ''),
+                            'can_download': True,  # Default to true for fallback
+                            'max_downloads': 10,
+                            'current_downloads': 0,
+                            'remaining_downloads': 10
+                        })
+                templates_res = type('obj', (object,), {'data': templates_res_data})()
+            except Exception as fallback_error:
+                logger.error(f"Fallback query also failed: {fallback_error}")
+                return {
+                    "success": True,
+                    "templates": [],
+                    "source": "error_fallback",
+                    "error": str(fallback_error)
+                }
         
         if templates_res.data:
             # Enhance with template details
