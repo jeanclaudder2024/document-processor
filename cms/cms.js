@@ -1015,6 +1015,7 @@ class DocumentCMS {
         // Store plans for editing
         this.allPlans = plans;
         // Ensure templates are loaded - rebuild allTemplates from current templates
+        // Also fetch from database to ensure we have all templates
         if (this.templates && Array.isArray(this.templates) && this.templates.length > 0) {
             this.allTemplates = this.templates.map(t => {
                 if (typeof t === 'string') {
@@ -1041,6 +1042,12 @@ class DocumentCMS {
                 this.loadTemplates();
             }
         }
+        
+        // Always ensure we have the latest templates when displaying plans
+        // This helps catch any templates that were added after initial load
+        this.loadTemplates().catch(err => {
+            console.warn('Failed to refresh templates in displayPlans:', err);
+        });
     }
 
     async testPermission() {
@@ -1224,14 +1231,31 @@ class DocumentCMS {
             return;
         }
         
-        // Ensure templates are loaded - reload if not available
-        if (!this.templates || this.templates.length === 0 || !this.allTemplates || this.allTemplates.length === 0) {
-            try {
-                console.log('Templates not loaded, fetching...');
-                await this.loadTemplates();
-            } catch (error) {
-                console.error('Failed to load templates:', error);
-                this.showToast('error', 'Error', 'Failed to load templates');
+        // Always reload templates to ensure we have the latest list
+        try {
+            console.log('Loading templates for plan editor...');
+            await this.loadTemplates();
+            console.log('Templates loaded:', this.templates ? this.templates.length : 0);
+            console.log('allTemplates:', this.allTemplates ? this.allTemplates.length : 0);
+        } catch (error) {
+            console.error('Failed to load templates:', error);
+            this.showToast('error', 'Error', 'Failed to load templates. Please refresh the page.');
+            return;
+        }
+        
+        // Ensure allTemplates is populated
+        if (!this.allTemplates || this.allTemplates.length === 0) {
+            if (this.templates && this.templates.length > 0) {
+                this.allTemplates = this.templates.map(t => {
+                    if (typeof t === 'string') {
+                        return t.endsWith('.docx') ? t : `${t}.docx`;
+                    }
+                    const name = t.name || t.file_with_extension || t.file_name || '';
+                    return name.endsWith('.docx') ? name : `${name}.docx`;
+                }).filter(t => t && t.trim() !== '');
+                this.allTemplates = [...new Set(this.allTemplates)];
+            } else {
+                this.showToast('error', 'Error', 'No templates found. Please upload templates first.');
                 return;
             }
         }
