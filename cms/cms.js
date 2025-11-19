@@ -1015,7 +1015,6 @@ class DocumentCMS {
         // Store plans for editing
         this.allPlans = plans;
         // Ensure templates are loaded - rebuild allTemplates from current templates
-        // Also fetch from database to ensure we have all templates
         if (this.templates && Array.isArray(this.templates) && this.templates.length > 0) {
             this.allTemplates = this.templates.map(t => {
                 if (typeof t === 'string') {
@@ -1036,18 +1035,14 @@ class DocumentCMS {
             this.allTemplates = [...new Set(this.allTemplates)];
             console.log('Rebuilt allTemplates in displayPlans:', this.allTemplates.length, 'templates:', this.allTemplates);
         } else {
-            // If templates aren't loaded, load them now
+            // If templates aren't loaded, load them now (async, won't block)
             if (this.allTemplates && this.allTemplates.length === 0) {
                 console.log('Templates not loaded, fetching...');
-                this.loadTemplates();
+                this.loadTemplates().catch(err => {
+                    console.warn('Failed to load templates in displayPlans:', err);
+                });
             }
         }
-        
-        // Always ensure we have the latest templates when displaying plans
-        // This helps catch any templates that were added after initial load
-        this.loadTemplates().catch(err => {
-            console.warn('Failed to refresh templates in displayPlans:', err);
-        });
     }
 
     async testPermission() {
