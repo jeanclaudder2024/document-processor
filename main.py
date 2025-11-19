@@ -2702,67 +2702,67 @@ async def get_template_plan_info(template_identifier: str):
         
         plan_ids = [p['plan_id'] for p in (permissions_res.data or [])]
         
-        if plan_ids:
-            plans_res = supabase.table('subscription_plans').select(
+        # CRITICAL: If template has NO plan permissions, it's available to ALL plans
+        if not plan_ids or len(plan_ids) == 0:
+            # Template has no plan restrictions - available to all active plans
+            logger.info(f"Template {template_id} has no plan permissions - available to all plans")
+            all_plans_res = supabase.table('subscription_plans').select(
                 'id, plan_name, plan_tier, name'
-            ).in_('id', plan_ids).eq('is_active', True).execute()
+            ).eq('is_active', True).execute()
             
             plans = []
-            if plans_res.data:
-                for plan in plans_res.data:
+            if all_plans_res.data:
+                for plan in all_plans_res.data:
                     plans.append({
                         "plan_id": str(plan['id']),
                         "plan_name": plan.get('plan_name') or plan.get('name') or plan.get('plan_tier'),
                         "plan_tier": plan.get('plan_tier')
                     })
             
-            # If template is available to all plans (check if any plan has * permission)
-            all_plans_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('is_active', True).execute()
-            if all_plans_res.data:
-                # Check if there's a plan with all templates access
-                for plan in all_plans_res.data:
-                    plan_permissions = supabase.table('plan_template_permissions').select('template_id').eq('plan_id', plan['id']).execute()
-                    # If plan has no restrictions or has all templates, include it
-                    if not plan_permissions.data or len(plan_permissions.data) == 0:
-                        # Check if plan allows all by checking can_download list in plans-db
-                        plan_tier = plan.get('plan_tier')
-                        plan_info = supabase.table('subscription_plans').select('*').eq('plan_tier', plan_tier).limit(1).execute()
-                        if plan_info.data:
-                            # Check plan permissions via RPC or direct check
-                            plans.append({
-                                "plan_id": str(plan['id']),
-                                "plan_name": plan.get('plan_name') or plan.get('name') or plan_tier,
-                                "plan_tier": plan_tier
-                            })
-            
-            # Remove duplicates
-            seen = set()
-            unique_plans = []
-            for plan in plans:
-                key = (plan.get('plan_id'), plan.get('plan_name'))
-                if key not in seen:
-                    seen.add(key)
-                    unique_plans.append(plan)
-            
             return {
                 "success": True,
                 "template_id": str(template_id),
                 "template_name": template_record.get('file_name') if template_record else template_identifier,
-                "plans": unique_plans,
-                "plan_name": unique_plans[0]['plan_name'] if unique_plans else None,
-                "plan_tier": unique_plans[0]['plan_tier'] if unique_plans else None,
-                "source": "database"
-            }
-        else:
-            return {
-                "success": True,
-                "template_id": str(template_id),
-                "template_name": template_record.get('file_name') if template_record else template_identifier,
-                "plans": [],
-                "plan_name": None,
+                "plans": plans,
+                "plan_name": "All Plans" if plans else None,
                 "plan_tier": None,
-                "source": "database"
+                "source": "database",
+                "available_to_all": True  # Flag to indicate template is available to all plans
             }
+        
+        # Template has specific plan permissions
+        plans_res = supabase.table('subscription_plans').select(
+            'id, plan_name, plan_tier, name'
+        ).in_('id', plan_ids).eq('is_active', True).execute()
+        
+        plans = []
+        if plans_res.data:
+            for plan in plans_res.data:
+                plans.append({
+                    "plan_id": str(plan['id']),
+                    "plan_name": plan.get('plan_name') or plan.get('name') or plan.get('plan_tier'),
+                    "plan_tier": plan.get('plan_tier')
+                })
+        
+        # Remove duplicates
+        seen = set()
+        unique_plans = []
+        for plan in plans:
+            key = (plan.get('plan_id'), plan.get('plan_name'))
+            if key not in seen:
+                seen.add(key)
+                unique_plans.append(plan)
+        
+        return {
+            "success": True,
+            "template_id": str(template_id),
+            "template_name": template_record.get('file_name') if template_record else template_identifier,
+            "plans": unique_plans,
+            "plan_name": unique_plans[0]['plan_name'] if unique_plans else None,
+            "plan_tier": unique_plans[0]['plan_tier'] if unique_plans else None,
+            "source": "database",
+            "available_to_all": False  # Template has specific plan restrictions
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -2869,15 +2869,25 @@ async def get_user_downloadable_templates(request: Request):
                 font_family = details.get('font_family') or metadata_entry.get('font_family')
                 font_size = details.get('font_size') or metadata_entry.get('font_size')
                 
-                # If user can download, use their plan name, otherwise try to get plan info for template
+                # Determine plan_name for template
+                # CRITICAL: Templates WITHOUT plan permissions are available to ALL users
                 plan_name = None
                 plan_tier_val = None
-                if t['can_download'] and user_plan_info:
-                    plan_name = user_plan_info['plan_name']
-                    plan_tier_val = user_plan_info['plan_tier']
-                elif not t['can_download']:
-                    # Try to get which plan allows this template
-                    try:
+                
+                # Check if template has any plan permissions
+                try:
+                    perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).limit(1).execute()
+                    
+                    if not perm_res.data or len(perm_res.data) == 0:
+                        # Template has NO plan permissions - available to ALL plans
+                        plan_name = "All Plans"
+                        logger.info(f"Template {template_id} has no plan permissions - available to all plans")
+                    elif t['can_download'] and user_plan_info:
+                        # User can download and has plan info
+                        plan_name = user_plan_info['plan_name']
+                        plan_tier_val = user_plan_info['plan_tier']
+                    elif not t['can_download']:
+                        # User cannot download - get which plan allows this template
                         perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).eq('can_download', True).limit(1).execute()
                         if perm_res.data:
                             plan_id = perm_res.data[0]['plan_id']
@@ -2886,8 +2896,11 @@ async def get_user_downloadable_templates(request: Request):
                                 plan_name = plan_detail_res.data[0].get('plan_name') or plan_detail_res.data[0].get('name') or plan_detail_res.data[0].get('plan_tier')
                                 plan_tier_val = plan_detail_res.data[0].get('plan_tier')
                                 logger.info(f"Found plan for locked template {template_id}: {plan_name} (tier: {plan_tier_val})")
-                    except Exception as e:
-                        logger.warning(f"Could not fetch plan info for template {template_id}: {e}")
+                except Exception as e:
+                    logger.warning(f"Could not fetch plan info for template {template_id}: {e}")
+                    # Default: if can_download is true, assume available to all
+                    if t['can_download']:
+                        plan_name = "All Plans"
                 
                 enhanced_templates.append({
                     "id": str(template_id),
