@@ -2810,6 +2810,11 @@ async def get_user_downloadable_templates(request: Request):
         # Load metadata map for fallback descriptions
         metadata_map = load_template_metadata()
         
+        # Get deleted templates list to filter them out
+        deleted_templates = get_deleted_templates()
+        if deleted_templates:
+            logger.info(f"Filtering out {len(deleted_templates)} deleted templates: {list(deleted_templates)[:5]}")
+        
         # Call database function
         try:
             templates_res = supabase.rpc('get_user_downloadable_templates', {
@@ -2829,7 +2834,20 @@ async def get_user_downloadable_templates(request: Request):
                 templates_res_data = []
                 fallback_templates = supabase.table('document_templates').select('id, title, description, file_name, placeholders').eq('is_active', True).execute()
                 if fallback_templates.data:
+                    # Get deleted templates for filtering
+                    deleted_templates_fallback = get_deleted_templates()
+                    normalized_deleted = {ensure_docx_filename(name) for name in deleted_templates_fallback} if deleted_templates_fallback else set()
+                    
                     for t in fallback_templates.data:
+                        file_name = t.get('file_name', '')
+                        docx_file_name = ensure_docx_filename(file_name) if file_name else ''
+                        
+                        # Skip deleted templates
+                        if normalized_deleted and docx_file_name:
+                            if docx_file_name in normalized_deleted or docx_file_name.lower() in {name.lower() for name in normalized_deleted}:
+                                logger.debug(f"Skipping deleted template in fallback: {docx_file_name}")
+                                continue
+                        
                         templates_res_data.append({
                             'template_id': t['id'],
                             'template_name': t.get('title') or t.get('file_name', ''),
