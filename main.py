@@ -2897,6 +2897,14 @@ async def get_user_downloadable_templates(request: Request):
                 # Get file_name and normalize for metadata lookup
                 file_name = details.get('file_name', '')
                 docx_file_name = ensure_docx_filename(file_name) if file_name else ''
+                
+                # CRITICAL: Skip deleted templates
+                if deleted_templates and docx_file_name:
+                    normalized_deleted = {ensure_docx_filename(name) for name in deleted_templates}
+                    if docx_file_name in normalized_deleted or docx_file_name.lower() in {name.lower() for name in normalized_deleted}:
+                        logger.debug(f"Skipping deleted template: {docx_file_name}")
+                        continue
+                
                 metadata_entry = metadata_map.get(docx_file_name, {}) if docx_file_name else {}
                 
                 # Get description from Supabase, fallback to metadata, fallback to empty
