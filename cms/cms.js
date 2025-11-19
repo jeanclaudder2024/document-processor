@@ -1302,8 +1302,8 @@ class DocumentCMS {
                             </div>
                             <div class="mb-3">
                                 <label class="form-label"><strong>Max Downloads Per Month:</strong></label>
-                                <input type="number" class="form-control" id="maxDownloads" value="${plan.max_downloads_per_month}" placeholder="Use -1 for unlimited">
-                                <small class="text-muted">Enter -1 for unlimited downloads</small>
+                                <input type="number" class="form-control" id="maxDownloads" value="${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : ''}" placeholder="Use -1 for unlimited, or enter a number">
+                                <small class="text-muted">Enter -1 for unlimited downloads, or a number for the monthly limit</small>
                             </div>
                             <div class="mb-3">
                                 <label class="form-label"><strong>Features (comma-separated):</strong></label>
@@ -1375,7 +1375,22 @@ class DocumentCMS {
                 this.showToast('error', 'Error', 'Max downloads input not found');
                 return;
             }
-            const maxDownloads = parseInt(maxDownloadsInput.value) || 10;
+            // Parse max downloads - handle empty string, null, -1 for unlimited, and valid numbers
+            const maxDownloadsValue = maxDownloadsInput.value.trim();
+            let maxDownloads;
+            if (maxDownloadsValue === '' || maxDownloadsValue === null || maxDownloadsValue === undefined) {
+                // If empty, use existing value or default to 10
+                maxDownloads = plan.max_downloads_per_month !== undefined ? plan.max_downloads_per_month : 10;
+            } else {
+                const parsed = parseInt(maxDownloadsValue, 10);
+                if (isNaN(parsed)) {
+                    // Invalid input, use existing value or default
+                    maxDownloads = plan.max_downloads_per_month !== undefined ? plan.max_downloads_per_month : 10;
+                } else {
+                    // Valid number (can be -1 for unlimited, 0, or positive number)
+                    maxDownloads = parsed;
+                }
+            }
             
             const featuresInput = document.getElementById('planFeatures');
             const featuresValue = featuresInput ? featuresInput.value : '';
