@@ -2810,59 +2810,10 @@ async def get_user_downloadable_templates(request: Request):
         # Load metadata map for fallback descriptions
         metadata_map = load_template_metadata()
         
-        # Call database function - handle if it doesn't exist
-        try:
-            templates_res = supabase.rpc('get_user_downloadable_templates', {
-                'p_user_id': user_id
-            }).execute()
-        except Exception as rpc_error:
-            # If RPC function doesn't exist or fails, fallback to public templates
-            logger.warning(f"Database function 'get_user_downloadable_templates' failed: {rpc_error}")
-            logger.info("Falling back to public templates")
-            # Return public templates with default permissions
-            templates = []
-            for filename in os.listdir(TEMPLATES_DIR):
-                if filename.endswith('.docx'):
-                    file_path = os.path.join(TEMPLATES_DIR, filename)
-                    if not os.path.exists(file_path):
-                        continue
-                    try:
-                        file_size = os.path.getsize(file_path)
-                        created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
-                        placeholders = extract_placeholders_from_docx(file_path)
-                        docx_file_name = ensure_docx_filename(filename)
-                        metadata_entry = metadata_map.get(docx_file_name, {})
-                        
-                        display_name = metadata_entry.get('display_name') or filename.replace('.docx', '')
-                        description = metadata_entry.get('description') or ''
-                        
-                        templates.append({
-                            "id": hashlib.md5(filename.encode()).hexdigest()[:12],
-                            "name": display_name,
-                            "title": display_name,
-                            "file_name": filename.replace('.docx', ''),
-                            "description": description,
-                            "placeholders": placeholders,
-                            "can_download": True,
-                            "max_downloads": None,
-                            "current_downloads": 0,
-                            "remaining_downloads": None,
-                            "plan_name": None,
-                            "plan_tier": None,
-                            "metadata": {
-                                "display_name": display_name,
-                                "description": description
-                            }
-                        })
-                    except Exception as file_error:
-                        logger.warning(f"Error processing template file {filename}: {file_error}")
-                        continue
-            
-            return {
-                "success": True,
-                "templates": templates,
-                "source": "fallback"
-            }
+        # Call database function
+        templates_res = supabase.rpc('get_user_downloadable_templates', {
+            'p_user_id': user_id
+        }).execute()
         
         if templates_res.data:
             # Enhance with template details
@@ -4587,18 +4538,8 @@ async def generate_document(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
         logger.error(f"Error generating document: {e}")
-        logger.error(f"Traceback: {error_trace}")
-        # Provide more helpful error message
-        error_detail = str(e)
-        if "not found" in error_detail.lower() or "404" in error_detail:
-            raise HTTPException(status_code=404, detail=f"Template or vessel not found: {error_detail}")
-        elif "permission" in error_detail.lower() or "unauthorized" in error_detail.lower():
-            raise HTTPException(status_code=403, detail=f"Permission denied: {error_detail}")
-        else:
-            raise HTTPException(status_code=500, detail=f"Failed to generate document: {error_detail}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if template_temp_path and os.path.exists(template_temp_path):
             try:
