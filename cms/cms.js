@@ -1035,7 +1035,11 @@ class DocumentCMS {
             let data = null;
             let source = 'unknown';
             
-            console.log('[loadPlans] Starting to load plans, forceReload:', forceReload);
+            if (forceReload) {
+                console.log('[loadPlans] 🔄 Force reloading plans from database...');
+            } else {
+                console.log('[loadPlans] 📋 Loading plans...');
+            }
             
             try {
                 // Always try database first to get latest plans from CMS
