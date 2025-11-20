@@ -1554,10 +1554,14 @@ async def get_plans_db():
 
             # Get all templates (may not exist yet, so handle gracefully)
             template_map = {}
+            all_template_ids = set()
             try:
                 templates_res = supabase.table('document_templates').select(
                     'id, file_name, title').eq('is_active', True).execute()
-                template_map = {t['id']: t for t in (templates_res.data or [])}
+                if templates_res.data:
+                    template_map = {t['id']: t for t in templates_res.data}
+                    all_template_ids = set(t['id'] for t in templates_res.data)
+                    logger.info(f"Fetched {len(template_map)} active templates from database")
             except Exception as e:
                 logger.warning(f"Could not fetch templates from database: {e}")
 
