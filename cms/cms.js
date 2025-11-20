@@ -964,7 +964,7 @@ class DocumentCMS {
     // Plans
     // ========================================================================
 
-    async loadPlans() {
+    async loadPlans(forceReload = false) {
         if (!this.ensureAuthenticated(false)) return;
         try {
             // CRITICAL: Always use database endpoint first to get latest plans
@@ -973,38 +973,49 @@ class DocumentCMS {
             let data = null;
             let source = 'unknown';
             
+            console.log('[loadPlans] Starting to load plans, forceReload:', forceReload);
+            
             try {
                 // Always try database first to get latest plans from CMS
                 data = await this.apiJson(`/plans-db${cacheBuster}`);
                 source = 'database';
-                console.log('Loaded plans from database:', Object.keys(data.plans || {}).length, 'plans');
+                console.log('[loadPlans] ✅ Loaded plans from database:', Object.keys(data.plans || {}).length, 'plans');
+                console.log('[loadPlans] Plan IDs:', Object.keys(data.plans || {}));
             } catch (e) {
-                console.warn('Failed to load plans from database, trying JSON:', e);
+                console.warn('[loadPlans] ⚠️ Failed to load plans from database, trying JSON:', e);
                 // Fallback to JSON
                 try {
                     data = await this.apiJson(`/plans${cacheBuster}`);
                     source = 'json';
-                    console.log('Loaded plans from JSON:', Object.keys(data.plans || {}).length, 'plans');
+                    console.log('[loadPlans] ✅ Loaded plans from JSON:', Object.keys(data.plans || {}).length, 'plans');
                 } catch (e2) {
-                    console.error('Failed to load plans from JSON:', e2);
+                    console.error('[loadPlans] ❌ Failed to load plans from JSON:', e2);
                     this.showToast('error', 'Load Error', 'Failed to load plans. Using empty list.');
                     data = { plans: {} };
                 }
             }
             
-            if (data && data.plans) {
-                console.log('Displaying plans from', source, ':', Object.keys(data.plans));
+            if (data && data.plans && typeof data.plans === 'object') {
+                console.log('[loadPlans] ✅ Displaying plans from', source, ':', Object.keys(data.plans));
+                // IMPORTANT: Store plans before displaying
+                this.allPlans = data.plans;
                 this.displayPlans(data.plans);
                 // Update plan checkboxes in upload form
                 this.populatePlanCheckboxes();
+                // Also update plan checkboxes in metadata modal if open
+                if (this.activeTemplateMetadata) {
+                    this.populateMetaPlanCheckboxes(this.findTemplateByName(this.activeTemplateMetadata));
+                }
             } else {
-                console.warn('No plans data received');
+                console.warn('[loadPlans] ⚠️ No plans data received or invalid format');
+                this.allPlans = {};
                 this.displayPlans({});
                 this.populatePlanCheckboxes();
             }
         } catch (error) {
-            console.error('Error loading plans:', error);
+            console.error('[loadPlans] ❌ Error loading plans:', error);
             this.showToast('error', 'Load Error', `Failed to load plans: ${error.message}`);
+            this.allPlans = {};
             this.displayPlans({});
         }
     }
@@ -1012,11 +1023,28 @@ class DocumentCMS {
     displayPlans(plans) {
         const container = document.getElementById('plansList');
         if (!container) {
-            console.error('plansList container not found');
+            console.error('[displayPlans] ❌ plansList container not found');
             return;
         }
         
-        container.innerHTML = Object.entries(plans).map(([planId, plan]) => {
+        // Ensure plans is an object
+        if (!plans || typeof plans !== 'object' || Array.isArray(plans)) {
+            console.warn('[displayPlans] ⚠️ Invalid plans data:', plans);
+            container.innerHTML = '<div class="text-center text-muted py-4">No plans found</div>';
+            return;
+        }
+        
+        const planEntries = Object.entries(plans);
+        console.log('[displayPlans] 📋 Rendering', planEntries.length, 'plans');
+        
+        if (planEntries.length === 0) {
+            container.innerHTML = '<div class="text-center text-muted py-4">No plans found</div>';
+            // Still store empty plans
+            this.allPlans = {};
+            return;
+        }
+        
+        container.innerHTML = planEntries.map(([planId, plan]) => {
             const canDownload = plan.can_download || [];
             const canDownloadList = Array.isArray(canDownload) ? canDownload : [canDownload];
             const isAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
@@ -1055,8 +1083,14 @@ class DocumentCMS {
         `;
         }).join('');
         
-        // Store plans for editing
-        this.allPlans = plans;
+        // Store plans for editing (already stored in loadPlans, but ensure it's set)
+        if (!this.allPlans || Object.keys(this.allPlans).length === 0) {
+            this.allPlans = plans;
+        } else {
+            // Merge with existing plans to preserve any that might have been loaded elsewhere
+            this.allPlans = { ...this.allPlans, ...plans };
+        }
+        console.log('[displayPlans] ✅ Stored', Object.keys(this.allPlans).length, 'plans in allPlans');
         // Ensure templates are loaded - rebuild allTemplates from current templates
         if (this.templates && Array.isArray(this.templates) && this.templates.length > 0) {
             this.allTemplates = this.templates.map(t => {
@@ -1265,25 +1299,34 @@ class DocumentCMS {
     async editPlan(planId) {
         if (!this.ensureAuthenticated()) return;
         
+        console.log('[editPlan] 📝 Opening editor for plan:', planId);
+        
         // CRITICAL: Always reload plans and templates to get latest data
         try {
-            console.log('Reloading plans and templates for plan editor...');
-            // Reload plans first to get latest plans from database
-            await this.loadPlans();
+            console.log('[editPlan] 🔄 Reloading plans and templates for plan editor...');
+            // Reload plans first to get latest plans from database (force reload)
+            await this.loadPlans(true);
             // Reload templates to get latest templates
             await this.loadTemplates();
-            console.log('Plans reloaded:', Object.keys(this.allPlans || {}).length, 'plans');
-            console.log('Templates loaded:', this.templates ? this.templates.length : 0);
-            console.log('allTemplates:', this.allTemplates ? this.allTemplates.length : 0);
+            
+            const plansCount = this.allPlans ? Object.keys(this.allPlans).length : 0;
+            const templatesCount = this.templates ? this.templates.length : 0;
+            const allTemplatesCount = this.allTemplates ? this.allTemplates.length : 0;
+            
+            console.log('[editPlan] ✅ Plans reloaded:', plansCount, 'plans');
+            console.log('[editPlan] ✅ Plan IDs:', this.allPlans ? Object.keys(this.allPlans) : []);
+            console.log('[editPlan] ✅ Templates loaded:', templatesCount);
+            console.log('[editPlan] ✅ allTemplates:', allTemplatesCount);
         } catch (error) {
-            console.error('Failed to reload plans/templates:', error);
+            console.error('[editPlan] ❌ Failed to reload plans/templates:', error);
             this.showToast('error', 'Error', 'Failed to reload data. Please refresh the page.');
             return;
         }
         
         // Check if plan exists after reload
         if (!this.allPlans || !this.allPlans[planId]) {
-            this.showToast('error', 'Error', 'Plan not found. Please refresh the page.');
+            console.error('[editPlan] ❌ Plan not found after reload. Available plans:', this.allPlans ? Object.keys(this.allPlans) : []);
+            this.showToast('error', 'Error', `Plan "${planId}" not found. Available plans: ${this.allPlans ? Object.keys(this.allPlans).join(', ') : 'none'}`);
             return;
         }
         
@@ -1307,10 +1350,17 @@ class DocumentCMS {
         const plan = this.allPlans[planId];
         const templates = this.allTemplates || [];
         
-        console.log('Editing plan:', planId);
-        console.log('Plan:', plan);
-        console.log('Templates available:', templates.length, templates);
-        console.log('Stored templates:', this.templates ? this.templates.length : 0);
+        console.log('[editPlan] 📋 Editing plan:', planId);
+        console.log('[editPlan] 📋 Plan data:', JSON.stringify(plan, null, 2));
+        console.log('[editPlan] 📋 Templates available:', templates.length, templates);
+        console.log('[editPlan] 📋 Stored templates:', this.templates ? this.templates.length : 0);
+        
+        // Validate plan data
+        if (!plan) {
+            console.error('[editPlan] ❌ Plan object is null or undefined');
+            this.showToast('error', 'Error', 'Plan data is invalid');
+            return;
+        }
         
         // Create modal HTML
         const modalHtml = `
@@ -1446,14 +1496,16 @@ class DocumentCMS {
             // Parse max downloads - handle empty string, null, -1 for unlimited, and valid numbers
             const maxDownloadsValue = maxDownloadsInput.value.trim();
             let maxDownloads;
+            // Get existing plan to use as fallback
+            const existingPlan = this.allPlans && this.allPlans[planId] ? this.allPlans[planId] : {};
             if (maxDownloadsValue === '' || maxDownloadsValue === null || maxDownloadsValue === undefined) {
                 // If empty, use existing value or default to 10
-                maxDownloads = plan.max_downloads_per_month !== undefined ? plan.max_downloads_per_month : 10;
+                maxDownloads = existingPlan.max_downloads_per_month !== undefined ? existingPlan.max_downloads_per_month : 10;
             } else {
                 const parsed = parseInt(maxDownloadsValue, 10);
                 if (isNaN(parsed)) {
                     // Invalid input, use existing value or default
-                    maxDownloads = plan.max_downloads_per_month !== undefined ? plan.max_downloads_per_month : 10;
+                    maxDownloads = existingPlan.max_downloads_per_month !== undefined ? existingPlan.max_downloads_per_month : 10;
                 } else {
                     // Valid number (can be -1 for unlimited, 0, or positive number)
                     maxDownloads = parsed;
@@ -1476,8 +1528,7 @@ class DocumentCMS {
                 features: features
             };
             
-            // Preserve existing plan fields
-            const existingPlan = this.allPlans[planId] || {};
+            // Preserve existing plan fields (use existingPlan already defined above)
             if (existingPlan.name) planDataToSave.name = existingPlan.name;
             if (existingPlan.description) planDataToSave.description = existingPlan.description;
             if (existingPlan.monthly_price !== undefined) planDataToSave.monthly_price = existingPlan.monthly_price;
