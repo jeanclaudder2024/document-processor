@@ -1396,7 +1396,7 @@ class DocumentCMS {
                                     </label>
                                 </div>
                             </div>
-                            <div id="templateSelection" class="mb-3 border rounded p-3" style="max-height: 300px; overflow-y: auto; ${(plan.can_download && plan.can_download.length === 1 && plan.can_download[0] === '*') ? 'display:none;' : ''}">
+                            <div id="templateSelection" class="mb-3 border rounded p-3" style="max-height: 300px; overflow-y: auto; ${(plan.can_download && plan.can_download.length === 1 && plan.can_download[0] === '*') ? 'display:none;' : 'display:block;'}">
                                 <p class="mb-2"><strong>Select templates:</strong></p>
                                 ${templates.length > 0 ? templates.map(t => {
                                     // Normalize template name - ensure consistent format
