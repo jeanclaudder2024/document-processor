@@ -297,10 +297,17 @@ class DocumentCMS {
             console.log('[saveTemplateMetadata] ✅ Response:', JSON.stringify(data, null, 2));
 
             if (data && data.success) {
+                console.log('[saveTemplateMetadata] ✅ Metadata saved successfully');
+                console.log('[saveTemplateMetadata] ✅ Response plan_ids:', data.plan_ids);
+                
                 const template = this.findTemplateByName(this.activeTemplateMetadata);
                 if (template) {
                     template.metadata = template.metadata || {};
                     Object.assign(template.metadata, data.metadata || {});
+                    // Store plan_ids in template object for future reference
+                    if (data.plan_ids) {
+                        template.plan_ids = data.plan_ids;
+                    }
                     if (data.metadata?.display_name) {
                         template.title = data.metadata.display_name;
                     }
@@ -318,6 +325,9 @@ class DocumentCMS {
                     const modal = bootstrap.Modal.getInstance(modalEl);
                     if (modal) modal.hide();
                 }
+            } else {
+                console.error('[saveTemplateMetadata] ❌ Save failed - no success response:', data);
+                this.showToast('error', 'Save Failed', 'Failed to save template metadata');
             }
         } catch (error) {
             this.showToast('error', 'Save Failed', error.message);
