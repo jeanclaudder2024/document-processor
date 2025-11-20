@@ -227,6 +227,7 @@ class DocumentCMS {
         const descriptionInput = document.getElementById('metaDescription');
         const fontFamilyInput = document.getElementById('metaFontFamily');
         const fontSizeInput = document.getElementById('metaFontSize');
+        const requiresBrokerInput = document.getElementById('metaRequiresBroker');
 
         // Get selected plan IDs from checkboxes
         const planCheckboxes = document.querySelectorAll('#metaPlanCheckboxes input[type="checkbox"]:checked');
@@ -237,7 +238,8 @@ class DocumentCMS {
             description: descriptionInput ? descriptionInput.value : '',
             font_family: fontFamilyInput ? fontFamilyInput.value : '',
             font_size: fontSizeInput ? fontSizeInput.value : '',
-            plan_ids: selectedPlanIds  // Send plan_ids even if empty (auto-connect if empty)
+            plan_ids: selectedPlanIds,  // Send plan_ids even if empty (auto-connect if empty)
+            requires_broker_membership: requiresBrokerInput ? requiresBrokerInput.checked : false
         };
 
         try {
@@ -1387,7 +1389,7 @@ class DocumentCMS {
                                     </label>
                                 </div>
                             </div>
-                            <div id="templateSelection" class="mb-3 border rounded p-3" style="max-height: 300px; overflow-y: auto; ${plan.can_download && plan.can_download[0] === '*' ? 'display:none;' : ''}">
+                            <div id="templateSelection" class="mb-3 border rounded p-3" style="max-height: 300px; overflow-y: auto; ${(plan.can_download && plan.can_download.length === 1 && plan.can_download[0] === '*') ? 'display:none;' : ''}">
                                 <p class="mb-2"><strong>Select templates:</strong></p>
                                 ${templates.length > 0 ? templates.map(t => {
                                     // Normalize template name - ensure consistent format
@@ -1402,12 +1404,30 @@ class DocumentCMS {
                                     }
                                     // Check if this template is in the plan's can_download list
                                     const canDownloadList = plan.can_download && Array.isArray(plan.can_download) ? plan.can_download : [];
-                                    // Normalize comparison - check both with and without .docx
-                                    const isChecked = canDownloadList.some(allowed => {
-                                        const normalizedAllowed = allowed.endsWith('.docx') ? allowed : `${allowed}.docx`;
-                                        const normalizedTemplate = templateName.endsWith('.docx') ? templateName : `${templateName}.docx`;
-                                        return normalizedAllowed === normalizedTemplate || allowed === '*' || allowed === templateName.replace('.docx', '');
-                                    });
+                                    // Check if plan has all templates access
+                                    const hasAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
+                                    
+                                    // Normalize template name for comparison (lowercase, ensure .docx)
+                                    const normalizedTemplateName = templateName.toLowerCase().endsWith('.docx') ? templateName.toLowerCase() : `${templateName.toLowerCase()}.docx`;
+                                    const templateNameWithoutExt = normalizedTemplateName.replace('.docx', '');
+                                    
+                                    // Check if this specific template is allowed
+                                    let isChecked = false;
+                                    if (hasAllTemplates) {
+                                        // If plan has all templates, don't check individual templates
+                                        isChecked = false; // Will be handled by radio button
+                                    } else {
+                                        // Check if this template is in the allowed list
+                                        isChecked = canDownloadList.some(allowed => {
+                                            if (!allowed || allowed === '*') return false;
+                                            const normalizedAllowed = allowed.toLowerCase().endsWith('.docx') ? allowed.toLowerCase() : `${allowed.toLowerCase()}.docx`;
+                                            const allowedWithoutExt = normalizedAllowed.replace('.docx', '');
+                                            // Match with or without extension
+                                            return normalizedAllowed === normalizedTemplateName || 
+                                                   allowedWithoutExt === templateNameWithoutExt ||
+                                                   allowed.toLowerCase() === templateNameWithoutExt;
+                                        });
+                                    }
                                     const displayName = typeof t === 'string' ? t : (t.metadata?.display_name || t.title || t.name || templateName).replace('.docx', '');
                                     return `
                                         <div class="form-check mb-2">

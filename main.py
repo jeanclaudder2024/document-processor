@@ -1766,6 +1766,10 @@ async def update_template_metadata(
         if not isinstance(plan_ids, list):
             plan_ids = []
         
+        requires_broker_membership = payload.get('requires_broker_membership', False)
+        if not isinstance(requires_broker_membership, bool):
+            requires_broker_membership = bool(requires_broker_membership)
+        
         # AUTO-CONNECT: If no plan_ids provided, auto-connect to user's current plan
         if not plan_ids and SUPABASE_ENABLED:
             try:
@@ -1813,6 +1817,16 @@ async def update_template_metadata(
                 if font_size is not None:
                     update_data['font_size'] = font_size
                     logger.info(f"Updating Supabase font_size for template {template_id_uuid} to: {font_size}")
+                
+                # Update requires_broker_membership if provided
+                if 'requires_broker_membership' in payload:
+                    # Try to update in database if column exists
+                    try:
+                        supabase.table('document_templates').update({'requires_broker_membership': requires_broker_membership}).eq('id', template_id_uuid).execute()
+                        logger.info(f"Updated requires_broker_membership for template {template_id_uuid} to: {requires_broker_membership}")
+                    except Exception as broker_exc:
+                        # Column might not exist yet, store in metadata instead
+                        logger.warning(f"Could not update requires_broker_membership in database (column may not exist): {broker_exc}")
                 
                 if update_data:
                     try:
@@ -1862,6 +1876,7 @@ async def update_template_metadata(
                 "description": description or None,
                 "font_family": font_family,
                 "font_size": font_size,
+                "requires_broker_membership": requires_broker_membership if 'requires_broker_membership' in payload else None,
                 "updated_at": datetime.utcnow().isoformat()
             }
             update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
@@ -1874,7 +1889,8 @@ async def update_template_metadata(
                 "display_name": display_name or None,
                 "description": description or None,
                 "font_family": font_family,
-                "font_size": font_size
+                "font_size": font_size,
+                "requires_broker_membership": requires_broker_membership if 'requires_broker_membership' in payload else None
             },
             "plan_ids": plan_ids
         }
@@ -3021,6 +3037,22 @@ async def get_user_downloadable_templates(request: Request):
                 # Get font settings - prioritize database, then metadata
                 font_family = details.get('font_family') or metadata_entry.get('font_family')
                 font_size = details.get('font_size') or metadata_entry.get('font_size')
+                
+                # Check if template requires broker membership
+                requires_broker = details.get('requires_broker_membership') or metadata_entry.get('requires_broker_membership', False)
+                if requires_broker:
+                    # Check if user has broker membership
+                    try:
+                        broker_check = supabase.rpc('check_broker_membership_status', {'user_id_param': user_id}).execute()
+                        has_broker = broker_check.data if broker_check.data else False
+                        if not has_broker:
+                            logger.debug(f"Template {template_id} requires broker membership, but user {user_id} doesn't have it - skipping")
+                            continue
+                    except Exception as broker_exc:
+                        logger.warning(f"Could not check broker membership for user {user_id}: {broker_exc}")
+                        # If we can't check, skip templates that require broker membership for safety
+                        if requires_broker:
+                            continue
                 
                 # CRITICAL: Always use user's actual plan name and max_downloads
                 # Don't show template's plan restrictions - show user's current plan

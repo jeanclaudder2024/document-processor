@@ -348,6 +348,15 @@
                         </div>
                         <small class="text-muted">Select which subscription plans can download this template. If none selected, template will be auto-connected to your plan.</small>
                     </div>
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="metaRequiresBroker" ${template && template.requires_broker_membership ? 'checked' : ''}>
+                            <label class="form-check-label" for="metaRequiresBroker">
+                                <strong>Requires Broker Membership</strong>
+                            </label>
+                        </div>
+                        <small class="text-muted">If checked, only users with broker membership can download this template.</small>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
