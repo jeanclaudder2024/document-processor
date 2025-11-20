@@ -1535,7 +1535,7 @@ class DocumentCMS {
             if (existingPlan.annual_price !== undefined) planDataToSave.annual_price = existingPlan.annual_price;
             if (existingPlan.plan_tier) planDataToSave.plan_tier = existingPlan.plan_tier;
             
-            console.log('Saving plan:', planId, planDataToSave);
+            console.log('[savePlan] 💾 Saving plan:', planId, planDataToSave);
             
             // Save to API
             const data = await this.apiJson('/update-plan', {
@@ -1547,15 +1547,19 @@ class DocumentCMS {
             });
             
             if (data && data.success) {
+                console.log('[savePlan] ✅ Plan saved successfully');
                 this.showToast('success', 'Success', 'Plan updated successfully!');
                 
                 // Update local copy with returned data if available
                 if (data.plan_data) {
+                    if (!this.allPlans) {
+                        this.allPlans = {};
+                    }
                     this.allPlans[planId] = data.plan_data;
-                    console.log('Updated local plan copy:', this.allPlans[planId]);
+                    console.log('[savePlan] ✅ Updated local plan copy:', this.allPlans[planId]);
                 }
                 
-                // Close modal
+                // Close modal first
                 const modalElement = document.getElementById('editPlanModal');
                 if (modalElement) {
                     const modal = bootstrap.Modal.getInstance(modalElement);
@@ -1570,9 +1574,9 @@ class DocumentCMS {
                     }, 300);
                 }
                 
-                // Force reload plans - clear cache by adding timestamp
-                console.log('Reloading plans after save...');
-                await this.loadPlans();
+                // CRITICAL: Force reload plans from database to get latest data
+                console.log('[savePlan] 🔄 Reloading plans after save...');
+                await this.loadPlans(true);
                 
                 // Force a visual refresh
                 setTimeout(() => {
@@ -1585,7 +1589,7 @@ class DocumentCMS {
                     }
                 }, 100);
             } else {
-                console.error('Save failed - no success response:', data);
+                console.error('[savePlan] ❌ Save failed - no success response:', data);
                 this.showToast('error', 'Error', 'Failed to update plan');
             }
         } catch (error) {
