@@ -177,6 +177,13 @@ class DocumentCMS {
         if (descriptionInput) descriptionInput.value = meta.description || template.description || '';
         if (fontFamilyInput) fontFamilyInput.value = meta.font_family || '';
         if (fontSizeInput) fontSizeInput.value = meta.font_size || '';
+        
+        // Set broker membership checkbox
+        const requiresBrokerInput = document.getElementById('metaRequiresBroker');
+        if (requiresBrokerInput) {
+            const requiresBroker = meta.requires_broker_membership || template.requires_broker_membership || false;
+            requiresBrokerInput.checked = requiresBroker;
+        }
 
         // Load plan checkboxes for this template
         this.populateMetaPlanCheckboxes(template);
