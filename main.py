@@ -2958,19 +2958,28 @@ async def get_user_downloadable_templates(request: Request):
             
             details_map = {d['id']: d for d in (details_res.data or [])}
             
-            # Get user's plan info
+            # Get user's plan info INCLUDING max_downloads_per_month
             user_plan_info = None
+            user_max_downloads = None
             try:
                 user_res = supabase.table('subscribers').select('subscription_plan, plan_tier').eq('user_id', user_id).limit(1).execute()
                 if user_res.data and user_res.data[0]:
                     plan_tier = user_res.data[0].get('plan_tier') or user_res.data[0].get('subscription_plan')
                     if plan_tier:
-                        plan_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('plan_tier', plan_tier).limit(1).execute()
+                        plan_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name, max_downloads_per_month').eq('plan_tier', plan_tier).limit(1).execute()
                         if plan_res.data:
+                            plan_data = plan_res.data[0]
                             user_plan_info = {
-                                "plan_name": plan_res.data[0].get('plan_name') or plan_res.data[0].get('name') or plan_tier,
+                                "plan_name": plan_data.get('plan_name') or plan_data.get('name') or plan_tier,
                                 "plan_tier": plan_tier
                             }
+                            # Get max_downloads_per_month from user's plan
+                            max_downloads_value = plan_data.get('max_downloads_per_month')
+                            if max_downloads_value == -1:
+                                user_max_downloads = -1  # -1 means unlimited
+                            elif max_downloads_value is not None:
+                                user_max_downloads = max_downloads_value
+                            logger.info(f"User plan: {user_plan_info['plan_name']}, max_downloads: {user_max_downloads}")
             except Exception as e:
                 logger.warning(f"Could not fetch user plan info: {e}")
             
@@ -3013,38 +3022,47 @@ async def get_user_downloadable_templates(request: Request):
                 font_family = details.get('font_family') or metadata_entry.get('font_family')
                 font_size = details.get('font_size') or metadata_entry.get('font_size')
                 
-                # Determine plan_name for template
-                # CRITICAL: Templates WITHOUT plan permissions are available to ALL users
+                # CRITICAL: Always use user's actual plan name and max_downloads
+                # Don't show template's plan restrictions - show user's current plan
                 plan_name = None
                 plan_tier_val = None
+                final_max_downloads = t.get('max_downloads', 10)  # Default from RPC function
                 
-                # Check if template has any plan permissions
-                try:
-                    perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).limit(1).execute()
-                    
-                    if not perm_res.data or len(perm_res.data) == 0:
-                        # Template has NO plan permissions - available to ALL plans
-                        plan_name = "All Plans"
-                        logger.info(f"Template {template_id} has no plan permissions - available to all plans")
-                    elif t['can_download'] and user_plan_info:
-                        # User can download and has plan info
-                        plan_name = user_plan_info['plan_name']
-                        plan_tier_val = user_plan_info['plan_tier']
-                    elif not t['can_download']:
-                        # User cannot download - get which plan allows this template
-                        perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).eq('can_download', True).limit(1).execute()
-                        if perm_res.data:
-                            plan_id = perm_res.data[0]['plan_id']
-                            plan_detail_res = supabase.table('subscription_plans').select('plan_name, plan_tier, name').eq('id', plan_id).limit(1).execute()
-                            if plan_detail_res.data:
-                                plan_name = plan_detail_res.data[0].get('plan_name') or plan_detail_res.data[0].get('name') or plan_detail_res.data[0].get('plan_tier')
-                                plan_tier_val = plan_detail_res.data[0].get('plan_tier')
-                                logger.info(f"Found plan for locked template {template_id}: {plan_name} (tier: {plan_tier_val})")
-                except Exception as e:
-                    logger.warning(f"Could not fetch plan info for template {template_id}: {e}")
-                    # Default: if can_download is true, assume available to all
-                    if t['can_download']:
-                        plan_name = "All Plans"
+                # Always use user's plan info if available
+                if user_plan_info:
+                    plan_name = user_plan_info['plan_name']
+                    plan_tier_val = user_plan_info['plan_tier']
+                    # Override max_downloads with user's plan max_downloads_per_month
+                    if user_max_downloads is not None:
+                        if user_max_downloads == -1:
+                            final_max_downloads = -1  # Unlimited
+                        else:
+                            final_max_downloads = user_max_downloads
+                        logger.info(f"Using user's plan max_downloads: {final_max_downloads} for template {template_id}")
+                else:
+                    # If no user plan info, check template permissions to show required plan
+                    try:
+                        perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).limit(1).execute()
+                        
+                        if not perm_res.data or len(perm_res.data) == 0:
+                            # Template has NO plan permissions - available to ALL plans
+                            plan_name = "All Plans"
+                            logger.info(f"Template {template_id} has no plan permissions - available to all plans")
+                        elif not t['can_download']:
+                            # User cannot download - get which plan allows this template
+                            perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).eq('can_download', True).limit(1).execute()
+                            if perm_res.data:
+                                plan_id = perm_res.data[0]['plan_id']
+                                plan_detail_res = supabase.table('subscription_plans').select('plan_name, plan_tier, name').eq('id', plan_id).limit(1).execute()
+                                if plan_detail_res.data:
+                                    plan_name = plan_detail_res.data[0].get('plan_name') or plan_detail_res.data[0].get('name') or plan_detail_res.data[0].get('plan_tier')
+                                    plan_tier_val = plan_detail_res.data[0].get('plan_tier')
+                                    logger.info(f"Found plan for locked template {template_id}: {plan_name} (tier: {plan_tier_val})")
+                    except Exception as e:
+                        logger.warning(f"Could not fetch plan info for template {template_id}: {e}")
+                        # Default: if can_download is true, assume available to all
+                        if t['can_download']:
+                            plan_name = "All Plans"
                 
                 enhanced_templates.append({
                     "id": str(template_id),
@@ -3057,11 +3075,11 @@ async def get_user_downloadable_templates(request: Request):
                     "font_size": font_size,
                     "placeholders": details.get('placeholders', []),
                     "can_download": t['can_download'],
-                    "max_downloads": t['max_downloads'],
+                    "max_downloads": final_max_downloads,  # Use user's plan max_downloads, not template's
                     "current_downloads": t['current_downloads'],
                     "remaining_downloads": t['remaining_downloads'],
-                    "plan_name": plan_name,  # Always include plan_name (even if None)
-                    "plan_tier": plan_tier_val,
+                    "plan_name": plan_name if plan_name else (user_plan_info['plan_name'] if user_plan_info else None),  # Always show user's plan name
+                    "plan_tier": plan_tier_val if plan_tier_val else (user_plan_info['plan_tier'] if user_plan_info else None),
                     "metadata": {
                         "display_name": display_name,  # Always include display_name
                         "description": description or metadata_entry.get('description', ''),  # Always include description
