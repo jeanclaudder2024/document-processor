@@ -1744,9 +1744,9 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
 
 @app.post("/templates/{template_id}/metadata")
 async def update_template_metadata(
+    request: Request,
     template_id: str,
     payload: Dict = Body(...),
-    request: Request,
     current_user: str = Depends(get_current_user)
 ):
     """Update template metadata (display name, description, fonts, plan assignments)."""
@@ -1770,7 +1770,9 @@ async def update_template_metadata(
         if not plan_ids and SUPABASE_ENABLED:
             try:
                 # Get user_id from request headers, payload, or current_user
-                user_id = payload.get('user_id') or request.headers.get('x-user-id')
+                user_id = payload.get('user_id')
+                if request:
+                    user_id = user_id or request.headers.get('x-user-id')
                 if not user_id and current_user:
                     # Try to get user_id from username/email
                     user_id = get_user_id_from_username(current_user)
@@ -1884,13 +1886,13 @@ async def update_template_metadata(
 
 @app.post("/upload-template")
 async def upload_template(
-    request: Request,
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     font_family: Optional[str] = Form(None),
     font_size: Optional[str] = Form(None),
     plan_ids: Optional[str] = Form(None),  # JSON array string of plan IDs
+    request: Request = None,
     current_user: str = Depends(get_current_user)
 ):
     """Upload a new template"""
