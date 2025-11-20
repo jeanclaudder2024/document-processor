@@ -512,7 +512,9 @@ class DocumentCMS {
     async loadTemplates() {
         if (!this.ensureAuthenticated(false)) return;
         try {
-            const data = await this.apiJson('/templates');
+            // Add cache busting to ensure fresh data
+            const cacheBuster = `?t=${Date.now()}`;
+            const data = await this.apiJson(`/templates${cacheBuster}`);
             if (data && data.templates) {
                 this.templates = data.templates.slice().sort((a, b) => {
                     const nameA = (a.metadata?.display_name || a.title || a.name || '').toLowerCase();
@@ -965,24 +967,26 @@ class DocumentCMS {
     async loadPlans() {
         if (!this.ensureAuthenticated(false)) return;
         try {
-            // Try JSON first (more reliable for immediate updates)
+            // CRITICAL: Always use database endpoint first to get latest plans
+            // Add cache busting to ensure fresh data
+            const cacheBuster = `?t=${Date.now()}`;
             let data = null;
             let source = 'unknown';
             
             try {
-                // Try JSON endpoint first for consistency
-                data = await this.apiJson('/plans');
-                source = 'json';
-                console.log('Loaded plans from JSON:', Object.keys(data.plans || {}).length, 'plans');
+                // Always try database first to get latest plans from CMS
+                data = await this.apiJson(`/plans-db${cacheBuster}`);
+                source = 'database';
+                console.log('Loaded plans from database:', Object.keys(data.plans || {}).length, 'plans');
             } catch (e) {
-                console.warn('Failed to load plans from JSON, trying database:', e);
-                // Fallback to database
+                console.warn('Failed to load plans from database, trying JSON:', e);
+                // Fallback to JSON
                 try {
-                    data = await this.apiJson('/plans-db');
-                    source = 'database';
-                    console.log('Loaded plans from database:', Object.keys(data.plans || {}).length, 'plans');
+                    data = await this.apiJson(`/plans${cacheBuster}`);
+                    source = 'json';
+                    console.log('Loaded plans from JSON:', Object.keys(data.plans || {}).length, 'plans');
                 } catch (e2) {
-                    console.error('Failed to load plans from database:', e2);
+                    console.error('Failed to load plans from JSON:', e2);
                     this.showToast('error', 'Load Error', 'Failed to load plans. Using empty list.');
                     data = { plans: {} };
                 }
@@ -1260,20 +1264,26 @@ class DocumentCMS {
 
     async editPlan(planId) {
         if (!this.ensureAuthenticated()) return;
-        if (!this.allPlans || !this.allPlans[planId]) {
-            this.showToast('error', 'Error', 'Plan not found');
-            return;
-        }
         
-        // Always reload templates to ensure we have the latest list
+        // CRITICAL: Always reload plans and templates to get latest data
         try {
-            console.log('Loading templates for plan editor...');
+            console.log('Reloading plans and templates for plan editor...');
+            // Reload plans first to get latest plans from database
+            await this.loadPlans();
+            // Reload templates to get latest templates
             await this.loadTemplates();
+            console.log('Plans reloaded:', Object.keys(this.allPlans || {}).length, 'plans');
             console.log('Templates loaded:', this.templates ? this.templates.length : 0);
             console.log('allTemplates:', this.allTemplates ? this.allTemplates.length : 0);
         } catch (error) {
-            console.error('Failed to load templates:', error);
-            this.showToast('error', 'Error', 'Failed to load templates. Please refresh the page.');
+            console.error('Failed to reload plans/templates:', error);
+            this.showToast('error', 'Error', 'Failed to reload data. Please refresh the page.');
+            return;
+        }
+        
+        // Check if plan exists after reload
+        if (!this.allPlans || !this.allPlans[planId]) {
+            this.showToast('error', 'Error', 'Plan not found. Please refresh the page.');
             return;
         }
         
