@@ -2674,13 +2674,36 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
         if not plan_id or not plan_data:
             raise HTTPException(status_code=400, detail="plan_id and plan_data are required")
         
+        # CRITICAL: Track if database update was successful
+        database_update_success = False
+        db_plan_id = None
+        
         # If Supabase is available, update in database
         if supabase:
             try:
-                # Get plan by tier
-                plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', plan_id).limit(1).execute()
-                if plan_res.data:
+                logger.info(f"[update-plan] 🔍 Searching for plan: {plan_id}")
+                
+                # First, try to find by plan_tier (most common case)
+                plan_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('plan_tier', plan_id).limit(1).execute()
+                if plan_res.data and len(plan_res.data) > 0:
                     db_plan_id = plan_res.data[0]['id']
+                    logger.info(f"[update-plan] ✅ Found plan {plan_id} by plan_tier, UUID: {db_plan_id}, Name: {plan_res.data[0].get('plan_name')}")
+                else:
+                    # Try by UUID if plan_id might be a UUID
+                    try:
+                        plan_uuid_test = uuid.UUID(str(plan_id))
+                        plan_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('id', str(plan_uuid_test)).limit(1).execute()
+                        if plan_res.data and len(plan_res.data) > 0:
+                            db_plan_id = plan_res.data[0]['id']
+                            logger.info(f"[update-plan] ✅ Found plan {plan_id} by UUID: {db_plan_id}, Name: {plan_res.data[0].get('plan_name')}")
+                    except (ValueError, TypeError):
+                        logger.debug(f"[update-plan] plan_id {plan_id} is not a UUID, trying plan_tier only")
+                
+                if not db_plan_id:
+                    logger.error(f"[update-plan] ❌ Plan '{plan_id}' not found in database (tried plan_tier and UUID)")
+                    # Don't raise 404 here - try JSON fallback first
+                    database_update_success = False
+                else:
                     
                     # Update max_downloads_per_month
                     update_data = {}
@@ -2757,13 +2780,49 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                 logger.info(f"Set {inserted_count} template permissions for plan {plan_id} (matched {len(template_names_normalized)} template names)")
                     
                     logger.info(f"Updated plan in database: {plan_id}")
+                    database_update_success = True
+                    
+                    # Return success response with updated plan data
+                    # Get updated plan from database
+                    updated_plan_res = supabase.table('subscription_plans').select('*').eq('id', db_plan_id).limit(1).execute()
+                    if updated_plan_res.data:
+                        updated_plan_data = updated_plan_res.data[0]
+                        # Get template permissions for response
+                        perms_res = supabase.table('plan_template_permissions').select('template_id').eq('plan_id', db_plan_id).execute()
+                        template_ids = [p['template_id'] for p in (perms_res.data or [])]
+                        
+                        # Check if all templates
+                        all_templates = supabase.table('document_templates').select('id').eq('is_active', True).execute()
+                        all_template_ids = set(t['id'] for t in (all_templates.data or []))
+                        plan_template_ids_set = set(template_ids)
+                        
+                        can_download = ['*'] if (all_template_ids and plan_template_ids_set == all_template_ids) else [t for t in template_ids if t]
+                        
+                        return {
+                            "success": True,
+                            "plan_id": plan_id,
+                            "plan_data": {
+                                "id": str(updated_plan_data['id']),
+                                "name": updated_plan_data.get('plan_name'),
+                                "plan_tier": updated_plan_data.get('plan_tier'),
+                                "max_downloads_per_month": updated_plan_data.get('max_downloads_per_month', 10),
+                                "can_download": can_download,
+                                "features": list(updated_plan_data.get('features', [])) if isinstance(updated_plan_data.get('features'), (list, tuple)) else []
+                            }
+                        }
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.warning(f"Failed to update plan in database: {e}, using JSON fallback")
+                logger.error(f"Database update error details: {type(e).__name__}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
         
-        # Also update JSON file as fallback/primary storage
-        plans = read_json_file(PLANS_PATH, {})
-        if plan_id not in plans:
-            raise HTTPException(status_code=404, detail=f"Plan '{plan_id}' not found")
+        # Only update JSON file if database update failed
+        if not database_update_success:
+            plans = read_json_file(PLANS_PATH, {})
+            if plan_id not in plans:
+                raise HTTPException(status_code=404, detail=f"Plan '{plan_id}' not found")
         
         # Get existing plan data
         existing_plan = plans.get(plan_id, {})
