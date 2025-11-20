@@ -178,8 +178,42 @@ class DocumentCMS {
         if (fontFamilyInput) fontFamilyInput.value = meta.font_family || '';
         if (fontSizeInput) fontSizeInput.value = meta.font_size || '';
 
+        // Load plan checkboxes for this template
+        this.populateMetaPlanCheckboxes(template);
+
         const modal = new bootstrap.Modal(modalEl);
         modal.show();
+    }
+
+    populateMetaPlanCheckboxes(template) {
+        const container = document.getElementById('metaPlanCheckboxes');
+        if (!container) return;
+        
+        // Ensure plans are loaded
+        if (!this.allPlans || Object.keys(this.allPlans).length === 0) {
+            container.innerHTML = '<div class="text-muted small">Loading plans...</div>';
+            // Try to load plans if not loaded
+            this.loadPlans().then(() => {
+                this.populateMetaPlanCheckboxes(template);
+            });
+            return;
+        }
+        
+        // Get current plan_ids from template (if available)
+        const currentPlanIds = template.plan_ids || template.plan_ids_list || [];
+        const currentPlanIdsSet = new Set(Array.isArray(currentPlanIds) ? currentPlanIds.map(id => String(id)) : []);
+        
+        container.innerHTML = Object.entries(this.allPlans).map(([planId, plan]) => {
+            const isChecked = currentPlanIdsSet.has(String(planId));
+            return `
+                <div class="form-check">
+                    <input type="checkbox" class="form-check-input meta-plan-checkbox" id="meta_plan_${planId}" value="${planId}" ${isChecked ? 'checked' : ''}>
+                    <label class="form-check-label" for="meta_plan_${planId}">
+                        ${plan.name || plan.plan_name || planId}
+                    </label>
+                </div>
+            `;
+        }).join('');
     }
 
     async saveTemplateMetadata() {
@@ -194,11 +228,16 @@ class DocumentCMS {
         const fontFamilyInput = document.getElementById('metaFontFamily');
         const fontSizeInput = document.getElementById('metaFontSize');
 
+        // Get selected plan IDs from checkboxes
+        const planCheckboxes = document.querySelectorAll('#metaPlanCheckboxes input[type="checkbox"]:checked');
+        const selectedPlanIds = Array.from(planCheckboxes).map(cb => cb.value).filter(v => v);
+
         const payload = {
             display_name: displayInput ? displayInput.value : '',
             description: descriptionInput ? descriptionInput.value : '',
             font_family: fontFamilyInput ? fontFamilyInput.value : '',
-            font_size: fontSizeInput ? fontSizeInput.value : ''
+            font_size: fontSizeInput ? fontSizeInput.value : '',
+            plan_ids: selectedPlanIds  // Send plan_ids even if empty (auto-connect if empty)
         };
 
         try {
