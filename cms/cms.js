@@ -185,14 +185,16 @@ class DocumentCMS {
             requiresBrokerInput.checked = requiresBroker;
         }
 
-        // Load plan checkboxes for this template
-        this.populateMetaPlanCheckboxes(template);
+        // Load plan checkboxes for this template (async, will populate when ready)
+        this.populateMetaPlanCheckboxes(template).catch(err => {
+            console.error('[openMetadataModal] ❌ Error populating plan checkboxes:', err);
+        });
 
         const modal = new bootstrap.Modal(modalEl);
         modal.show();
     }
 
-    populateMetaPlanCheckboxes(template) {
+    async populateMetaPlanCheckboxes(template) {
         const container = document.getElementById('metaPlanCheckboxes');
         if (!container) return;
         
@@ -200,9 +202,9 @@ class DocumentCMS {
         if (!this.allPlans || Object.keys(this.allPlans).length === 0) {
             container.innerHTML = '<div class="text-muted small">Loading plans...</div>';
             // Try to load plans if not loaded
-            this.loadPlans().then(() => {
-                this.populateMetaPlanCheckboxes(template);
-            });
+            await this.loadPlans();
+            // Recursively call after plans are loaded
+            this.populateMetaPlanCheckboxes(template);
             return;
         }
         
