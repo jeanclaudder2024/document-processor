@@ -692,6 +692,53 @@ def ensure_docx_filename(value: str) -> str:
 # STEP 2: AUTHENTICATION (Simple login with HttpOnly cookies)
 # ============================================================================
 
+def get_user_id_from_username(username: str) -> Optional[str]:
+    """Get user_id from username/email"""
+    if not SUPABASE_ENABLED or not username:
+        return None
+    
+    try:
+        # Try to get user_id from auth.users by email
+        user_res = supabase.table('auth.users').select('id').eq('email', username).limit(1).execute()
+        if user_res.data:
+            return str(user_res.data[0]['id'])
+        
+        # Try subscribers table by email
+        subscriber_res = supabase.table('subscribers').select('user_id').eq('email', username).limit(1).execute()
+        if subscriber_res.data and subscriber_res.data[0].get('user_id'):
+            return str(subscriber_res.data[0]['user_id'])
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error getting user_id from username: {e}")
+        return None
+
+def get_user_plan_id(user_id: str) -> Optional[str]:
+    """Get the user's current subscription plan ID"""
+    if not SUPABASE_ENABLED or not user_id:
+        return None
+    
+    try:
+        # Get user's subscription tier
+        subscriber_res = supabase.table('subscribers').select('subscription_tier, subscription_plan').eq('user_id', user_id).limit(1).execute()
+        if not subscriber_res.data:
+            return None
+        
+        subscriber = subscriber_res.data[0]
+        plan_tier = subscriber.get('subscription_tier') or subscriber.get('subscription_plan')
+        if not plan_tier:
+            return None
+        
+        # Get plan ID from tier
+        plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', plan_tier).eq('is_active', True).limit(1).execute()
+        if plan_res.data:
+            return str(plan_res.data[0]['id'])
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error getting user plan ID: {e}")
+        return None
+
 def get_current_user(request: Request):
     """Dependency to check if user is authenticated"""
     token = request.cookies.get('session')
@@ -1717,6 +1764,23 @@ async def update_template_metadata(
         plan_ids = payload.get('plan_ids', [])  # Array of plan IDs
         if not isinstance(plan_ids, list):
             plan_ids = []
+        
+        # AUTO-CONNECT: If no plan_ids provided, auto-connect to user's current plan
+        if not plan_ids and SUPABASE_ENABLED:
+            try:
+                # Get user_id from request headers, payload, or current_user
+                user_id = payload.get('user_id') or request.headers.get('x-user-id')
+                if not user_id and current_user:
+                    # Try to get user_id from username/email
+                    user_id = get_user_id_from_username(current_user)
+                
+                if user_id:
+                    user_plan_id = get_user_plan_id(str(user_id))
+                    if user_plan_id:
+                        plan_ids = [user_plan_id]
+                        logger.info(f"Auto-connected template to user's plan: {user_plan_id} (user: {current_user})")
+            except Exception as auto_plan_exc:
+                logger.warning(f"Could not auto-connect to user plan: {auto_plan_exc}")
 
         # Update Supabase metadata when available
         template_record = None
@@ -1819,6 +1883,7 @@ async def update_template_metadata(
 
 @app.post("/upload-template")
 async def upload_template(
+    request: Request,
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
@@ -1906,6 +1971,23 @@ async def upload_template(
             except (json.JSONDecodeError, TypeError):
                 warnings.append("Invalid plan_ids format; ignoring")
                 plan_ids_list = []
+        
+        # AUTO-CONNECT: If no plan_ids provided, auto-connect to user's current plan
+        if not plan_ids_list and SUPABASE_ENABLED:
+            try:
+                # Get user_id from request headers or current_user
+                user_id = request.headers.get('x-user-id')
+                if not user_id and current_user:
+                    # Try to get user_id from username/email
+                    user_id = get_user_id_from_username(current_user)
+                
+                if user_id:
+                    user_plan_id = get_user_plan_id(str(user_id))
+                    if user_plan_id:
+                        plan_ids_list = [user_plan_id]
+                        logger.info(f"Auto-connected uploaded template to user's plan: {user_plan_id} (user: {current_user})")
+            except Exception as auto_plan_exc:
+                logger.warning(f"Could not auto-connect uploaded template to user plan: {auto_plan_exc}")
 
         if SUPABASE_ENABLED:
             try:
