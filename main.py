@@ -1577,25 +1577,40 @@ async def get_plans_db():
                         'template_id, can_download').eq('plan_id', plan['id']).execute()
 
                     if permissions_res.data:
+                        # Get all template IDs that this plan has permissions for
+                        plan_template_ids = set()
                         for perm in permissions_res.data:
-                            if perm['can_download']:
+                            if perm.get('can_download'):
                                 template_id = perm['template_id']
+                                plan_template_ids.add(template_id)
+                                
+                                # Add template file_name to allowed_templates list
                                 template_info = template_map.get(template_id)
                                 if template_info:
-                                    allowed_templates.append(
-                                        template_info.get('file_name', ''))
+                                    file_name = template_info.get('file_name', '')
+                                    if file_name and file_name not in allowed_templates:
+                                        allowed_templates.append(file_name)
                         
                         # CRITICAL: Check if plan has permissions for ALL available templates
-                        # If yes, treat as "all templates (*)"
-                        total_templates_count = len(template_map)
-                        plan_permissions_count = len([p for p in permissions_res.data if p.get('can_download')])
+                        # Only treat as "*" if plan has permissions for EVERY active template
+                        total_templates_count = len(all_template_ids)
+                        plan_permissions_count = len(plan_template_ids)
                         
-                        logger.debug(f"Plan {plan_tier}: {plan_permissions_count} permissions out of {total_templates_count} total templates")
+                        logger.debug(f"Plan {plan_tier} (ID: {plan['id']}): {plan_permissions_count} permissions out of {total_templates_count} total templates")
+                        logger.debug(f"Plan {plan_tier} allowed templates: {allowed_templates[:3]}... ({len(allowed_templates)} total)")
                         
-                        # If plan has permissions for ALL templates, treat as "*"
+                        # If plan has permissions for ALL templates (exact match), treat as "*"
+                        # This means plan_template_ids must equal all_template_ids
                         if total_templates_count > 0 and plan_permissions_count >= total_templates_count:
-                            logger.info(f"Plan {plan_tier} has permissions for all {total_templates_count} templates - treating as '*'")
-                            allowed_templates = ['*']
+                            # Double check: does plan have permissions for every single template?
+                            if plan_template_ids == all_template_ids:
+                                logger.info(f"Plan {plan_tier} has permissions for ALL {total_templates_count} templates - treating as '*'")
+                                allowed_templates = ['*']
+                            else:
+                                # Plan has many permissions but not all - show specific templates
+                                logger.info(f"Plan {plan_tier} has permissions for {plan_permissions_count} templates (not all {total_templates_count}) - showing specific templates")
+                        elif plan_permissions_count > 0:
+                            logger.info(f"Plan {plan_tier} has permissions for {plan_permissions_count} specific templates: {allowed_templates[:3]}...")
                 except Exception as e:
                     logger.warning(
                         f"Could not fetch permissions for plan {plan_tier}: {e}")
