@@ -1366,8 +1366,10 @@ class DocumentCMS {
         // CRITICAL: Always reload plans and templates to get latest data
         try {
             console.log('[editPlan] 🔄 Reloading plans and templates for plan editor...');
-            // Reload plans first to get latest plans from database (force reload)
+            // Reload plans first to get latest plans from database (force reload with cache busting)
             await this.loadPlans(true);
+            // Wait a bit to ensure data is loaded
+            await new Promise(resolve => setTimeout(resolve, 100));
             // Reload templates to get latest templates
             await this.loadTemplates();
             
@@ -1409,10 +1411,13 @@ class DocumentCMS {
             }
         }
         
+        // CRITICAL: Get fresh plan data from allPlans (just reloaded)
         const plan = this.allPlans[planId];
         const templates = this.allTemplates || [];
         
+        // CRITICAL: Log plan.can_download to verify it's updated
         console.log('[editPlan] 📋 Editing plan:', planId);
+        console.log('[editPlan] 📋 Plan can_download:', plan.can_download);
         console.log('[editPlan] 📋 Plan data:', JSON.stringify(plan, null, 2));
         console.log('[editPlan] 📋 Templates available:', templates.length, templates);
         console.log('[editPlan] 📋 Stored templates:', this.templates ? this.templates.length : 0);
@@ -1462,8 +1467,19 @@ class DocumentCMS {
                                             templateName = `${templateName}.docx`;
                                         }
                                     }
-                                    // Check if this template is in the plan's can_download list
-                                    const canDownloadList = plan.can_download && Array.isArray(plan.can_download) ? plan.can_download : [];
+                                    // CRITICAL: Get fresh can_download list from plan object
+                                    // Normalize can_download: handle both array and single value
+                                    let canDownloadList = [];
+                                    if (plan.can_download) {
+                                        if (Array.isArray(plan.can_download)) {
+                                            canDownloadList = [...plan.can_download];
+                                        } else if (typeof plan.can_download === 'string') {
+                                            canDownloadList = [plan.can_download];
+                                        }
+                                    }
+                                    
+                                    console.log('[editPlan] 🔍 Checking template:', templateName, 'against can_download:', canDownloadList);
+                                    
                                     // Check if plan has all templates access
                                     const hasAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
                                     
@@ -1476,17 +1492,34 @@ class DocumentCMS {
                                     if (hasAllTemplates) {
                                         // If plan has all templates, don't check individual templates
                                         isChecked = false; // Will be handled by radio button
+                                        console.log('[editPlan] ✅ Plan has all templates access, not checking individual template');
                                     } else {
                                         // Check if this template is in the allowed list
+                                        // Try multiple matching strategies for flexibility
                                         isChecked = canDownloadList.some(allowed => {
                                             if (!allowed || allowed === '*') return false;
+                                            
+                                            // Normalize allowed template name
                                             const normalizedAllowed = allowed.toLowerCase().endsWith('.docx') ? allowed.toLowerCase() : `${allowed.toLowerCase()}.docx`;
                                             const allowedWithoutExt = normalizedAllowed.replace('.docx', '');
-                                            // Match with or without extension
-                                            return normalizedAllowed === normalizedTemplateName || 
-                                                   allowedWithoutExt === templateNameWithoutExt ||
-                                                   allowed.toLowerCase() === templateNameWithoutExt;
+                                            
+                                            // Match with or without extension, case-insensitive
+                                            const match = normalizedAllowed === normalizedTemplateName || 
+                                                         allowedWithoutExt === templateNameWithoutExt ||
+                                                         allowed.toLowerCase() === templateNameWithoutExt ||
+                                                         allowed.toLowerCase() === templateName.toLowerCase() ||
+                                                         allowed.toLowerCase().replace('.docx', '') === templateNameWithoutExt;
+                                            
+                                            if (match) {
+                                                console.log('[editPlan] ✅ Template', templateName, 'matches allowed template:', allowed);
+                                            }
+                                            
+                                            return match;
                                         });
+                                        
+                                        if (!isChecked) {
+                                            console.log('[editPlan] ❌ Template', templateName, 'NOT in can_download list');
+                                        }
                                     }
                                     const displayName = typeof t === 'string' ? t : (t.metadata?.display_name || t.title || t.name || templateName).replace('.docx', '');
                                     return `
