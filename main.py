@@ -1580,6 +1580,18 @@ async def get_plans_db():
                                 if template_info:
                                     allowed_templates.append(
                                         template_info.get('file_name', ''))
+                        
+                        # CRITICAL: Check if plan has permissions for ALL available templates
+                        # If yes, treat as "all templates (*)"
+                        total_templates_count = len(template_map)
+                        plan_permissions_count = len([p for p in permissions_res.data if p.get('can_download')])
+                        
+                        logger.debug(f"Plan {plan_tier}: {plan_permissions_count} permissions out of {total_templates_count} total templates")
+                        
+                        # If plan has permissions for ALL templates, treat as "*"
+                        if total_templates_count > 0 and plan_permissions_count >= total_templates_count:
+                            logger.info(f"Plan {plan_tier} has permissions for all {total_templates_count} templates - treating as '*'")
+                            allowed_templates = ['*']
                 except Exception as e:
                     logger.warning(
                         f"Could not fetch permissions for plan {plan_tier}: {e}")
@@ -1591,17 +1603,19 @@ async def get_plans_db():
                 if not allowed_templates:
                     allowed_templates = ['*']
 
-                # Normalize template names (remove .docx if present)
+                # Normalize template names (ensure .docx extension)
                 normalized_templates = []
                 if allowed_templates:
                     for t in allowed_templates:
                         if t == '*':
                             normalized_templates.append('*')
-                        elif isinstance(t, str):
+                        elif isinstance(t, str) and t:
                             normalized_templates.append(
                                 ensure_docx_filename(t))
                         else:
                             normalized_templates.append(str(t))
+                
+                logger.debug(f"Plan {plan_tier} can_download: {normalized_templates[:5]}... ({len(normalized_templates)} total)")
 
                 plans_dict[plan_tier] = {
                     "id": str(plan['id']),
