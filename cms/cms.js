@@ -319,8 +319,19 @@ class DocumentCMS {
                 // Force reload templates and plans to get updated data from backend
                 await this.loadTemplates();
                 // CRITICAL: Also reload plans to reflect updated template permissions
-                await this.loadPlans(true);
-                this.showToast('success', 'Metadata Saved', 'Template details updated successfully');
+                // Use setTimeout to ensure data is saved before reloading
+                setTimeout(async () => {
+                    await this.loadPlans(true);
+                    // Also refresh the plans display
+                    const plansList = document.getElementById('plansList');
+                    if (plansList) {
+                        plansList.style.opacity = '0.5';
+                        setTimeout(() => {
+                            plansList.style.opacity = '1';
+                        }, 200);
+                    }
+                }, 500);
+                this.showToast('success', 'Metadata Saved', 'Template details updated successfully. Plans will refresh automatically.');
 
                 const modalEl = document.getElementById('templateMetaModal');
                 if (modalEl) {
@@ -1063,8 +1074,12 @@ class DocumentCMS {
             
             if (data && data.plans && typeof data.plans === 'object') {
                 console.log('[loadPlans] ✅ Displaying plans from', source, ':', Object.keys(data.plans));
-                // IMPORTANT: Store plans before displaying
-                this.allPlans = data.plans;
+                console.log('[loadPlans] 📋 All plan IDs:', Object.keys(data.plans));
+                console.log('[loadPlans] 📋 Plan tiers:', Object.values(data.plans).map(p => p.plan_tier || p.id || 'unknown'));
+                
+                // IMPORTANT: Store plans before displaying - replace completely to ensure all plans are included
+                this.allPlans = { ...data.plans };
+                console.log('[loadPlans] 💾 Stored', Object.keys(this.allPlans).length, 'plans in allPlans:', Object.keys(this.allPlans));
                 this.displayPlans(data.plans);
                 // Update plan checkboxes in upload form
                 this.populatePlanCheckboxes();
@@ -1110,18 +1125,38 @@ class DocumentCMS {
             return;
         }
         
-        container.innerHTML = planEntries.map(([planId, plan]) => {
+        // Sort plans by plan_tier for consistent display order
+        const sortedPlans = planEntries.sort(([aId, aPlan], [bId, bPlan]) => {
+            const aTier = aPlan.plan_tier || aId || '';
+            const bTier = bPlan.plan_tier || bId || '';
+            // Order: basic, professional, enterprise, broker (or any other order)
+            const order = ['basic', 'professional', 'enterprise', 'broker'];
+            const aIndex = order.indexOf(aTier.toLowerCase());
+            const bIndex = order.indexOf(bTier.toLowerCase());
+            if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
+            if (aIndex !== -1) return -1;
+            if (bIndex !== -1) return 1;
+            return aTier.localeCompare(bTier);
+        });
+        
+        console.log('[displayPlans] 📋 Rendering', sortedPlans.length, 'plans in order:', sortedPlans.map(([id]) => id));
+        
+        container.innerHTML = sortedPlans.map(([planId, plan]) => {
             const canDownload = plan.can_download || [];
             const canDownloadList = Array.isArray(canDownload) ? canDownload : [canDownload];
             const isAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
             const maxDownloads = plan.max_downloads_per_month !== undefined ? plan.max_downloads_per_month : 10;
             const features = Array.isArray(plan.features) ? plan.features : [];
+            const planTier = plan.plan_tier || planId;
+            const planName = plan.name || plan.plan_name || planId;
+            
+            console.log('[displayPlans] 📋 Rendering plan:', planId, 'tier:', planTier, 'name:', planName, 'can_download:', canDownloadList.length);
             
             return `
             <div class="card mb-3">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center mb-3">
-                        <h5 class="mb-0">${plan.name || planId}</h5>
+                        <h5 class="mb-0">${planName} <small class="text-muted">(${planTier})</small></h5>
                         <button class="btn btn-sm btn-outline-primary" onclick="cms.editPlan('${planId}')">
                             <i class="fas fa-edit me-1"></i>Edit
                         </button>
