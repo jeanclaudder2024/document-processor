@@ -1391,7 +1391,7 @@ class DocumentCMS {
                                 </div>
                                 <div class="mb-2">
                                     <label class="form-check">
-                                        <input type="radio" name="accessType" value="specific" class="form-check-input" ${plan.can_download && plan.can_download[0] !== '*' ? 'checked' : ''} onchange="cms.toggleTemplateSelection()">
+                                        <input type="radio" name="accessType" value="specific" class="form-check-input" ${(plan.can_download && plan.can_download.length > 0 && plan.can_download[0] !== '*') ? 'checked' : ''} onchange="cms.toggleTemplateSelection()">
                                         <span>Specific templates</span>
                                     </label>
                                 </div>
@@ -1484,10 +1484,19 @@ class DocumentCMS {
     }
     
     toggleTemplateSelection() {
-        const specificRadio = document.querySelector('input[name="accessType"][value="specific"]');
+        // CRITICAL: Query from within modal to ensure correct elements
+        const modalElement = document.getElementById('editPlanModal');
+        const specificRadio = modalElement ? 
+            modalElement.querySelector('input[name="accessType"][value="specific"]') :
+            document.querySelector('input[name="accessType"][value="specific"]');
         const templateSelection = document.getElementById('templateSelection');
-        if (templateSelection) {
-            templateSelection.style.display = specificRadio.checked ? 'block' : 'none';
+        
+        if (templateSelection && specificRadio) {
+            const isChecked = specificRadio.checked;
+            console.log('[toggleTemplateSelection] 🔄 Toggling template selection, specific checked:', isChecked);
+            templateSelection.style.display = isChecked ? 'block' : 'none';
+        } else {
+            console.warn('[toggleTemplateSelection] ⚠️ Could not find elements:', { modalElement, specificRadio, templateSelection });
         }
     }
     
@@ -1496,20 +1505,36 @@ class DocumentCMS {
         try {
             const accessTypeRadio = document.querySelector('input[name="accessType"]:checked');
             if (!accessTypeRadio) {
+                console.error('[savePlan] ❌ No access type radio selected');
                 this.showToast('error', 'Error', 'Please select access type');
                 return;
             }
             
             const accessType = accessTypeRadio.value;
+            console.log('[savePlan] 📋 Access type selected:', accessType);
             let canDownload = [];
             
             if (accessType === 'all') {
                 canDownload = ['*'];
+                console.log('[savePlan] ✅ Setting can_download to ["*"] (all templates)');
             } else {
-                const checkboxes = document.querySelectorAll('.template-checkbox:checked');
-                canDownload = Array.from(checkboxes).map(cb => cb.value).filter(v => v);
+                // CRITICAL: Must query from within the modal to get correct checkboxes
+                const modalElement = document.getElementById('editPlanModal');
+                const checkboxes = modalElement ? 
+                    modalElement.querySelectorAll('.template-checkbox:checked') : 
+                    document.querySelectorAll('.template-checkbox:checked');
+                
+                console.log('[savePlan] 📋 Found', checkboxes.length, 'checked template checkboxes');
+                canDownload = Array.from(checkboxes).map(cb => {
+                    const value = cb.value;
+                    console.log('[savePlan] 📋 Template checkbox value:', value);
+                    return value;
+                }).filter(v => v);
+                
+                console.log('[savePlan] 📋 Selected templates:', canDownload);
                 
                 if (canDownload.length === 0) {
+                    console.error('[savePlan] ❌ No templates selected');
                     this.showToast('error', 'Error', 'Please select at least one template');
                     return;
                 }
