@@ -316,8 +316,10 @@ class DocumentCMS {
                     }
                 }
 
-                // Force reload templates to get updated metadata from backend
+                // Force reload templates and plans to get updated data from backend
                 await this.loadTemplates();
+                // CRITICAL: Also reload plans to reflect updated template permissions
+                await this.loadPlans(true);
                 this.showToast('success', 'Metadata Saved', 'Template details updated successfully');
 
                 const modalEl = document.getElementById('templateMetaModal');
