@@ -1746,6 +1746,7 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
 async def update_template_metadata(
     template_id: str,
     payload: Dict = Body(...),
+    request: Request,
     current_user: str = Depends(get_current_user)
 ):
     """Update template metadata (display name, description, fonts, plan assignments)."""
