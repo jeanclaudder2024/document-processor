@@ -1538,9 +1538,11 @@ async def get_plans_db():
             return {"success": True, "plans": plans, "source": "json"}
 
         try:
-            # Get plans from database
+            # Get plans from database - include ALL active plans (including broker plan)
             plans_res = supabase.table('subscription_plans').select(
                 '*').eq('is_active', True).order('sort_order').execute()
+            
+            logger.info(f"Fetched {len(plans_res.data) if plans_res.data else 0} active plans from database")
 
             if not plans_res.data:
                 # Fallback to JSON if no database plans
