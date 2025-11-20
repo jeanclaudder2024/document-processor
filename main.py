@@ -2637,10 +2637,16 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                     # Update max_downloads_per_month
                     update_data = {}
                     if 'max_downloads_per_month' in plan_data:
-                        update_data['max_downloads_per_month'] = plan_data['max_downloads_per_month']
+                        max_downloads = plan_data['max_downloads_per_month']
+                        update_data['max_downloads_per_month'] = max_downloads
+                        logger.info(f"Updating max_downloads_per_month for plan {plan_id} to: {max_downloads}")
                     
                     if update_data:
-                        supabase.table('subscription_plans').update(update_data).eq('id', db_plan_id).execute()
+                        result = supabase.table('subscription_plans').update(update_data).eq('id', db_plan_id).execute()
+                        if result.data:
+                            logger.info(f"✅ Successfully updated plan {plan_id}: {update_data}")
+                        else:
+                            logger.warning(f"⚠️ Plan update returned no data for plan {plan_id}")
                     
                     # Update template permissions if provided
                     # Check both 'allowed_templates' and 'can_download' for compatibility
