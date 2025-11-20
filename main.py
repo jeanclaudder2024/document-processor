@@ -2681,29 +2681,50 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
         # If Supabase is available, update in database
         if supabase:
             try:
-                logger.info(f"[update-plan] 🔍 Searching for plan: {plan_id}")
+                logger.info(f"[update-plan] 🔍 Searching for plan: '{plan_id}'")
                 
-                # First, try to find by plan_tier (most common case)
-                plan_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('plan_tier', plan_id).limit(1).execute()
+                # First, try to find by plan_tier (case-sensitive, most common case)
+                plan_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('plan_tier', str(plan_id)).limit(1).execute()
                 if plan_res.data and len(plan_res.data) > 0:
                     db_plan_id = plan_res.data[0]['id']
-                    logger.info(f"[update-plan] ✅ Found plan {plan_id} by plan_tier, UUID: {db_plan_id}, Name: {plan_res.data[0].get('plan_name')}")
+                    found_plan_tier = plan_res.data[0].get('plan_tier')
+                    logger.info(f"[update-plan] ✅ Found plan '{plan_id}' by plan_tier, UUID: {db_plan_id}, Name: {plan_res.data[0].get('plan_name')}, Tier: {found_plan_tier}")
                 else:
-                    # Try by UUID if plan_id might be a UUID
-                    try:
-                        plan_uuid_test = uuid.UUID(str(plan_id))
-                        plan_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('id', str(plan_uuid_test)).limit(1).execute()
-                        if plan_res.data and len(plan_res.data) > 0:
-                            db_plan_id = plan_res.data[0]['id']
-                            logger.info(f"[update-plan] ✅ Found plan {plan_id} by UUID: {db_plan_id}, Name: {plan_res.data[0].get('plan_name')}")
-                    except (ValueError, TypeError):
-                        logger.debug(f"[update-plan] plan_id {plan_id} is not a UUID, trying plan_tier only")
+                    # Try case-insensitive search by fetching all plans and comparing
+                    logger.debug(f"[update-plan] ⚠️ Exact match not found for plan_tier='{plan_id}', trying case-insensitive search...")
+                    all_plans_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('is_active', True).execute()
+                    if all_plans_res.data:
+                        for p in all_plans_res.data:
+                            if p.get('plan_tier', '').lower() == str(plan_id).lower():
+                                db_plan_id = p['id']
+                                logger.info(f"[update-plan] ✅ Found plan '{plan_id}' by case-insensitive plan_tier, UUID: {db_plan_id}, Name: {p.get('plan_name')}, Tier: {p.get('plan_tier')}")
+                                break
+                    
+                    # If still not found, try by UUID if plan_id might be a UUID
+                    if not db_plan_id:
+                        try:
+                            plan_uuid_test = uuid.UUID(str(plan_id))
+                            plan_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('id', str(plan_uuid_test)).limit(1).execute()
+                            if plan_res.data and len(plan_res.data) > 0:
+                                db_plan_id = plan_res.data[0]['id']
+                                logger.info(f"[update-plan] ✅ Found plan '{plan_id}' by UUID: {db_plan_id}, Name: {plan_res.data[0].get('plan_name')}")
+                        except (ValueError, TypeError):
+                            logger.debug(f"[update-plan] plan_id '{plan_id}' is not a UUID")
                 
                 if not db_plan_id:
-                    logger.error(f"[update-plan] ❌ Plan '{plan_id}' not found in database (tried plan_tier and UUID)")
+                    logger.error(f"[update-plan] ❌ Plan '{plan_id}' not found in database (tried plan_tier exact, case-insensitive, and UUID)")
+                    # List available plans for debugging
+                    try:
+                        all_plans_debug = supabase.table('subscription_plans').select('plan_tier, plan_name, id').eq('is_active', True).execute()
+                        if all_plans_debug.data:
+                            available_tiers = [p.get('plan_tier') for p in all_plans_debug.data]
+                            logger.error(f"[update-plan] 📋 Available plan_tiers in database: {available_tiers}")
+                    except Exception as debug_exc:
+                        logger.warning(f"[update-plan] Could not list available plans: {debug_exc}")
                     # Don't raise 404 here - try JSON fallback first
                     database_update_success = False
                 else:
+                    logger.info(f"[update-plan] ✅ Found plan '{plan_id}', proceeding with update...")
                     
                     # Update max_downloads_per_month
                     update_data = {}
