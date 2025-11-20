@@ -1900,14 +1900,27 @@ async def update_template_metadata(
                                     logger.debug(f"Added permission for plan_id {plan_id_uuid} (from plan_identifier {plan_identifier})")
                             
                             if permission_rows:
-                                logger.info(f"Inserting {len(permission_rows)} plan permissions")
+                                logger.info(f"Inserting {len(permission_rows)} plan permissions for template {template_id_uuid}")
+                                logger.info(f"Plan permission rows: {[r['plan_id'] for r in permission_rows]}")
                                 permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
                                 if getattr(permissions_response, "error", None):
                                     logger.error(f"Plan permissions insert error: {permissions_response.error}")
+                                    logger.error(f"Failed permission rows: {permission_rows}")
                                 else:
-                                    logger.info(f"✅ Successfully updated plan permissions for {len(permission_rows)} plans")
+                                    logger.info(f"✅ Successfully updated plan permissions for {len(permission_rows)} plans (template: {template_id_uuid})")
+                                    logger.info(f"Inserted permissions: {[r['plan_id'] for r in permission_rows]}")
                             else:
-                                logger.info(f"No plan permissions to insert (plan_ids was empty or could not resolve to UUIDs)")
+                                logger.info(f"No plan permissions to insert for template {template_id_uuid} (plan_ids was empty or could not resolve to UUIDs)")
+                                # IMPORTANT: If no plan_ids provided, template has no plan restrictions (available to all plans)
+                                # This is OK - the template will be available to all plans
+                                logger.info(f"Template {template_id_uuid} will be available to all plans (no specific plan permissions set)")
+                                
+                                # CRITICAL: Delete existing permissions to ensure template is available to all
+                                try:
+                                    delete_result = supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
+                                    logger.info(f"Deleted existing permissions for template {template_id_uuid} (making it available to all plans)")
+                                except Exception as del_exc:
+                                    logger.warning(f"Could not delete existing permissions: {del_exc}")
                     except Exception as perm_exc:
                         logger.error(f"Error updating plan permissions: {perm_exc}")
                         import traceback
