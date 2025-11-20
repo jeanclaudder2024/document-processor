@@ -1843,28 +1843,59 @@ async def update_template_metadata(
                 # Update plan assignments
                 if plan_ids is not None:
                     try:
+                        logger.info(f"Updating plan permissions for template {template_id_uuid} with plan_ids: {plan_ids}")
+                        
                         # Delete existing permissions
                         supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
+                        logger.info(f"Deleted existing permissions for template {template_id_uuid}")
                         
                         # Insert new permissions
                         if plan_ids:
+                            # CRITICAL: plan_ids can be plan_tier (basic, professional) or plan_id (UUID)
+                            # We need to convert plan_tier to plan_id (UUID)
                             permission_rows = []
-                            for plan_id in plan_ids:
-                                if plan_id:  # Only add non-empty plan IDs
+                            for plan_identifier in plan_ids:
+                                if not plan_identifier:
+                                    continue
+                                
+                                # Try to get plan_id from plan_tier
+                                plan_id_uuid = None
+                                try:
+                                    # First, check if plan_identifier is already a UUID
+                                    plan_uuid_test = uuid.UUID(str(plan_identifier))
+                                    plan_id_uuid = str(plan_uuid_test)
+                                    logger.debug(f"plan_identifier {plan_identifier} is a UUID: {plan_id_uuid}")
+                                except (ValueError, TypeError):
+                                    # Not a UUID, try to find by plan_tier
+                                    logger.debug(f"plan_identifier {plan_identifier} is not a UUID, trying to find by plan_tier")
+                                    plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
+                                    if plan_res.data and len(plan_res.data) > 0:
+                                        plan_id_uuid = str(plan_res.data[0]['id'])
+                                        logger.info(f"Found plan_id {plan_id_uuid} for plan_tier {plan_identifier}")
+                                    else:
+                                        logger.warning(f"Could not find plan_id for plan_tier {plan_identifier}")
+                                
+                                if plan_id_uuid:
                                     permission_rows.append({
-                                        'plan_id': str(plan_id),
+                                        'plan_id': plan_id_uuid,
                                         'template_id': str(template_id_uuid),
                                         'can_download': True
                                     })
+                                    logger.debug(f"Added permission for plan_id {plan_id_uuid} (from plan_identifier {plan_identifier})")
                             
                             if permission_rows:
+                                logger.info(f"Inserting {len(permission_rows)} plan permissions")
                                 permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
                                 if getattr(permissions_response, "error", None):
                                     logger.error(f"Plan permissions insert error: {permissions_response.error}")
                                 else:
-                                    logger.info(f"Updated plan permissions for {len(permission_rows)} plans")
+                                    logger.info(f"✅ Successfully updated plan permissions for {len(permission_rows)} plans")
+                            else:
+                                logger.info(f"No plan permissions to insert (plan_ids was empty or could not resolve to UUIDs)")
                     except Exception as perm_exc:
                         logger.error(f"Error updating plan permissions: {perm_exc}")
+                        import traceback
+                        logger.error(traceback.format_exc())
             else:
                 raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
 
@@ -1881,6 +1912,27 @@ async def update_template_metadata(
             }
             update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
 
+        # Get plan_tiers for plan_ids (for response)
+        plan_tiers = []
+        if plan_ids and template_record:
+            try:
+                # Convert plan_id (UUID) to plan_tier for response
+                for plan_id in plan_ids:
+                    try:
+                        # Try to find plan by UUID
+                        plan_res = supabase.table('subscription_plans').select('plan_tier').eq('id', str(plan_id)).limit(1).execute()
+                        if plan_res.data and len(plan_res.data) > 0:
+                            plan_tiers.append(plan_res.data[0]['plan_tier'])
+                        else:
+                            # If not found by UUID, maybe it's already a plan_tier
+                            plan_tiers.append(str(plan_id))
+                    except Exception:
+                        # If error, just use plan_id as-is (might be plan_tier)
+                        plan_tiers.append(str(plan_id))
+            except Exception as e:
+                logger.warning(f"Could not convert plan_ids to plan_tiers: {e}")
+                plan_tiers = plan_ids
+        
         return {
             "success": True,
             "template_id": str(template_record['id']) if template_record else template_id,
@@ -1892,7 +1944,7 @@ async def update_template_metadata(
                 "font_size": font_size,
                 "requires_broker_membership": requires_broker_membership if 'requires_broker_membership' in payload else None
             },
-            "plan_ids": plan_ids
+            "plan_ids": plan_tiers if plan_tiers else plan_ids  # Return plan_tiers for easier use in frontend
         }
     except HTTPException:
         raise

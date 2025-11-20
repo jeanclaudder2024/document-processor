@@ -206,12 +206,40 @@ class DocumentCMS {
             return;
         }
         
-        // Get current plan_ids from template (if available)
-        const currentPlanIds = template.plan_ids || template.plan_ids_list || [];
+        // CRITICAL: Fetch plan_ids from backend for this template
+        // planId is plan_tier (basic, professional, etc.) but we need plan_id (UUID)
+        // First, try to get plan_ids from template object
+        let currentPlanIds = template.plan_ids || template.plan_ids_list || [];
+        
+        // If not available, try to fetch from backend
+        if (!currentPlanIds || currentPlanIds.length === 0) {
+            // Try to get plan info for this template from backend
+            const templateName = template.name || template.file_name || '';
+            if (templateName) {
+                console.log('[populateMetaPlanCheckboxes] 🔄 Fetching plan info for template:', templateName);
+                try {
+                    // Fetch plan info for this template
+                    const planInfo = await this.apiJson(`/templates/${encodeURIComponent(templateName)}/plan-info`);
+                    if (planInfo && planInfo.success && planInfo.plans) {
+                        // Get plan_tiers from plans
+                        currentPlanIds = planInfo.plans.map(p => p.plan_tier).filter(t => t);
+                        console.log('[populateMetaPlanCheckboxes] ✅ Got plan_tiers from backend:', currentPlanIds);
+                    }
+                } catch (e) {
+                    console.warn('[populateMetaPlanCheckboxes] ⚠️ Could not fetch plan info:', e);
+                }
+            }
+        }
+        
         const currentPlanIdsSet = new Set(Array.isArray(currentPlanIds) ? currentPlanIds.map(id => String(id)) : []);
+        console.log('[populateMetaPlanCheckboxes] 📋 Current plan IDs:', Array.from(currentPlanIdsSet));
+        console.log('[populateMetaPlanCheckboxes] 📋 Available plans:', Object.keys(this.allPlans));
         
         container.innerHTML = Object.entries(this.allPlans).map(([planId, plan]) => {
-            const isChecked = currentPlanIdsSet.has(String(planId));
+            // planId is plan_tier (basic, professional, etc.)
+            // Check if this plan_tier is in currentPlanIds
+            const isChecked = currentPlanIdsSet.has(String(planId)) || currentPlanIdsSet.has(String(plan.plan_tier || planId));
+            console.log('[populateMetaPlanCheckboxes] 📋 Plan:', planId, 'isChecked:', isChecked);
             return `
                 <div class="form-check">
                     <input type="checkbox" class="form-check-input meta-plan-checkbox" id="meta_plan_${planId}" value="${planId}" ${isChecked ? 'checked' : ''}>
@@ -236,9 +264,17 @@ class DocumentCMS {
         const fontSizeInput = document.getElementById('metaFontSize');
         const requiresBrokerInput = document.getElementById('metaRequiresBroker');
 
-        // Get selected plan IDs from checkboxes
-        const planCheckboxes = document.querySelectorAll('#metaPlanCheckboxes input[type="checkbox"]:checked');
+        // CRITICAL: Query checkboxes from within modal to get correct selection
+        const modalElement = document.getElementById('templateMetaModal');
+        const planCheckboxes = modalElement ? 
+            modalElement.querySelectorAll('#metaPlanCheckboxes input[type="checkbox"]:checked') :
+            document.querySelectorAll('#metaPlanCheckboxes input[type="checkbox"]:checked');
+        
         const selectedPlanIds = Array.from(planCheckboxes).map(cb => cb.value).filter(v => v);
+        
+        console.log('[saveTemplateMetadata] 📋 Saving template metadata:', this.activeTemplateMetadata);
+        console.log('[saveTemplateMetadata] 📋 Selected plan IDs:', selectedPlanIds);
+        console.log('[saveTemplateMetadata] 📋 Requires broker membership:', requiresBrokerInput ? requiresBrokerInput.checked : false);
 
         const payload = {
             display_name: displayInput ? displayInput.value : '',
@@ -250,10 +286,13 @@ class DocumentCMS {
         };
 
         try {
+            console.log('[saveTemplateMetadata] 💾 Sending payload:', JSON.stringify(payload, null, 2));
             const data = await this.apiJson(`/templates/${encodeURIComponent(this.activeTemplateMetadata)}/metadata`, {
                 method: 'POST',
                 body: JSON.stringify(payload)
             });
+            
+            console.log('[saveTemplateMetadata] ✅ Response:', JSON.stringify(data, null, 2));
 
             if (data && data.success) {
                 const template = this.findTemplateByName(this.activeTemplateMetadata);
