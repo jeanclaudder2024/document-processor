@@ -1575,12 +1575,14 @@ async def get_plans_db():
             logger.info(f"Plan tiers found: {plan_tiers}")
 
             if not plans_res.data:
-                # Fallback to JSON if no database plans
-                plans = read_json_file(PLANS_PATH, {})
+                # CRITICAL: Don't fallback to JSON - return empty plans
+                # This ensures we always use database, not stale cache
+                logger.warning(f"[plans-db] No plans found in database, returning empty plans (not using JSON fallback)")
                 return {
-    "success": True,
-    "plans": plans,
-     "source": "json_fallback"}
+                    "success": True,
+                    "plans": {},
+                    "source": "database_empty"
+                }
 
             # Get all templates (may not exist yet, so handle gracefully)
             template_map = {}
