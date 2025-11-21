@@ -4393,7 +4393,8 @@ def generate_ai_random_data(placeholder: str, vessel_imo: str = None, context: s
     """Generate realistic random data using OpenAI AI"""
     if not OPENAI_ENABLED or not openai_client:
         logger.warning("OpenAI not available, falling back to standard random data")
-        return generate_realistic_random_data(placeholder, vessel_imo)
+        # Use 'auto' mode to prevent infinite recursion (don't call AI again)
+        return generate_realistic_random_data(placeholder, vessel_imo, 'auto')
     
     try:
         # Build context for AI prompt
@@ -4422,7 +4423,8 @@ def generate_ai_random_data(placeholder: str, vessel_imo: str = None, context: s
     except Exception as e:
         logger.error(f"Error generating AI data for '{placeholder}': {e}")
         logger.info("Falling back to standard random data generation")
-        return generate_realistic_random_data(placeholder, vessel_imo)
+        # Use 'auto' mode to prevent infinite recursion (don't call AI again)
+        return generate_realistic_random_data(placeholder, vessel_imo, 'auto')
 
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, random_option: str = 'auto') -> str:
     """Generate realistic random data for placeholders
@@ -5126,13 +5128,18 @@ async def generate_document(request: Request):
                     if source == 'random':
                         database_field = (setting.get('databaseField') or '').strip()
                         database_table = (setting.get('databaseTable') or '').strip()
+                        random_option = setting.get('randomOption', 'auto')
                         
                         # If user explicitly set databaseField or databaseTable, they want random data
                         # Don't override their choice with intelligent matching
                         if database_field or database_table:
                             logger.info(f"  🎲 Source is 'random' with explicit databaseField='{database_field}' or databaseTable='{database_table}'")
                             logger.info(f"  🎲 RESPECTING USER CHOICE: Will use random data (user explicitly configured this)")
-                            # Don't set found = True, let it fall through to random data generation
+                            # Generate random data immediately with the correct randomOption
+                            seed_imo = None if random_option == 'fixed' else vessel_imo
+                            data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
+                            found = True
+                            logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
                         elif not database_field:
                             # Only try intelligent matching if user didn't configure anything
                             logger.info(f"  🎲 Source is 'random' with NO databaseField configured, trying intelligent matching first...")
@@ -5143,8 +5150,12 @@ async def generate_document(request: Request):
                                 logger.info(f"  ✅✅✅ AUTO-MATCHED (from random source): {placeholder} = '{matched_value}' (from vessel field '{matched_field}')")
                                 logger.info(f"  💡 TIP: Change source to 'database' and set databaseField='{matched_field}' in CMS for explicit control")
                             else:
-                                logger.info(f"  ⚠️  Intelligent matching failed, will use random data as configured")
-                                # Don't set found = True, let it fall through to random data generation
+                                logger.info(f"  ⚠️  Intelligent matching failed, will use random data as configured (randomOption: {random_option})")
+                                # Generate random data immediately with the correct randomOption
+                                seed_imo = None if random_option == 'fixed' else vessel_imo
+                                data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
+                                found = True
+                                logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
                     
                     elif source == 'custom':
                         custom_value = str(setting.get('customValue', '')).strip()
