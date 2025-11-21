@@ -2998,8 +2998,6 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                         logger.debug(f"[update-plan] ❌ Template '{template_name}' did not match any allowed templates")
                                     
                                     if matches:
-                                    
-                                    if matches:
                                         try:
                                             template_id = template['id']
                                             # Get per-template limit if provided
