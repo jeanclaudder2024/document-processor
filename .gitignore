@@ -53,3 +53,7 @@ tmp/
 # Test outputs
 test_output*.pdf
 test_processed*.docx
+
+# Storage/cache files
+storage/plans.json
+storage/*.json
