@@ -1610,9 +1610,11 @@ async def get_plans_db():
 
                 # Get permissions for this plan (may not exist yet)
                 allowed_templates = []
+                template_limits = {}  # Store per-template download limits
                 try:
+                    # CRITICAL: Fetch both can_download AND max_downloads_per_template
                     permissions_res = supabase.table('plan_template_permissions').select(
-                        'template_id, can_download').eq('plan_id', plan['id']).execute()
+                        'template_id, can_download, max_downloads_per_template').eq('plan_id', plan['id']).execute()
 
                     if permissions_res.data:
                         # Get all template IDs that this plan has permissions for
@@ -1621,6 +1623,10 @@ async def get_plans_db():
                             if perm.get('can_download'):
                                 template_id = perm['template_id']
                                 plan_template_ids.add(template_id)
+                                
+                                # Store per-template download limit
+                                if perm.get('max_downloads_per_template') is not None:
+                                    template_limits[str(template_id)] = perm['max_downloads_per_template']
                                 
                                 # Add template file_name to allowed_templates list
                                 template_info = template_map.get(template_id)
@@ -1704,6 +1710,7 @@ async def get_plans_db():
                     "annual_price": float(plan.get('annual_price', 0)),
                     "max_downloads_per_month": plan.get('max_downloads_per_month', 10),
                     "can_download": normalized_templates if normalized_templates else ['*'],
+                    "template_limits": template_limits,  # Include per-template download limits
                     "features": list(plan.get('features', [])) if isinstance(plan.get('features'), (list, tuple)) else (plan.get('features', []) if plan.get('features') else []),
                     "is_active": plan.get('is_active', True)
                 }
