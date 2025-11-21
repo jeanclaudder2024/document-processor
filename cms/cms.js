@@ -1797,7 +1797,7 @@ class DocumentCMS {
                 
                 console.log('[savePlan] 📋 Selected templates - IDs:', templateIds, 'Names:', templateNames);
                 
-                if (canDownload.length === 0) {
+                if (templateIds.length === 0 && templateNames.length === 0) {
                     console.error('[savePlan] ❌ No templates selected');
                     this.showToast('error', 'Error', 'Please select at least one template');
                     return;
