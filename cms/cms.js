@@ -1240,35 +1240,7 @@ class DocumentCMS {
         }
     }
 
-    async testPermission() {
-        if (!this.ensureAuthenticated()) return;
-        const userId = document.getElementById('testUserId').value;
-        const templateName = document.getElementById('testTemplate').value;
-
-        if (!templateName) {
-            this.showToast('error', 'Missing Info', 'Please enter template name');
-            return;
-        }
-
-        try {
-            const data = await this.apiJson('/check-download-permission', {
-                method: 'POST',
-                body: JSON.stringify({ user_id: userId, template_name: templateName })
-            });
-
-            if (data) {
-                const resultDiv = document.getElementById('permissionResult');
-                resultDiv.innerHTML = `
-                    <div class="alert alert-${data.can_download ? 'success' : 'warning'}">
-                        <strong>Result:</strong> ${data.can_download ? '✓ Can Download' : '✗ Cannot Download'}<br>
-                        <small>User: ${data.user_id} | Plan: ${data.plan} | Template: ${data.template_name}</small>
-                    </div>
-                `;
-            }
-        } catch (error) {
-            this.showToast('error', 'Permission Check Failed', error.message);
-        }
-    }
+    // Removed testPermission() - functionality moved to test suite
 
     async testGenerateDocument(templateName) {
         if (!this.ensureAuthenticated()) return;

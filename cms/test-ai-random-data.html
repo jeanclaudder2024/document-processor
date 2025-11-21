@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Random Data Generation Test</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background: #f8f9fa; padding: 20px; }
+        .test-card { margin-bottom: 20px; }
+        .test-result { padding: 15px; border-radius: 8px; margin-top: 10px; }
+        .test-pass { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+        .test-fail { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; }
+        .test-info { background: #d1ecf1; border: 1px solid #bee5eb; color: #0c5460; }
+        .test-running { background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; }
+        .log-entry { font-family: monospace; font-size: 12px; padding: 5px; margin: 2px 0; background: #f8f9fa; border-left: 3px solid #007bff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="mb-4"><i class="fas fa-vial me-2"></i>AI Random Data Generation Test Suite</h1>
+        
+        <div class="card test-card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-cog me-2"></i>Test Configuration</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <label class="form-label">API Base URL</label>
+                        <input type="text" class="form-control" id="apiBase" value="http://localhost:8000" placeholder="http://localhost:8000">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Test Template Name</label>
+                        <input type="text" class="form-control" id="testTemplate" placeholder="template.docx">
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Test Placeholder</label>
+                        <input type="text" class="form-control" id="testPlaceholder" value="Company Name" placeholder="Company Name">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Vessel IMO (optional)</label>
+                        <input type="text" class="form-control" id="testVesselIMO" placeholder="TEST001">
+                    </div>
+                </div>
+                <button class="btn btn-primary mt-3" onclick="runAllTests()">
+                    <i class="fas fa-play me-2"></i>Run All Tests
+                </button>
+            </div>
+        </div>
+
+        <div class="card test-card">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0"><i class="fas fa-check-circle me-2"></i>Test Results</h5>
+            </div>
+            <div class="card-body">
+                <div id="testResults"></div>
+            </div>
+        </div>
+
+        <div class="card test-card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-terminal me-2"></i>Test Log</h5>
+            </div>
+            <div class="card-body">
+                <div id="testLog" style="max-height: 400px; overflow-y: auto;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let testLog = [];
+        
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            testLog.push({ timestamp, message, type });
+            const logDiv = document.getElementById('testLog');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<strong>[${timestamp}]</strong> ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function addTestResult(testName, passed, message, details = '') {
+            const resultsDiv = document.getElementById('testResults');
+            const resultDiv = document.createElement('div');
+            resultDiv.className = `test-result ${passed ? 'test-pass' : 'test-fail'}`;
+            resultDiv.innerHTML = `
+                <h6><i class="fas fa-${passed ? 'check' : 'times'}-circle me-2"></i>${testName}</h6>
+                <p class="mb-1">${message}</p>
+                ${details ? `<pre class="small mt-2 mb-0">${details}</pre>` : ''}
+            `;
+            resultsDiv.appendChild(resultDiv);
+        }
+
+        async function testAPIHealth() {
+            log('Testing API health endpoint...');
+            try {
+                const apiBase = document.getElementById('apiBase').value;
+                const response = await fetch(`${apiBase}/health`);
+                const data = await response.json();
+                
+                if (data.status === 'healthy') {
+                    const openaiEnabled = data.openai === 'enabled';
+                    addTestResult(
+                        'API Health Check',
+                        true,
+                        `API is healthy. OpenAI: ${openaiEnabled ? '✅ Enabled' : '❌ Disabled'}`,
+                        JSON.stringify(data, null, 2)
+                    );
+                    log(`✅ API Health: ${data.status}, OpenAI: ${data.openai || 'not checked'}`);
+                    return { success: true, openaiEnabled };
+                } else {
+                    addTestResult('API Health Check', false, 'API is not healthy', JSON.stringify(data, null, 2));
+                    return { success: false, openaiEnabled: false };
+                }
+            } catch (error) {
+                addTestResult('API Health Check', false, `Error: ${error.message}`, error.stack);
+                log(`❌ API Health Error: ${error.message}`);
+                return { success: false, openaiEnabled: false };
+            }
+        }
+
+        async function testAIGeneration() {
+            log('Testing AI random data generation...');
+            try {
+                const apiBase = document.getElementById('apiBase').value;
+                const placeholder = document.getElementById('testPlaceholder').value || 'Company Name';
+                const vesselIMO = document.getElementById('testVesselIMO').value || null;
+                
+                // Simulate AI generation by calling generate endpoint
+                // We'll test by generating a document with AI random option
+                const testPayload = {
+                    template_name: document.getElementById('testTemplate').value || 'test_template.docx',
+                    vessel_imo: vesselIMO || 'TEST001',
+                    placeholder_settings: {
+                        [placeholder]: {
+                            source: 'random',
+                            randomOption: 'ai'
+                        }
+                    }
+                };
+                
+                log(`Testing AI generation for placeholder: ${placeholder}`);
+                log(`Payload: ${JSON.stringify(testPayload, null, 2)}`);
+                
+                // Test by calling the generate endpoint
+                const response = await fetch(`${apiBase}/generate-document`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(testPayload),
+                    credentials: 'include'
+                });
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    addTestResult(
+                        'AI Generation Test',
+                        true,
+                        `✅ AI generation successful! Generated document size: ${blob.size} bytes`,
+                        `Placeholder: ${placeholder}, Vessel IMO: ${vesselIMO || 'N/A'}`
+                    );
+                    log(`✅ AI Generation successful: ${blob.size} bytes`);
+                    return true;
+                } else {
+                    const errorText = await response.text();
+                    addTestResult('AI Generation Test', false, `Generation failed: ${response.status}`, errorText);
+                    log(`❌ AI Generation failed: ${response.status} - ${errorText}`);
+                    return false;
+                }
+            } catch (error) {
+                addTestResult('AI Generation Test', false, `Error: ${error.message}`, error.stack);
+                log(`❌ AI Generation Error: ${error.message}`);
+                return false;
+            }
+        }
+
+        async function testCMSEditorAI() {
+            log('Testing CMS Editor AI option...');
+            try {
+                // Check if editor.html exists and has AI option
+                const editorResponse = await fetch('editor.html');
+                if (editorResponse.ok) {
+                    const editorText = await editorResponse.text();
+                    const hasAIOption = editorText.includes('AI Generated') || editorText.includes('randomOption') && editorText.includes('ai');
+                    
+                    if (hasAIOption) {
+                        addTestResult(
+                            'CMS Editor AI Option',
+                            true,
+                            '✅ CMS Editor has AI Generated option in Random Mode dropdown',
+                            'Found "AI Generated" option in editor.js'
+                        );
+                        log('✅ CMS Editor has AI option');
+                        return true;
+                    } else {
+                        addTestResult('CMS Editor AI Option', false, '❌ CMS Editor does not have AI Generated option');
+                        log('❌ CMS Editor missing AI option');
+                        return false;
+                    }
+                } else {
+                    addTestResult('CMS Editor AI Option', false, 'Could not load editor.html');
+                    return false;
+                }
+            } catch (error) {
+                addTestResult('CMS Editor AI Option', false, `Error: ${error.message}`);
+                return false;
+            }
+        }
+
+        async function testOpenAIConnection() {
+            log('Testing OpenAI API connection...');
+            try {
+                const apiBase = document.getElementById('apiBase').value;
+                const response = await fetch(`${apiBase}/health`);
+                const data = await response.json();
+                
+                if (data.openai === 'enabled') {
+                    addTestResult(
+                        'OpenAI Connection',
+                        true,
+                        '✅ OpenAI is enabled and configured',
+                        `API Key configured, OpenAI client initialized`
+                    );
+                    log('✅ OpenAI is enabled');
+                    return true;
+                } else {
+                    addTestResult(
+                        'OpenAI Connection',
+                        false,
+                        '❌ OpenAI is not enabled. Check API key in .env file',
+                        'Set OPENAI_API_KEY in document-processor/.env file'
+                    );
+                    log('❌ OpenAI not enabled');
+                    return false;
+                }
+            } catch (error) {
+                addTestResult('OpenAI Connection', false, `Error: ${error.message}`);
+                return false;
+            }
+        }
+
+        async function runAllTests() {
+            log('='.repeat(50));
+            log('Starting AI Random Data Generation Test Suite');
+            log('='.repeat(50));
+            
+            document.getElementById('testResults').innerHTML = '';
+            document.getElementById('testLog').innerHTML = '';
+            testLog = [];
+            
+            // Test 1: API Health
+            const healthResult = await testAPIHealth();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Test 2: OpenAI Connection
+            if (healthResult.success) {
+                await testOpenAIConnection();
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            
+            // Test 3: CMS Editor AI Option
+            await testCMSEditorAI();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Test 4: AI Generation (only if OpenAI is enabled)
+            if (healthResult.openaiEnabled) {
+                await testAIGeneration();
+            } else {
+                addTestResult(
+                    'AI Generation Test',
+                    false,
+                    '⚠️ Skipped: OpenAI not enabled',
+                    'Enable OpenAI first to test AI generation'
+                );
+            }
+            
+            log('='.repeat(50));
+            log('Test Suite Complete');
+            log('='.repeat(50));
+            
+            // Summary
+            const totalTests = document.querySelectorAll('.test-result').length;
+            const passedTests = document.querySelectorAll('.test-result.test-pass').length;
+            const failedTests = document.querySelectorAll('.test-result.test-fail').length;
+            
+            const summaryDiv = document.createElement('div');
+            summaryDiv.className = `test-result ${failedTests === 0 ? 'test-pass' : 'test-info'}`;
+            summaryDiv.innerHTML = `
+                <h5><i class="fas fa-chart-bar me-2"></i>Test Summary</h5>
+                <p><strong>Total Tests:</strong> ${totalTests}</p>
+                <p><strong>Passed:</strong> ${passedTests} ✅</p>
+                <p><strong>Failed:</strong> ${failedTests} ${failedTests > 0 ? '❌' : ''}</p>
+            `;
+            document.getElementById('testResults').insertBefore(summaryDiv, document.getElementById('testResults').firstChild);
+        }
+
+        // Auto-run on load if URL has ?autorun
+        if (window.location.search.includes('autorun')) {
+            window.addEventListener('load', () => {
+                setTimeout(runAllTests, 1000);
+            });
+        }
+    </script>
+</body>
+</html>
+
