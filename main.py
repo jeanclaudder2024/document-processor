@@ -1770,6 +1770,7 @@ async def get_plans_db():
                         "annual_price": 0.0,
                         "max_downloads_per_month": None,  # Per-template limits are set individually
                         "can_download": normalized_broker_templates if normalized_broker_templates else ['*'],
+                        "template_limits": broker_template_limits,  # Include per-template download limits
                         "features": ["Lifetime access", "Broker verification", "Deal management"],
                         "is_active": True,
                         "is_membership": True  # Flag to distinguish from subscription plans
