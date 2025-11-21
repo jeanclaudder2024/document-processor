@@ -4454,6 +4454,25 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, ran
     
     placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
     
+    # Handle specific common placeholder types first
+    if placeholder_lower == 'via' or placeholder_lower.startswith('via'):
+        companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'Marine Services Group', 'International Vessel Corp']
+        return random.choice(companies)
+    elif 'position' in placeholder_lower or placeholder_lower == 'pos':
+        positions = ['Director', 'Manager', 'Senior Manager', 'Vice President', 'President', 'CEO', 'CFO', 'COO', 'General Manager', 'Operations Manager']
+        return random.choice(positions)
+    elif placeholder_lower == 'bin' or placeholder_lower.startswith('bin'):
+        # Business Identification Number (Kazakhstan format: 12 digits)
+        return f"{random.randint(100000000000, 999999999999)}"
+    elif placeholder_lower == 'okpo' or placeholder_lower.startswith('okpo'):
+        # OKPO code (Russian business registration, 8-10 digits)
+        return f"{random.randint(10000000, 9999999999)}"
+    elif 'invoice' in placeholder_lower or 'inv' in placeholder_lower:
+        prefixes = ['INV', 'CI', 'IN', 'DOC']
+        return f"{random.choice(prefixes)}-{random.randint(100000, 999999)}"
+    elif 'commercial' in placeholder_lower and 'invoice' in placeholder_lower:
+        return f"INV-{random.randint(100000, 999999)}"
+    
     # Simple fallback data generation
     if 'date' in placeholder_lower:
         from datetime import timedelta
@@ -4537,15 +4556,43 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, ran
             elif any(word in placeholder_lower for word in ['price', 'cost', 'value', 'amount']):
                 return f"${random.randint(10000, 5000000):,}"
             else:
-                # Last resort: generate a descriptive value based on placeholder name
-                # Instead of "Value-455", create something more meaningful
+                # Last resort: generate context-aware realistic data
+                # Never use "Value-XXXX" format - always generate meaningful data
                 placeholder_words = placeholder_lower.replace('_', ' ').replace('-', ' ').split()
-                if placeholder_words:
-                    # Use the first meaningful word from the placeholder
-                    first_word = placeholder_words[0] if len(placeholder_words[0]) > 2 else (placeholder_words[1] if len(placeholder_words) > 1 else 'Data')
-                    return f"{first_word.title()} {random.randint(100, 999)}"
+                
+                # Try to infer from placeholder name
+                if len(placeholder_words) == 1:
+                    # Single word placeholder - try common business fields
+                    word = placeholder_words[0]
+                    if len(word) <= 4:  # Short codes like BIN, OKPO, VIA
+                        if word in ['via', 'bin', 'okpo', 'pos']:
+                            # Already handled above, but fallback
+                            if word == 'via':
+                                return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
+                            elif word == 'bin':
+                                return f"{random.randint(100000000000, 999999999999)}"
+                            elif word == 'okpo':
+                                return f"{random.randint(10000000, 9999999999)}"
+                            elif word == 'pos':
+                                return random.choice(['Director', 'Manager', 'Senior Manager'])
+                    
+                    # For other short codes, generate a number
+                    return f"{random.randint(100000, 999999)}"
                 else:
-                    return f"Data-{random.randint(1000, 9999)}"
+                    # Multi-word placeholder - use first meaningful word
+                    first_word = next((w for w in placeholder_words if len(w) > 2), 'REF')
+                    # Generate based on word type
+                    if first_word in ['company', 'firm', 'corp', 'ltd']:
+                        return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
+                    elif first_word in ['number', 'num', 'no', 'nr', 'ref', 'id', 'code']:
+                        prefixes = ['REF', 'PO', 'SO', 'INV', 'LC', 'BL', 'COA', 'SGS']
+                        return f"{random.choice(prefixes)}-{random.randint(100000, 999999)}"
+                    elif first_word in ['name', 'person', 'contact']:
+                        return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'David Johnson'])
+                    else:
+                        # Generate a professional reference number
+                        prefixes = ['REF', 'DOC', 'ORD', 'INV']
+                        return f"{random.choice(prefixes)}-{random.randint(100000, 999999)}"
 
 def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     """
