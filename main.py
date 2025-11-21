@@ -1563,11 +1563,13 @@ async def get_plans_db():
             return {"success": True, "plans": plans, "source": "json"}
 
         try:
+            # CRITICAL: Always use database, never fallback to plans.json when Supabase is enabled
             # Get plans from database - include ALL active plans (NOTE: broker is a membership, not a plan)
             plans_res = supabase.table('subscription_plans').select(
                 '*').eq('is_active', True).order('sort_order', desc=False).execute()
             
             plan_count = len(plans_res.data) if plans_res.data else 0
+            logger.info(f"[plans-db] Loading {plan_count} plans from database (NOT using plans.json cache)")
             plan_tiers = [p.get('plan_tier', 'unknown') for p in (plans_res.data or [])]
             logger.info(f"Fetched {plan_count} active plans from database")
             logger.info(f"Plan tiers found: {plan_tiers}")
