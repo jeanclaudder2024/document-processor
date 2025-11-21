@@ -20,6 +20,12 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from docx import Document
 import re
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    logger.warning("OpenAI library not installed. AI-powered random data generation will be disabled.")
 
 # ============================================================================
 # CONFIGURATION
@@ -116,6 +122,24 @@ except Exception as e:
     supabase = None
 
 SUPABASE_ENABLED = supabase is not None
+
+# OpenAI Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_ENABLED = OPENAI_AVAILABLE and bool(OPENAI_API_KEY)
+openai_client = None
+
+if OPENAI_ENABLED:
+    try:
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        logger.info("OpenAI client initialized successfully")
+    except Exception as e:
+        logger.warning(f"Failed to initialize OpenAI client: {e}")
+        OPENAI_ENABLED = False
+else:
+    if not OPENAI_AVAILABLE:
+        logger.info("OpenAI library not available")
+    elif not OPENAI_API_KEY:
+        logger.info("OPENAI_API_KEY not set in environment variables")
 
 
 def encode_bytea(data: bytes) -> str:
@@ -860,6 +884,7 @@ async def health_check():
     return {
         "status": "healthy",
         "supabase": "connected" if supabase else "disconnected",
+        "openai": "enabled" if OPENAI_ENABLED else "disabled",
         "templates_dir": TEMPLATES_DIR,
         "storage_dir": STORAGE_DIR
     }
@@ -3928,13 +3953,58 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     # No match found
     return (None, None)
 
-def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
-    """Generate realistic random data for placeholders"""
+def generate_ai_random_data(placeholder: str, vessel_imo: str = None, context: str = None) -> str:
+    """Generate realistic random data using OpenAI AI"""
+    if not OPENAI_ENABLED or not openai_client:
+        logger.warning("OpenAI not available, falling back to standard random data")
+        return generate_realistic_random_data(placeholder, vessel_imo)
+    
+    try:
+        # Build context for AI prompt
+        prompt_context = f"Generate a realistic value for the placeholder '{placeholder}'"
+        if vessel_imo:
+            prompt_context += f" related to vessel IMO {vessel_imo}"
+        if context:
+            prompt_context += f". Context: {context}"
+        prompt_context += ". Return ONLY the value, no explanation. Make it realistic and professional for oil trading/maritime industry documents."
+        
+        # Call OpenAI API
+        response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a data generator for oil trading and maritime industry documents. Generate realistic, professional values for placeholders."},
+                {"role": "user", "content": prompt_context}
+            ],
+            max_tokens=100,
+            temperature=0.7
+        )
+        
+        ai_value = response.choices[0].message.content.strip()
+        logger.info(f"🤖 AI generated value for '{placeholder}': {ai_value}")
+        return ai_value
+        
+    except Exception as e:
+        logger.error(f"Error generating AI data for '{placeholder}': {e}")
+        logger.info("Falling back to standard random data generation")
+        return generate_realistic_random_data(placeholder, vessel_imo)
+
+def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, random_option: str = 'auto') -> str:
+    """Generate realistic random data for placeholders
+    
+    Args:
+        placeholder: The placeholder name
+        vessel_imo: Optional vessel IMO for context
+        random_option: 'auto', 'fixed', or 'ai' - determines generation method
+    """
+    # If AI option is selected, use AI generation
+    if random_option == 'ai' and OPENAI_ENABLED:
+        return generate_ai_random_data(placeholder, vessel_imo)
+    
     import random
     import hashlib
     
-    # Create unique seed for consistent data
-    if vessel_imo:
+    # Create unique seed for consistent data (only if not 'fixed')
+    if vessel_imo and random_option != 'fixed':
         seed_input = f"{vessel_imo}_{placeholder.lower()}"
         random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
     
@@ -4838,7 +4908,7 @@ async def generate_document(request: Request):
                         logger.warning(f"  ⚠⚠⚠ {placeholder}: Not configured in CMS and no intelligent match found, using random data")
 
                     seed_imo = None if random_option == 'fixed' else vessel_imo
-                    data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo)
+                    data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
                     logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")

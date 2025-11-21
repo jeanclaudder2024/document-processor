@@ -457,6 +457,9 @@ class TemplateEditor {
                             <option value="fixed" ${setting.randomOption === 'fixed' ? 'selected' : ''}>
                                 Fixed (same for all vessels)
                             </option>
+                            <option value="ai" ${setting.randomOption === 'ai' ? 'selected' : ''}>
+                                AI Generated (using OpenAI)
+                            </option>
                         </select>
                     </div>
                 </div>
