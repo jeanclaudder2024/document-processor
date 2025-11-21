@@ -1581,13 +1581,20 @@ class DocumentCMS {
                                     let templateId = '';
                                     if (typeof t === 'string') {
                                         templateName = t.endsWith('.docx') ? t : `${t}.docx`;
+                                        // Try to find ID from this.templates array
+                                        const templateObj = this.templates.find(tmpl => {
+                                            const tmplName = tmpl.name || tmpl.file_with_extension || tmpl.file_name || '';
+                                            return tmplName === templateName || tmplName === t || tmplName.replace('.docx', '') === t.replace('.docx', '');
+                                        });
+                                        templateId = templateObj ? (templateObj.id || templateObj.template_id || '') : '';
                                     } else {
                                         templateName = t.name || t.file_with_extension || t.file_name || '';
                                         if (templateName && !templateName.endsWith('.docx')) {
                                             templateName = `${templateName}.docx`;
                                         }
-                                        // Get template ID if available
+                                        // Get template ID - CRITICAL for reliable matching
                                         templateId = t.id || t.template_id || '';
+                                        console.log('[editPlan] 📋 Template:', templateName, 'ID:', templateId);
                                     }
                                     // CRITICAL: Get fresh can_download list from plan object
                                     // Normalize can_download: handle both array and single value

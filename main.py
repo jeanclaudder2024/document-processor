@@ -1656,10 +1656,12 @@ async def get_plans_db():
                 # This allows the CMS to show "No templates selected" instead of "All templates"
                 # Only default to '*' if permissions table doesn't exist (legacy fallback)
                 if not allowed_templates:
-                    # Check if permissions table exists by checking if we got an exception
-                    # If we're here and allowed_templates is empty, it means no permissions were found
-                    # Don't default to '*' - return empty array so CMS can show correct state
+                    # If we got here and allowed_templates is empty, it means:
+                    # 1. No permissions were found in plan_template_permissions table
+                    # 2. This could mean the plan has no specific template permissions
+                    # Don't default to '*' - return empty array so CMS can show "No templates selected"
                     allowed_templates = []
+                    logger.info(f"Plan {plan_tier} has NO template permissions - returning empty array (not '*')")
 
                 # Normalize template names (ensure .docx extension)
                 normalized_templates = []
