@@ -1531,15 +1531,18 @@ class DocumentCMS {
             return;
         }
         
-        const templates = this.allTemplates || [];
+        // CRITICAL: Use this.templates (full objects with IDs) instead of allTemplates (just names)
+        const templates = this.templates || [];
+        const templateNames = this.allTemplates || [];
         
         // CRITICAL: Log plan.can_download to verify it's updated
         console.log('[editPlan] 📋 Editing plan:', planId);
         console.log('[editPlan] 📋 Plan can_download:', plan.can_download);
         console.log('[editPlan] 📋 Plan max_downloads_per_month:', plan.max_downloads_per_month);
         console.log('[editPlan] 📋 Plan data:', JSON.stringify(plan, null, 2));
-        console.log('[editPlan] 📋 Templates available:', templates.length, templates);
-        console.log('[editPlan] 📋 Stored templates:', this.templates ? this.templates.length : 0);
+        console.log('[editPlan] 📋 Templates available (with IDs):', templates.length, templates);
+        console.log('[editPlan] 📋 Template names:', templateNames.length, templateNames);
+        console.log('[editPlan] 📋 First template object:', templates[0]);
         
         // Validate plan data
         if (!plan) {
