@@ -2990,12 +2990,23 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                         all_template_ids = set(t['id'] for t in (all_templates.data or []))
                         plan_template_ids_set = set(template_ids)
                         
+                        logger.info(f"[update-plan] Plan {plan_id} has permissions for {len(plan_template_ids_set)} templates out of {len(all_template_ids)} total templates")
+                        logger.info(f"[update-plan] Plan template IDs: {list(plan_template_ids_set)[:5]}...")
+                        logger.info(f"[update-plan] All template IDs: {list(all_template_ids)[:5]}...")
+                        logger.info(f"[update-plan] Sets equal? {plan_template_ids_set == all_template_ids}")
+                        
                         # Convert template IDs to file names for CMS response
                         template_id_to_name = {t['id']: t.get('file_name', '') for t in (all_templates.data or [])}
                         template_file_names = [ensure_docx_filename(template_id_to_name.get(tid, '')) for tid in template_ids if tid and template_id_to_name.get(tid)]
                         
+                        logger.info(f"[update-plan] Template file names for response: {template_file_names[:5]}... (total: {len(template_file_names)})")
+                        
                         # If plan has permissions for all templates, return ['*']
-                        can_download = ['*'] if (all_template_ids and plan_template_ids_set == all_template_ids) else template_file_names
+                        # CRITICAL: Only return '*' if plan has permissions for EVERY single template (exact set match)
+                        is_all_templates = all_template_ids and len(all_template_ids) > 0 and plan_template_ids_set == all_template_ids
+                        can_download = ['*'] if is_all_templates else template_file_names
+                        
+                        logger.info(f"[update-plan] Returning can_download: {'[*]' if is_all_templates else f'{len(template_file_names)} specific templates'}")
                         
                         return {
                             "success": True,
