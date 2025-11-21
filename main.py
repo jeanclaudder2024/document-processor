@@ -3117,9 +3117,17 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                     updated_plan_res = supabase.table('subscription_plans').select('*').eq('id', db_plan_id).limit(1).execute()
                     if updated_plan_res.data:
                         updated_plan_data = updated_plan_res.data[0]
+                        # CRITICAL: Wait a moment for database to be ready, then get fresh permissions
+                        import time
+                        time.sleep(0.2)  # Small delay to ensure database is updated
+                        
                         # Get template permissions for response (including per-template limits)
                         perms_res = supabase.table('plan_template_permissions').select('template_id, max_downloads_per_template').eq('plan_id', db_plan_id).execute()
                         template_ids = [p['template_id'] for p in (perms_res.data or [])]
+                        
+                        logger.info(f"[update-plan] After save - Found {len(template_ids)} template permissions for plan {plan_id}")
+                        if len(template_ids) == 0:
+                            logger.warning(f"[update-plan] ⚠️⚠️⚠️ NO PERMISSIONS FOUND AFTER SAVE! This means save failed or permissions were cleared.")
                         
                         # Build template_limits dict for response
                         template_limits_response = {}
