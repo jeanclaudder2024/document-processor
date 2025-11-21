@@ -377,7 +377,7 @@ class TemplateEditor {
                 csvId: '', 
                 csvField: '', 
                 csvRow: 0, 
-                randomOption: 'auto' 
+                randomOption: 'ai' 
             };
             
             return `
@@ -451,14 +451,14 @@ class TemplateEditor {
                         <label class="form-label small">Random Mode:</label>
                         <select class="form-select form-select-sm" 
                                 onchange="editor.updateSetting('${ph}', 'randomOption', this.value)">
+                            <option value="ai" ${setting.randomOption === 'ai' || !setting.randomOption ? 'selected' : ''}>
+                                AI Generated (using OpenAI) - Default
+                            </option>
                             <option value="auto" ${setting.randomOption === 'auto' ? 'selected' : ''}>
                                 Auto (different per vessel)
                             </option>
                             <option value="fixed" ${setting.randomOption === 'fixed' ? 'selected' : ''}>
                                 Fixed (same for all vessels)
-                            </option>
-                            <option value="ai" ${setting.randomOption === 'ai' ? 'selected' : ''}>
-                                AI Generated (using OpenAI)
                             </option>
                         </select>
                     </div>

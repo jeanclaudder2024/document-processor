@@ -257,7 +257,7 @@ def fetch_template_placeholders(template_id: str,
                 'csvId': str(row.get('csv_id') or '').strip(),
                 'csvField': str(row.get('csv_field') or '').strip(),
                 'csvRow': int(row['csv_row']) if row.get('csv_row') is not None else 0,
-                'randomOption': row.get('random_option', 'auto') or 'auto'
+                'randomOption': row.get('random_option', 'ai') or 'ai'
             }
             logger.debug(f"Loaded placeholder setting from Supabase for '{placeholder_key}': source={supabase_settings[placeholder_key]['source']}")
         
@@ -353,7 +353,7 @@ def upsert_template_placeholders(template_id: str,
                 'csv_id': cfg.get('csvId') or cfg.get('csv_id'),
                 'csv_field': cfg.get('csvField') or cfg.get('csv_field'),
                 'csv_row': cfg.get('csvRow') or cfg.get('csv_row', 0),
-                'random_option': cfg.get('randomOption') or cfg.get('random_option', 'auto')
+                'random_option': cfg.get('randomOption') or cfg.get('random_option', 'ai')
             })
 
         try:
@@ -2327,7 +2327,7 @@ async def upload_template(
                             'template_id': template_id,
                             'placeholder': placeholder,
                             'source': 'random',
-                            'random_option': 'auto'
+                            'random_option': 'ai'
                         }
                         for placeholder in placeholders
                         if placeholder not in existing_settings
@@ -2382,7 +2382,7 @@ async def upload_template(
                 'csvId': '',
                 'csvField': '',
                 'csvRow': 0,
-                'randomOption': 'auto'
+                'randomOption': 'ai'
             })
 
         upsert_template_placeholders(template_id or docx_filename, default_settings, docx_filename)
@@ -2674,7 +2674,7 @@ async def get_placeholder_settings(
                     'csvId': row.get('csv_id') or '',
                     'csvField': row.get('csv_field') or '',
                     'csvRow': row['csv_row'] if row.get('csv_row') is not None else 0,
-                    'randomOption': row.get('random_option', 'auto') or 'auto'
+                    'randomOption': row.get('random_option', 'ai') or 'ai'
                 }
             return {"settings": aggregated}
 
@@ -2729,7 +2729,7 @@ async def save_placeholder_settings(request: Request):
                     'csvId': str(cfg.get('csvId', '')).strip() if cfg.get('csvId') else '',
                     'csvField': str(cfg.get('csvField', '')).strip() if cfg.get('csvField') else '',
                     'csvRow': int(cfg.get('csvRow', 0)) if cfg.get('csvRow') is not None else 0,
-                    'randomOption': cfg.get('randomOption', 'auto') or 'auto'
+                    'randomOption': cfg.get('randomOption', 'ai') or 'ai'
                 }
                 logger.debug(f"Sanitized setting for '{placeholder}': source={sanitised_settings[placeholder]['source']}, databaseTable={sanitised_settings[placeholder]['databaseTable']}, databaseField={sanitised_settings[placeholder]['databaseField']}, csvId={sanitised_settings[placeholder]['csvId']}")
 
@@ -4394,7 +4394,7 @@ def generate_ai_random_data(placeholder: str, vessel_imo: str = None, context: s
     if not OPENAI_ENABLED or not openai_client:
         logger.warning("OpenAI not available, falling back to standard random data")
         # Use 'auto' mode to prevent infinite recursion (don't call AI again)
-        return generate_realistic_random_data(placeholder, vessel_imo, 'auto')
+        return generate_realistic_random_data(placeholder, vessel_imo, 'ai')
     
     try:
         # Build context for AI prompt
@@ -4424,15 +4424,15 @@ def generate_ai_random_data(placeholder: str, vessel_imo: str = None, context: s
         logger.error(f"Error generating AI data for '{placeholder}': {e}")
         logger.info("Falling back to standard random data generation")
         # Use 'auto' mode to prevent infinite recursion (don't call AI again)
-        return generate_realistic_random_data(placeholder, vessel_imo, 'auto')
+        return generate_realistic_random_data(placeholder, vessel_imo, 'ai')
 
-def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, random_option: str = 'auto') -> str:
+def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, random_option: str = 'ai') -> str:
     """Generate realistic random data for placeholders
     
     Args:
         placeholder: The placeholder name
         vessel_imo: Optional vessel IMO for context
-        random_option: 'auto', 'fixed', or 'ai' - determines generation method
+        random_option: 'ai' (default), 'auto', or 'fixed' - determines generation method
     """
     # If AI option is selected, use AI generation
     if random_option == 'ai' and OPENAI_ENABLED:
@@ -5128,7 +5128,7 @@ async def generate_document(request: Request):
                     if source == 'random':
                         database_field = (setting.get('databaseField') or '').strip()
                         database_table = (setting.get('databaseTable') or '').strip()
-                        random_option = setting.get('randomOption', 'auto')
+                        random_option = setting.get('randomOption', 'ai')
                         
                         # If user explicitly set databaseField or databaseTable, they want random data
                         # Don't override their choice with intelligent matching
@@ -5347,11 +5347,11 @@ async def generate_document(request: Request):
                 else:
                     # Fall back to random data
                     if setting:
-                        random_option = setting.get('randomOption', 'auto')
+                        random_option = setting.get('randomOption', 'ai')
                         source = setting.get('source', 'random')
                         logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
                     else:
-                        random_option = 'auto'
+                        random_option = 'ai'
                         logger.warning(f"  ⚠⚠⚠ {placeholder}: Not configured in CMS and no intelligent match found, using random data")
 
                     seed_imo = None if random_option == 'fixed' else vessel_imo
