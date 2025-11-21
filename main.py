@@ -4394,7 +4394,7 @@ def generate_ai_random_data(placeholder: str, vessel_imo: str = None, context: s
     if not OPENAI_ENABLED or not openai_client:
         logger.warning("OpenAI not available, falling back to standard random data")
         # Use 'auto' mode to prevent infinite recursion (don't call AI again)
-        return generate_realistic_random_data(placeholder, vessel_imo, 'ai')
+        return generate_realistic_random_data(placeholder, vessel_imo, 'auto')
     
     try:
         # Build context for AI prompt
@@ -4424,7 +4424,7 @@ def generate_ai_random_data(placeholder: str, vessel_imo: str = None, context: s
         logger.error(f"Error generating AI data for '{placeholder}': {e}")
         logger.info("Falling back to standard random data generation")
         # Use 'auto' mode to prevent infinite recursion (don't call AI again)
-        return generate_realistic_random_data(placeholder, vessel_imo, 'ai')
+        return generate_realistic_random_data(placeholder, vessel_imo, 'auto')
 
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, random_option: str = 'ai') -> str:
     """Generate realistic random data for placeholders
@@ -4435,8 +4435,14 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, ran
         random_option: 'ai' (default), 'auto', or 'fixed' - determines generation method
     """
     # If AI option is selected, use AI generation
-    if random_option == 'ai' and OPENAI_ENABLED:
-        return generate_ai_random_data(placeholder, vessel_imo)
+    if random_option == 'ai':
+        if OPENAI_ENABLED:
+            logger.info(f"🤖 Attempting AI generation for placeholder: '{placeholder}'")
+            return generate_ai_random_data(placeholder, vessel_imo)
+        else:
+            logger.warning(f"⚠️  AI requested for '{placeholder}' but OpenAI is not enabled. Check OPENAI_API_KEY environment variable.")
+            logger.info(f"   Falling back to realistic random data generation")
+            # Fall through to realistic random data generation below
     
     import random
     import hashlib
@@ -4479,9 +4485,67 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, ran
             return f"${random.randint(1000, 999999):,}"
         elif 'percent' in placeholder_lower or 'percentage' in placeholder_lower:
             return f"{random.uniform(0.1, 99.9):.2f}%"
+        elif 'company' in placeholder_lower or 'firm' in placeholder_lower or 'corporation' in placeholder_lower:
+            companies = [
+                'Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 
+                'Marine Services Group', 'International Vessel Corp', 'Petroleum Trading LLC',
+                'Maritime Logistics Co', 'Shipping Partners Ltd', 'Ocean Freight Services',
+                'Marine Transport Inc', 'International Shipping Group', 'Global Maritime Corp'
+            ]
+            return random.choice(companies)
+        elif 'address' in placeholder_lower or 'location' in placeholder_lower:
+            addresses = [
+                '123 Maritime Street, London, UK', '456 Harbor Road, Singapore', 
+                '789 Port Avenue, Dubai, UAE', '321 Dock Lane, Rotterdam, NL',
+                '555 Shipping Boulevard, Houston, TX, USA', '888 Portside Drive, Shanghai, China',
+                '777 Harbor View, Hamburg, Germany', '999 Maritime Plaza, Tokyo, Japan'
+            ]
+            return random.choice(addresses)
+        elif 'person' in placeholder_lower or 'contact' in placeholder_lower or 'name' in placeholder_lower:
+            names = [
+                'John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 
+                'David Johnson', 'Sarah Brown', 'Michael Chen', 'Emma Wilson',
+                'James Anderson', 'Sophie Martin', 'Robert Taylor', 'Anna Schmidt'
+            ]
+            return random.choice(names)
+        elif 'email' in placeholder_lower or 'mail' in placeholder_lower:
+            domains = ['example.com', 'maritime.com', 'shipping.com', 'trading.com', 'oil.com']
+            name = random.choice(['john', 'maria', 'david', 'sarah', 'michael', 'emma', 'james', 'sophie'])
+            return f"{name}{random.randint(1, 99)}@{random.choice(domains)}"
+        elif 'phone' in placeholder_lower or 'tel' in placeholder_lower or 'mobile' in placeholder_lower:
+            return f"+{random.randint(1, 99)} {random.randint(100, 999)} {random.randint(100000, 999999)}"
+        elif 'ref' in placeholder_lower or 'reference' in placeholder_lower or 'number' in placeholder_lower or 'id' in placeholder_lower:
+            prefixes = ['REF', 'PO', 'SO', 'INV', 'LC', 'BL', 'COA', 'SGS', 'DOC', 'ORD']
+            return f"{random.choice(prefixes)}-{random.randint(100000, 999999)}"
+        elif 'date' in placeholder_lower or 'time' in placeholder_lower:
+            from datetime import timedelta
+            return (datetime.now() - timedelta(days=random.randint(1, 30))).strftime('%Y-%m-%d')
         else:
-            # Generate a more realistic generic value
-            return f"Value-{random.randint(1000, 9999)}"
+            # Generate context-aware realistic data based on placeholder name
+            # Try to infer what type of data is needed from the placeholder name
+            if any(word in placeholder_lower for word in ['buyer', 'seller', 'client', 'customer']):
+                companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc']
+                return random.choice(companies)
+            elif any(word in placeholder_lower for word in ['port', 'harbor', 'dock']):
+                ports = ['Rotterdam', 'Singapore', 'Dubai', 'Houston', 'Shanghai', 'Hamburg', 'Tokyo']
+                return random.choice(ports)
+            elif any(word in placeholder_lower for word in ['vessel', 'ship', 'boat']):
+                vessel_names = ['MV Atlantic Star', 'SS Ocean Breeze', 'MV Pacific Wave', 'SS Maritime Express']
+                return random.choice(vessel_names)
+            elif any(word in placeholder_lower for word in ['quantity', 'volume', 'capacity', 'tonnage', 'weight']):
+                return f"{random.randint(1000, 50000):,} MT"
+            elif any(word in placeholder_lower for word in ['price', 'cost', 'value', 'amount']):
+                return f"${random.randint(10000, 5000000):,}"
+            else:
+                # Last resort: generate a descriptive value based on placeholder name
+                # Instead of "Value-455", create something more meaningful
+                placeholder_words = placeholder_lower.replace('_', ' ').replace('-', ' ').split()
+                if placeholder_words:
+                    # Use the first meaningful word from the placeholder
+                    first_word = placeholder_words[0] if len(placeholder_words[0]) > 2 else (placeholder_words[1] if len(placeholder_words) > 1 else 'Data')
+                    return f"{first_word.title()} {random.randint(100, 999)}"
+                else:
+                    return f"Data-{random.randint(1000, 9999)}"
 
 def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     """
