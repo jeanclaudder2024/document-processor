@@ -2919,8 +2919,10 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                         templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
                         
                         if templates_res.data:
-                            # Delete existing permissions
-                            supabase.table('plan_template_permissions').delete().eq('plan_id', db_plan_id).execute()
+                            # CRITICAL: Delete existing permissions FIRST to clear old data
+                            delete_result = supabase.table('plan_template_permissions').delete().eq('plan_id', db_plan_id).execute()
+                            deleted_count = len(delete_result.data) if delete_result.data else 0
+                            logger.info(f"[update-plan] Deleted {deleted_count} existing permissions for plan {plan_id}")
                             
                             # Create new permissions
                             if allowed == '*' or allowed == ['*'] or (isinstance(allowed, list) and '*' in allowed):
