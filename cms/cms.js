@@ -1078,9 +1078,19 @@ class DocumentCMS {
                 console.log('[loadPlans] 📋 Plan tiers:', Object.values(data.plans).map(p => p.plan_tier || p.id || 'unknown'));
                 
                 // IMPORTANT: Store plans before displaying - replace completely to ensure all plans are included
-                this.allPlans = { ...data.plans };
-                console.log('[loadPlans] 💾 Stored', Object.keys(this.allPlans).length, 'plans in allPlans:', Object.keys(this.allPlans));
-                this.displayPlans(data.plans);
+                // NOTE: Filter out 'broker' as it's a membership, not a subscription plan
+                const filteredPlans = {};
+                for (const [planId, plan] of Object.entries(data.plans)) {
+                    const tier = (plan.plan_tier || planId || '').toLowerCase();
+                    if (tier !== 'broker') {
+                        filteredPlans[planId] = plan;
+                    } else {
+                        console.log('[loadPlans] ⚠️ Filtered out broker plan (broker is a membership, not a subscription plan)');
+                    }
+                }
+                this.allPlans = filteredPlans;
+                console.log('[loadPlans] 💾 Stored', Object.keys(this.allPlans).length, 'plans in allPlans (broker excluded):', Object.keys(this.allPlans));
+                this.displayPlans(filteredPlans);
                 // Update plan checkboxes in upload form
                 this.populatePlanCheckboxes();
                 // Also update plan checkboxes in metadata modal if open
@@ -1126,18 +1136,25 @@ class DocumentCMS {
         }
         
         // Sort plans by plan_tier for consistent display order
-        const sortedPlans = planEntries.sort(([aId, aPlan], [bId, bPlan]) => {
-            const aTier = aPlan.plan_tier || aId || '';
-            const bTier = bPlan.plan_tier || bId || '';
-            // Order: basic, professional, enterprise, broker (or any other order)
-            const order = ['basic', 'professional', 'enterprise', 'broker'];
-            const aIndex = order.indexOf(aTier.toLowerCase());
-            const bIndex = order.indexOf(bTier.toLowerCase());
-            if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
-            if (aIndex !== -1) return -1;
-            if (bIndex !== -1) return 1;
-            return aTier.localeCompare(bTier);
-        });
+        // NOTE: Broker is a MEMBERSHIP, not a plan - filter it out
+        const sortedPlans = planEntries
+            .filter(([planId, plan]) => {
+                const tier = (plan.plan_tier || planId || '').toLowerCase();
+                // Exclude broker from plans (it's a membership, not a subscription plan)
+                return tier !== 'broker';
+            })
+            .sort(([aId, aPlan], [bId, bPlan]) => {
+                const aTier = aPlan.plan_tier || aId || '';
+                const bTier = bPlan.plan_tier || bId || '';
+                // Order: basic, professional, enterprise (broker is membership, not a plan)
+                const order = ['basic', 'professional', 'enterprise'];
+                const aIndex = order.indexOf(aTier.toLowerCase());
+                const bIndex = order.indexOf(bTier.toLowerCase());
+                if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
+                if (aIndex !== -1) return -1;
+                if (bIndex !== -1) return 1;
+                return aTier.localeCompare(bTier);
+            });
         
         console.log('[displayPlans] 📋 Rendering', sortedPlans.length, 'plans in order:', sortedPlans.map(([id]) => id));
         
@@ -1451,12 +1468,30 @@ class DocumentCMS {
         }
         
         // CRITICAL: Get fresh plan data from allPlans (just reloaded)
-        const plan = this.allPlans[planId];
+        // Try to find plan by planId (could be tier or UUID)
+        let plan = this.allPlans[planId];
+        if (!plan) {
+            // Try to find by plan_tier
+            for (const [key, p] of Object.entries(this.allPlans)) {
+                if (p.plan_tier === planId || key === planId) {
+                    plan = p;
+                    break;
+                }
+            }
+        }
+        
+        if (!plan) {
+            console.error('[editPlan] ❌ Plan not found:', planId);
+            this.showToast('error', 'Error', `Plan "${planId}" not found`);
+            return;
+        }
+        
         const templates = this.allTemplates || [];
         
         // CRITICAL: Log plan.can_download to verify it's updated
         console.log('[editPlan] 📋 Editing plan:', planId);
         console.log('[editPlan] 📋 Plan can_download:', plan.can_download);
+        console.log('[editPlan] 📋 Plan max_downloads_per_month:', plan.max_downloads_per_month);
         console.log('[editPlan] 📋 Plan data:', JSON.stringify(plan, null, 2));
         console.log('[editPlan] 📋 Templates available:', templates.length, templates);
         console.log('[editPlan] 📋 Stored templates:', this.templates ? this.templates.length : 0);
@@ -1572,8 +1607,8 @@ class DocumentCMS {
                             </div>
                             <div class="mb-3">
                                 <label class="form-label"><strong>Max Downloads Per Month:</strong></label>
-                                <input type="number" class="form-control" id="maxDownloads" value="${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : ''}" placeholder="Use -1 for unlimited, or enter a number">
-                                <small class="text-muted">Enter -1 for unlimited downloads, or a number for the monthly limit</small>
+                                <input type="number" class="form-control" id="maxDownloads" value="${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : 10}" placeholder="Enter number (use -1 for unlimited)">
+                                <small class="text-muted">Enter -1 for unlimited downloads, or a positive number for the monthly limit. Current value: ${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : 10}</small>
                             </div>
                             <div class="mb-3">
                                 <label class="form-label"><strong>Features (comma-separated):</strong></label>
@@ -1725,6 +1760,7 @@ class DocumentCMS {
             
             if (data && data.success) {
                 console.log('[savePlan] ✅ Plan saved successfully');
+                console.log('[savePlan] 📋 Response data:', JSON.stringify(data, null, 2));
                 this.showToast('success', 'Success', 'Plan updated successfully!');
                 
                 // Update local copy with returned data if available
@@ -1732,8 +1768,12 @@ class DocumentCMS {
                     if (!this.allPlans) {
                         this.allPlans = {};
                     }
+                    // CRITICAL: Use plan_tier as key if planId was a tier, otherwise use planId
+                    const planKey = data.plan_data.plan_tier || planId;
+                    this.allPlans[planKey] = data.plan_data;
+                    // Also update by original planId for compatibility
                     this.allPlans[planId] = data.plan_data;
-                    console.log('[savePlan] ✅ Updated local plan copy:', this.allPlans[planId]);
+                    console.log('[savePlan] ✅ Updated local plan copy:', this.allPlans[planKey]);
                 }
                 
                 // Close modal first

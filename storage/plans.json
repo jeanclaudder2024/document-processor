@@ -43,19 +43,8 @@
     ],
     "name": "Enterprise Plan"
   },
-  "broker": {
-    "name": "Broker Plan",
-    "description": "For certified brokers handling intermediary documentation",
-    "plan_tier": "broker",
-    "can_download": [
-      "BROKER AGREEMENT.docx",
-      "BROKER MANDATE.docx",
-      "BROKER_PROTECTOR_TEMPLATE.docx"
-    ],
-    "max_downloads_per_month": 20,
-    "features": [
-      "Broker specific templates",
-      "Priority support for intermediaries"
-    ]
+  "_broker_removed": {
+    "_comment": "Broker is a MEMBERSHIP (broker_memberships table), not a subscription plan. Access is controlled via requires_broker_membership flag on templates and broker_memberships table.",
+    "_note": "This entry is kept for reference but should not be used. Broker access is checked via check_broker_membership_status RPC function."
   }
 }

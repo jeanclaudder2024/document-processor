@@ -1538,7 +1538,7 @@ async def get_plans_db():
             return {"success": True, "plans": plans, "source": "json"}
 
         try:
-            # Get plans from database - include ALL active plans (including broker plan)
+            # Get plans from database - include ALL active plans (NOTE: broker is a membership, not a plan)
             plans_res = supabase.table('subscription_plans').select(
                 '*').eq('is_active', True).order('sort_order', desc=False).execute()
             
@@ -1569,9 +1569,15 @@ async def get_plans_db():
                 logger.warning(f"Could not fetch templates from database: {e}")
 
             # Get permissions for each plan
+            # NOTE: Filter out 'broker' as it's a membership, not a subscription plan
             plans_dict = {}
             for plan in plans_res.data:
                 plan_tier = plan['plan_tier']
+                
+                # Skip broker - it's a membership, not a subscription plan
+                if plan_tier and plan_tier.lower() == 'broker':
+                    logger.info(f"Skipping broker plan (broker is a membership, not a subscription plan)")
+                    continue
 
                 # Get permissions for this plan (may not exist yet)
                 allowed_templates = []
@@ -1655,15 +1661,19 @@ async def get_plans_db():
             return {"success": True, "plans": plans_dict, "source": "database"}
         except Exception as db_error:
             logger.warning(f"Database query failed, falling back to JSON: {db_error}")
-            # Fallback to JSON
+            # Fallback to JSON - filter out broker plan
             plans = read_json_file(PLANS_PATH, {})
-            return {"success": True, "plans": plans, "source": "json_fallback"}
+            # Remove broker from plans (it's a membership, not a subscription plan)
+            filtered_plans = {k: v for k, v in plans.items() if k.lower() != 'broker' and (not v.get('plan_tier') or v.get('plan_tier', '').lower() != 'broker')}
+            return {"success": True, "plans": filtered_plans, "source": "json_fallback"}
     except Exception as e:
         logger.error(f"Error getting plans: {e}")
-        # Final fallback
+        # Final fallback - filter out broker plan
         try:
             plans = read_json_file(PLANS_PATH, {})
-            return {"success": True, "plans": plans, "source": "json_error_fallback"}
+            # Remove broker from plans (it's a membership, not a subscription plan)
+            filtered_plans = {k: v for k, v in plans.items() if k.lower() != 'broker' and (not v.get('plan_tier') or v.get('plan_tier', '').lower() != 'broker')}
+            return {"success": True, "plans": filtered_plans, "source": "json_error_fallback"}
         except Exception as final_exc:
             raise HTTPException(status_code=500, detail=str(final_exc))
 
@@ -2815,12 +2825,17 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                         perms_res = supabase.table('plan_template_permissions').select('template_id').eq('plan_id', db_plan_id).execute()
                         template_ids = [p['template_id'] for p in (perms_res.data or [])]
                         
-                        # Check if all templates
-                        all_templates = supabase.table('document_templates').select('id').eq('is_active', True).execute()
+                        # Check if all templates - need to convert template_ids to file_names for response
+                        all_templates = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
                         all_template_ids = set(t['id'] for t in (all_templates.data or []))
                         plan_template_ids_set = set(template_ids)
                         
-                        can_download = ['*'] if (all_template_ids and plan_template_ids_set == all_template_ids) else [t for t in template_ids if t]
+                        # Convert template IDs to file names for CMS response
+                        template_id_to_name = {t['id']: t.get('file_name', '') for t in (all_templates.data or [])}
+                        template_file_names = [ensure_docx_filename(template_id_to_name.get(tid, '')) for tid in template_ids if tid and template_id_to_name.get(tid)]
+                        
+                        # If plan has permissions for all templates, return ['*']
+                        can_download = ['*'] if (all_template_ids and plan_template_ids_set == all_template_ids) else template_file_names
                         
                         return {
                             "success": True,
