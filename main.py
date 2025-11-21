@@ -2927,7 +2927,8 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                         # Also add without extension for flexibility
                                         template_names_normalized.add(normalise_template_key(t.replace('.docx', '').replace('.DOCX', '')))
                                 
-                                logger.info(f"Matching templates for plan {plan_id} against normalized names: {list(template_names_normalized)[:5]}...")
+                                logger.info(f"[update-plan] Matching templates for plan {plan_id} against normalized names: {list(template_names_normalized)[:5]}...")
+                                logger.info(f"[update-plan] Available templates in DB: {[t.get('file_name', '') for t in templates_res.data[:10]]}")
 
                                 inserted_count = 0
                                 for template in templates_res.data:
@@ -2935,12 +2936,29 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     if not template_name:
                                         continue
                                     
-                                    # Normalize template name for comparison
+                                    # Normalize template name for comparison - try multiple strategies
                                     normalized_template_name = normalise_template_key(ensure_docx_filename(template_name))
                                     normalized_template_name_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
                                     
+                                    # Also try case-insensitive matching
+                                    normalized_template_name_lower = normalized_template_name.lower()
+                                    normalized_template_name_no_ext_lower = normalized_template_name_no_ext.lower()
+                                    
                                     # Check if this template matches any in the allowed list
-                                    if normalized_template_name in template_names_normalized or normalized_template_name_no_ext in template_names_normalized:
+                                    # Try multiple matching strategies for flexibility
+                                    matches = False
+                                    for allowed_name in template_names_normalized:
+                                        allowed_lower = allowed_name.lower()
+                                        # Direct match
+                                        if (normalized_template_name == allowed_name or 
+                                            normalized_template_name_no_ext == allowed_name or
+                                            normalized_template_name_lower == allowed_lower or
+                                            normalized_template_name_no_ext_lower == allowed_lower):
+                                            matches = True
+                                            logger.debug(f"[update-plan] ✅ Matched template '{template_name}' with allowed '{allowed_name}'")
+                                            break
+                                    
+                                    if matches:
                                         try:
                                             template_id = template['id']
                                             # Get per-template limit if provided
