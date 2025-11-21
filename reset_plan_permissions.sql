@@ -43,19 +43,12 @@ SELECT
     COUNT(*) as remaining_rows
 FROM public.broker_template_permissions;
 
--- STEP 5: Verify subscription_plans table is untouched (plan definitions)
--- This table contains your plan definitions (Basic, Professional, Enterprise)
--- We only verify it exists and is untouched - we don't modify it
-SELECT 
-    'VERIFICATION: subscription_plans table (plan definitions - UNTOUCHED)' as info,
-    COUNT(*) as plan_definitions_count
-FROM public.subscription_plans;
-
 -- ============================================================================
 -- ✅ RESET COMPLETE
 -- ============================================================================
 -- All template permissions have been cleared.
--- Client subscriptions and accounts are UNTOUCHED.
+-- Only template permission tables were touched.
+-- All other tables (plans, subscriptions, accounts) are UNTOUCHED.
 -- You can now rebuild permissions from the CMS.
 -- ============================================================================
 
