@@ -1597,7 +1597,11 @@ class DocumentCMS {
                                         }
                                         // Get template ID - CRITICAL for reliable matching
                                         templateId = t.id || t.template_id || '';
-                                        console.log('[editPlan] 📋 Template:', templateName, 'ID:', templateId);
+                                        if (!templateId) {
+                                            console.warn('[editPlan] ⚠️ Template has NO ID:', templateName, 'Object:', t);
+                                        } else {
+                                            console.log('[editPlan] ✅ Template:', templateName, 'ID:', templateId);
+                                        }
                                     }
                                     // CRITICAL: Get fresh can_download list from plan object
                                     // Normalize can_download: handle both array and single value
