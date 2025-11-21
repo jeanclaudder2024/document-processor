@@ -1652,9 +1652,14 @@ async def get_plans_db():
                     # exist
                     allowed_templates = ['*']
 
-                # If no permissions set, default to all templates
+                # CRITICAL: If no permissions set, return empty array (not '*')
+                # This allows the CMS to show "No templates selected" instead of "All templates"
+                # Only default to '*' if permissions table doesn't exist (legacy fallback)
                 if not allowed_templates:
-                    allowed_templates = ['*']
+                    # Check if permissions table exists by checking if we got an exception
+                    # If we're here and allowed_templates is empty, it means no permissions were found
+                    # Don't default to '*' - return empty array so CMS can show correct state
+                    allowed_templates = []
 
                 # Normalize template names (ensure .docx extension)
                 normalized_templates = []
@@ -2964,6 +2969,11 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                             logger.warning(f"Failed to insert permission for template {template_name}: {insert_exc}")
                                 
                                 logger.info(f"Set {inserted_count} template permissions for plan {plan_id} (matched {len(template_names_normalized)} template names)")
+                                
+                                # CRITICAL: If no templates were matched, log warning
+                                if inserted_count == 0:
+                                    logger.warning(f"[update-plan] ⚠️ No templates matched for plan {plan_id}! Sent templates: {allowed[:5]}...")
+                                    logger.warning(f"[update-plan] Available templates in DB: {[t.get('file_name', '') for t in templates_res.data[:5]]}")
                     
                     logger.info(f"Updated plan in database: {plan_id}")
                     database_update_success = True
@@ -3001,12 +3011,17 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                         
                         logger.info(f"[update-plan] Template file names for response: {template_file_names[:5]}... (total: {len(template_file_names)})")
                         
-                        # If plan has permissions for all templates, return ['*']
                         # CRITICAL: Only return '*' if plan has permissions for EVERY single template (exact set match)
-                        is_all_templates = all_template_ids and len(all_template_ids) > 0 and plan_template_ids_set == all_template_ids
-                        can_download = ['*'] if is_all_templates else template_file_names
+                        # AND there are actually templates in the database
+                        is_all_templates = (all_template_ids and 
+                                          len(all_template_ids) > 0 and 
+                                          len(plan_template_ids_set) > 0 and
+                                          plan_template_ids_set == all_template_ids)
+                        can_download = ['*'] if is_all_templates else (template_file_names if template_file_names else [])
                         
                         logger.info(f"[update-plan] Returning can_download: {'[*]' if is_all_templates else f'{len(template_file_names)} specific templates'}")
+                        if not is_all_templates and not template_file_names:
+                            logger.warning(f"[update-plan] ⚠️ Plan {plan_id} has NO template permissions! Returning empty array.")
                         
                         return {
                             "success": True,
