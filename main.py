@@ -2918,17 +2918,36 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                 logger.info(f"Set all templates permission for plan {plan_id}")
                             elif isinstance(allowed, list):
                                 # Normalize template names from can_download list (may have .docx or not)
+                                # Store both normalized keys AND original names for flexible matching
                                 template_names_normalized = set()
+                                template_names_original = {}  # Map normalized -> original for logging
+                                
                                 for t in allowed:
                                     if t != '*':
+                                        # Store original
+                                        original = t.strip()
+                                        
                                         # Ensure .docx extension for comparison
-                                        normalized = ensure_docx_filename(t)
-                                        template_names_normalized.add(normalise_template_key(normalized))
-                                        # Also add without extension for flexibility
-                                        template_names_normalized.add(normalise_template_key(t.replace('.docx', '').replace('.DOCX', '')))
+                                        normalized = ensure_docx_filename(original)
+                                        
+                                        # Add multiple normalization strategies
+                                        key1 = normalise_template_key(normalized)  # With .docx
+                                        key2 = normalise_template_key(original.replace('.docx', '').replace('.DOCX', ''))  # Without extension
+                                        
+                                        template_names_normalized.add(key1)
+                                        template_names_normalized.add(key2)
+                                        
+                                        # Also add original (normalized) for direct comparison
+                                        template_names_normalized.add(normalized.lower().strip())
+                                        template_names_normalized.add(original.lower().strip().replace('.docx', '').replace('.DOCX', ''))
+                                        
+                                        template_names_original[key1] = original
+                                        template_names_original[key2] = original
                                 
-                                logger.info(f"[update-plan] Matching templates for plan {plan_id} against normalized names: {list(template_names_normalized)[:5]}...")
-                                logger.info(f"[update-plan] Available templates in DB: {[t.get('file_name', '') for t in templates_res.data[:10]]}")
+                                logger.info(f"[update-plan] 🔍 Matching templates for plan {plan_id}")
+                                logger.info(f"[update-plan] 📋 Received template names: {allowed[:5]}...")
+                                logger.info(f"[update-plan] 📋 Normalized keys: {list(template_names_normalized)[:5]}...")
+                                logger.info(f"[update-plan] 📋 Available templates in DB: {[t.get('file_name', '') for t in templates_res.data[:10]]}")
 
                                 inserted_count = 0
                                 for template in templates_res.data:
@@ -2936,27 +2955,49 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     if not template_name:
                                         continue
                                     
-                                    # Normalize template name for comparison - try multiple strategies
-                                    normalized_template_name = normalise_template_key(ensure_docx_filename(template_name))
-                                    normalized_template_name_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
-                                    
-                                    # Also try case-insensitive matching
-                                    normalized_template_name_lower = normalized_template_name.lower()
-                                    normalized_template_name_no_ext_lower = normalized_template_name_no_ext.lower()
+                                    # Try multiple normalization strategies for matching
+                                    # Strategy 1: Normalize with .docx
+                                    normalized_with_ext = normalise_template_key(ensure_docx_filename(template_name))
+                                    # Strategy 2: Normalize without extension
+                                    normalized_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
+                                    # Strategy 3: Direct lowercase comparison
+                                    template_lower = template_name.lower().strip()
+                                    template_lower_no_ext = template_lower.replace('.docx', '').replace('.docx', '')
                                     
                                     # Check if this template matches any in the allowed list
                                     # Try multiple matching strategies for flexibility
                                     matches = False
-                                    for allowed_name in template_names_normalized:
-                                        allowed_lower = allowed_name.lower()
-                                        # Direct match
-                                        if (normalized_template_name == allowed_name or 
-                                            normalized_template_name_no_ext == allowed_name or
-                                            normalized_template_name_lower == allowed_lower or
-                                            normalized_template_name_no_ext_lower == allowed_lower):
+                                    matched_key = None
+                                    
+                                    # Try all normalization strategies
+                                    for test_key in [normalized_with_ext, normalized_no_ext, template_lower, template_lower_no_ext]:
+                                        if test_key in template_names_normalized:
                                             matches = True
-                                            logger.debug(f"[update-plan] ✅ Matched template '{template_name}' with allowed '{allowed_name}'")
+                                            matched_key = test_key
+                                            original_name = template_names_original.get(test_key, test_key)
+                                            logger.info(f"[update-plan] ✅ Matched template '{template_name}' (normalized: '{test_key}') with allowed '{original_name}'")
                                             break
+                                    
+                                    # If still no match, try fuzzy matching (case-insensitive, ignore extra spaces)
+                                    if not matches:
+                                        for allowed_original in allowed:
+                                            if allowed_original == '*':
+                                                continue
+                                            # Normalize both for comparison
+                                            allowed_normalized = normalise_template_key(ensure_docx_filename(allowed_original))
+                                            template_normalized = normalise_template_key(ensure_docx_filename(template_name))
+                                            
+                                            # Try direct comparison after normalization
+                                            if allowed_normalized == template_normalized:
+                                                matches = True
+                                                matched_key = allowed_normalized
+                                                logger.info(f"[update-plan] ✅ Matched template '{template_name}' with allowed '{allowed_original}' (fuzzy match)")
+                                                break
+                                    
+                                    if not matches:
+                                        logger.debug(f"[update-plan] ❌ Template '{template_name}' did not match any allowed templates")
+                                    
+                                    if matches:
                                     
                                     if matches:
                                         try:
