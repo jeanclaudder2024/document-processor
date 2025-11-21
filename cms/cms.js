@@ -1055,10 +1055,22 @@ class DocumentCMS {
             
             try {
                 // Always try database first to get latest plans from CMS
-                data = await this.apiJson(`/plans-db${cacheBuster}`);
+                // Use aggressive cache busting for force reloads
+                const cacheBusterValue = forceReload ? `?t=${Date.now()}&_=${Math.random()}` : cacheBuster;
+                data = await this.apiJson(`/plans-db${cacheBusterValue}`);
                 source = 'database';
-                console.log('[loadPlans] ✅ Loaded plans from database:', Object.keys(data.plans || {}).length, 'plans');
-                console.log('[loadPlans] Plan IDs:', Object.keys(data.plans || {}));
+                const plansCount = data && data.plans ? Object.keys(data.plans).length : 0;
+                console.log('[loadPlans] ✅ Loaded plans from database:', plansCount, 'plans');
+                console.log('[loadPlans] Plan IDs:', data && data.plans ? Object.keys(data.plans) : []);
+                
+                // Log each plan's can_download to debug
+                if (data && data.plans) {
+                    for (const [planKey, plan] of Object.entries(data.plans)) {
+                        const canDownload = plan.can_download || [];
+                        const isAllTemplates = Array.isArray(canDownload) && canDownload.length === 1 && canDownload[0] === '*';
+                        console.log(`[loadPlans] Plan ${planKey}: can_download = ${isAllTemplates ? 'ALL (*)' : `${canDownload.length} templates`}`, canDownload.slice(0, 3));
+                    }
+                }
             } catch (e) {
                 console.warn('[loadPlans] ⚠️ Failed to load plans from database, trying JSON:', e);
                 // Fallback to JSON
@@ -1892,15 +1904,34 @@ class DocumentCMS {
                 
                 // CRITICAL: Force reload plans from database to get latest data
                 console.log('[savePlan] 🔄 Reloading plans after save...');
+                
+                // Wait a moment for database to be ready
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                // Force reload with cache busting
                 await this.loadPlans(true);
                 
-                // Force a visual refresh
+                // Wait for display to update
+                await new Promise(resolve => setTimeout(resolve, 300));
+                
+                // Force a visual refresh and scroll to the updated plan
                 setTimeout(() => {
                     const container = document.getElementById('plansList');
                     if (container) {
                         container.style.opacity = '0.5';
                         setTimeout(() => {
                             container.style.opacity = '1';
+                            // Scroll to the plan that was just edited
+                            const planCard = container.querySelector(`[onclick*="editPlan('${planId}')"]`)?.closest('.card');
+                            if (planCard) {
+                                planCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                // Highlight the card briefly
+                                planCard.style.transition = 'box-shadow 0.3s';
+                                planCard.style.boxShadow = '0 0 20px rgba(0, 123, 255, 0.5)';
+                                setTimeout(() => {
+                                    planCard.style.boxShadow = '';
+                                }, 2000);
+                            }
                         }, 200);
                     }
                 }, 100);
