@@ -398,6 +398,7 @@ class DocumentCMS {
     }
 
     async apiJson(path, options = {}) {
+        // Add error handling for API calls
         const response = await this.apiFetch(path, options);
         if (!response) return null;
         if (!response.ok) {
@@ -1163,15 +1164,17 @@ class DocumentCMS {
             const features = Array.isArray(plan.features) ? plan.features : [];
             const planTier = plan.plan_tier || planId;
             const planName = plan.name || plan.plan_name || planId;
+            // Use plan_tier as the identifier for editing (backend expects this)
+            const editPlanId = plan.plan_tier || plan.id || planId;
             
-            console.log('[displayPlans] 📋 Rendering plan:', planId, 'tier:', planTier, 'name:', planName, 'can_download:', canDownloadList.length);
+            console.log('[displayPlans] 📋 Rendering plan:', planId, 'tier:', planTier, 'name:', planName, 'editId:', editPlanId, 'can_download:', canDownloadList.length);
             
             return `
             <div class="card mb-3">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <h5 class="mb-0">${planName} <small class="text-muted">(${planTier})</small></h5>
-                        <button class="btn btn-sm btn-outline-primary" onclick="cms.editPlan('${planId}')">
+                        <button class="btn btn-sm btn-outline-primary" onclick="cms.editPlan('${editPlanId}')">
                             <i class="fas fa-edit me-1"></i>Edit
                         </button>
                     </div>
@@ -1485,10 +1488,25 @@ class DocumentCMS {
         // Try to find plan by planId (could be tier or UUID)
         let plan = this.allPlans[planId];
         if (!plan) {
-            // Try to find by plan_tier
+            // Try to find by plan_tier or id
             for (const [key, p] of Object.entries(this.allPlans)) {
-                if (p.plan_tier === planId || key === planId) {
+                if (p.plan_tier === planId || key === planId || p.id === planId || String(p.id) === String(planId)) {
                     plan = p;
+                    console.log('[editPlan] ✅ Found plan by search:', key, 'plan_tier:', p.plan_tier, 'id:', p.id);
+                    break;
+                }
+            }
+        }
+        
+        // If still not found, try case-insensitive search
+        if (!plan) {
+            const planIdLower = String(planId).toLowerCase();
+            for (const [key, p] of Object.entries(this.allPlans)) {
+                const tierLower = (p.plan_tier || '').toLowerCase();
+                const keyLower = key.toLowerCase();
+                if (tierLower === planIdLower || keyLower === planIdLower) {
+                    plan = p;
+                    console.log('[editPlan] ✅ Found plan by case-insensitive search:', key);
                     break;
                 }
             }
@@ -1821,11 +1839,20 @@ class DocumentCMS {
             
             console.log('[savePlan] 💾 Saving plan:', planId, planDataToSave);
             
+            // Get the actual plan_tier or UUID to send to backend
+            // Backend expects plan_tier (like "basic", "professional", "enterprise") or UUID
+            const planToUpdate = this.allPlans[planId] || plan;
+            const backendPlanId = planToUpdate.plan_tier || planToUpdate.id || planId;
+            console.log('[savePlan] 📋 Using backend plan ID:', backendPlanId, '(original planId:', planId, ')');
+            
             // Save to API
             const data = await this.apiJson('/update-plan', {
                 method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
                 body: JSON.stringify({
-                    plan_id: planId,
+                    plan_id: backendPlanId,
                     plan_data: planDataToSave
                 })
             });
