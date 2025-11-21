@@ -1683,7 +1683,102 @@ async def get_plans_db():
                     "is_active": plan.get('is_active', True)
                 }
             
-            return {"success": True, "plans": plans_dict, "source": "database"}
+            # Get broker membership template permissions
+            broker_membership_dict = {}
+            try:
+                # Get all active broker memberships (for CMS display, we show broker membership as a single entity)
+                # We'll create a single "broker" entry that represents broker membership
+                broker_permissions_res = supabase.table('broker_template_permissions').select(
+                    'broker_membership_id, template_id, can_download, max_downloads_per_template'
+                ).execute()
+                
+                if broker_permissions_res.data:
+                    # Group permissions by template to show which templates broker membership can access
+                    broker_template_ids = set()
+                    broker_allowed_templates = []
+                    for perm in broker_permissions_res.data:
+                        if perm.get('can_download'):
+                            template_id = perm['template_id']
+                            broker_template_ids.add(template_id)
+                            
+                            # Add template file_name to allowed_templates list
+                            template_info = template_map.get(template_id)
+                            if template_info:
+                                file_name = template_info.get('file_name', '')
+                                if file_name and file_name not in broker_allowed_templates:
+                                    broker_allowed_templates.append(file_name)
+                    
+                    # Check if broker has permissions for ALL templates
+                    total_templates_count = len(all_template_ids)
+                    broker_permissions_count = len(broker_template_ids)
+                    
+                    if total_templates_count > 0 and broker_permissions_count >= total_templates_count:
+                        if broker_template_ids == all_template_ids:
+                            logger.info(f"Broker membership has permissions for ALL {total_templates_count} templates - treating as '*'")
+                            broker_allowed_templates = ['*']
+                    
+                    # Normalize template names
+                    normalized_broker_templates = []
+                    if broker_allowed_templates:
+                        for t in broker_allowed_templates:
+                            if t == '*':
+                                normalized_broker_templates.append('*')
+                            elif isinstance(t, str) and t:
+                                normalized_broker_templates.append(ensure_docx_filename(t))
+                            else:
+                                normalized_broker_templates.append(str(t))
+                    
+                    # Create broker membership entry (single entry for all broker memberships)
+                    broker_membership_dict['broker'] = {
+                        "id": "broker-membership",
+                        "name": "Broker Membership",
+                        "plan_tier": "broker",
+                        "description": "Lifetime broker membership with access to selected templates",
+                        "monthly_price": 0.0,
+                        "annual_price": 0.0,
+                        "max_downloads_per_month": None,  # Per-template limits are set individually
+                        "can_download": normalized_broker_templates if normalized_broker_templates else ['*'],
+                        "features": ["Lifetime access", "Broker verification", "Deal management"],
+                        "is_active": True,
+                        "is_membership": True  # Flag to distinguish from subscription plans
+                    }
+                    logger.info(f"Added broker membership with {len(normalized_broker_templates)} template permissions")
+                else:
+                    # No broker permissions set yet - default to all templates
+                    broker_membership_dict['broker'] = {
+                        "id": "broker-membership",
+                        "name": "Broker Membership",
+                        "plan_tier": "broker",
+                        "description": "Lifetime broker membership with access to selected templates",
+                        "monthly_price": 0.0,
+                        "annual_price": 0.0,
+                        "max_downloads_per_month": None,
+                        "can_download": ['*'],
+                        "features": ["Lifetime access", "Broker verification", "Deal management"],
+                        "is_active": True,
+                        "is_membership": True
+                    }
+            except Exception as broker_error:
+                logger.warning(f"Could not fetch broker membership permissions: {broker_error}")
+                # Still add broker membership entry with default values
+                broker_membership_dict['broker'] = {
+                    "id": "broker-membership",
+                    "name": "Broker Membership",
+                    "plan_tier": "broker",
+                    "description": "Lifetime broker membership with access to selected templates",
+                    "monthly_price": 0.0,
+                    "annual_price": 0.0,
+                    "max_downloads_per_month": None,
+                    "can_download": ['*'],
+                    "features": ["Lifetime access", "Broker verification", "Deal management"],
+                    "is_active": True,
+                    "is_membership": True
+                }
+            
+            # Merge plans and broker membership
+            all_plans = {**plans_dict, **broker_membership_dict}
+            
+            return {"success": True, "plans": all_plans, "source": "database"}
         except Exception as db_error:
             logger.warning(f"Database query failed, falling back to JSON: {db_error}")
             # Fallback to JSON - filter out broker plan
@@ -2782,6 +2877,9 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                     # Check both 'allowed_templates' and 'can_download' for compatibility
                     allowed = plan_data.get('allowed_templates') or plan_data.get('can_download')
                     
+                    # Get per-template limits if provided
+                    template_limits = plan_data.get('template_limits', {})  # {template_id: max_downloads, ...}
+                    
                     if allowed:
                         # Get all templates
                         templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
@@ -2794,11 +2892,24 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                             if allowed == '*' or allowed == ['*'] or (isinstance(allowed, list) and '*' in allowed):
                                 # Allow all templates
                                 for template in templates_res.data:
-                                    supabase.table('plan_template_permissions').insert({
+                                    template_id = template['id']
+                                    max_downloads = template_limits.get(str(template_id)) if isinstance(template_limits, dict) else None
+                                    # Convert to int if it's a string
+                                    if max_downloads is not None:
+                                        try:
+                                            max_downloads = int(max_downloads) if max_downloads != '' else None
+                                        except (ValueError, TypeError):
+                                            max_downloads = None
+                                    
+                                    permission_data = {
                                         'plan_id': db_plan_id,
-                                        'template_id': template['id'],
+                                        'template_id': template_id,
                                         'can_download': True
-                                    }).execute()
+                                    }
+                                    if max_downloads is not None:
+                                        permission_data['max_downloads_per_template'] = max_downloads
+                                    
+                                    supabase.table('plan_template_permissions').insert(permission_data).execute()
                                 logger.info(f"Set all templates permission for plan {plan_id}")
                             elif isinstance(allowed, list):
                                 # Normalize template names from can_download list (may have .docx or not)
@@ -2826,13 +2937,29 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     # Check if this template matches any in the allowed list
                                     if normalized_template_name in template_names_normalized or normalized_template_name_no_ext in template_names_normalized:
                                         try:
-                                            supabase.table('plan_template_permissions').insert({
+                                            template_id = template['id']
+                                            # Get per-template limit if provided
+                                            max_downloads = None
+                                            if isinstance(template_limits, dict):
+                                                # Try both string and UUID key
+                                                max_downloads = template_limits.get(str(template_id)) or template_limits.get(template_id)
+                                                if max_downloads is not None:
+                                                    try:
+                                                        max_downloads = int(max_downloads) if max_downloads != '' else None
+                                                    except (ValueError, TypeError):
+                                                        max_downloads = None
+                                            
+                                            permission_data = {
                                                 'plan_id': db_plan_id,
-                                                'template_id': template['id'],
+                                                'template_id': template_id,
                                                 'can_download': True
-                                            }).execute()
+                                            }
+                                            if max_downloads is not None:
+                                                permission_data['max_downloads_per_template'] = max_downloads
+                                            
+                                            supabase.table('plan_template_permissions').insert(permission_data).execute()
                                             inserted_count += 1
-                                            logger.debug(f"Added permission for template {template_name} (ID: {template['id']}) to plan {plan_id}")
+                                            logger.debug(f"Added permission for template {template_name} (ID: {template_id}) to plan {plan_id} with limit {max_downloads}")
                                         except Exception as insert_exc:
                                             logger.warning(f"Failed to insert permission for template {template_name}: {insert_exc}")
                                 
@@ -2846,9 +2973,17 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                     updated_plan_res = supabase.table('subscription_plans').select('*').eq('id', db_plan_id).limit(1).execute()
                     if updated_plan_res.data:
                         updated_plan_data = updated_plan_res.data[0]
-                        # Get template permissions for response
-                        perms_res = supabase.table('plan_template_permissions').select('template_id').eq('plan_id', db_plan_id).execute()
+                        # Get template permissions for response (including per-template limits)
+                        perms_res = supabase.table('plan_template_permissions').select('template_id, max_downloads_per_template').eq('plan_id', db_plan_id).execute()
                         template_ids = [p['template_id'] for p in (perms_res.data or [])]
+                        
+                        # Build template_limits dict for response
+                        template_limits_response = {}
+                        for perm in (perms_res.data or []):
+                            template_id = perm['template_id']
+                            max_downloads = perm.get('max_downloads_per_template')
+                            if max_downloads is not None:
+                                template_limits_response[str(template_id)] = max_downloads
                         
                         # Check if all templates - need to convert template_ids to file_names for response
                         all_templates = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
@@ -2871,6 +3006,7 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                 "plan_tier": updated_plan_data.get('plan_tier'),
                                 "max_downloads_per_month": updated_plan_data.get('max_downloads_per_month', 10),
                                 "can_download": can_download,
+                                "template_limits": template_limits_response if template_limits_response else None,
                                 "features": list(updated_plan_data.get('features', [])) if isinstance(updated_plan_data.get('features'), (list, tuple)) else []
                             }
                         }
@@ -2938,6 +3074,167 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
         raise
     except Exception as e:
         logger.error(f"Error updating plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/update-broker-membership")
+async def update_broker_membership(request: Request, current_user: str = Depends(get_current_user)):
+    """Update broker membership template permissions"""
+    try:
+        body = await request.json()
+        membership_data = body.get('membership_data')
+        
+        if not membership_data:
+            raise HTTPException(status_code=400, detail="membership_data is required")
+        
+        if not supabase:
+            raise HTTPException(status_code=503, detail="Supabase not available")
+        
+        try:
+            # Get template selection and limits
+            allowed = membership_data.get('allowed_templates') or membership_data.get('can_download')
+            template_limits = membership_data.get('template_limits', {})  # {template_id: max_downloads, ...}
+            
+            if not allowed:
+                raise HTTPException(status_code=400, detail="Template selection (can_download) is required")
+            
+            # Get all active broker memberships - we'll update permissions for all of them
+            # (since broker membership is a single entity in CMS)
+            broker_memberships_res = supabase.table('broker_memberships').select('id').eq('payment_status', 'paid').eq('membership_status', 'active').execute()
+            
+            if not broker_memberships_res.data:
+                logger.warning("No active broker memberships found")
+                # Still create permissions structure for future memberships
+                broker_membership_ids = []
+            else:
+                broker_membership_ids = [bm['id'] for bm in broker_memberships_res.data]
+            
+            # Get all templates
+            templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
+            
+            if not templates_res.data:
+                raise HTTPException(status_code=404, detail="No active templates found")
+            
+            # Delete existing broker permissions for all memberships
+            if broker_membership_ids:
+                for membership_id in broker_membership_ids:
+                    supabase.table('broker_template_permissions').delete().eq('broker_membership_id', membership_id).execute()
+            
+            # Create new permissions
+            inserted_count = 0
+            
+            if allowed == '*' or allowed == ['*'] or (isinstance(allowed, list) and '*' in allowed):
+                # Allow all templates for all broker memberships
+                for membership_id in broker_membership_ids:
+                    for template in templates_res.data:
+                        template_id = template['id']
+                        max_downloads = template_limits.get(str(template_id)) if isinstance(template_limits, dict) else None
+                        if max_downloads is not None:
+                            try:
+                                max_downloads = int(max_downloads) if max_downloads != '' else None
+                            except (ValueError, TypeError):
+                                max_downloads = None
+                        
+                        permission_data = {
+                            'broker_membership_id': membership_id,
+                            'template_id': template_id,
+                            'can_download': True
+                        }
+                        if max_downloads is not None:
+                            permission_data['max_downloads_per_template'] = max_downloads
+                        
+                        supabase.table('broker_template_permissions').insert(permission_data).execute()
+                        inserted_count += 1
+                
+                logger.info(f"Set all templates permission for broker membership ({len(broker_membership_ids)} memberships)")
+            elif isinstance(allowed, list):
+                # Normalize template names
+                template_names_normalized = set()
+                for t in allowed:
+                    if t != '*':
+                        normalized = ensure_docx_filename(t)
+                        template_names_normalized.add(normalise_template_key(normalized))
+                        template_names_normalized.add(normalise_template_key(t.replace('.docx', '').replace('.DOCX', '')))
+                
+                # Match templates and create permissions
+                for membership_id in broker_membership_ids:
+                    for template in templates_res.data:
+                        template_name = template.get('file_name', '').strip()
+                        if not template_name:
+                            continue
+                        
+                        normalized_template_name = normalise_template_key(ensure_docx_filename(template_name))
+                        normalized_template_name_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
+                        
+                        if normalized_template_name in template_names_normalized or normalized_template_name_no_ext in template_names_normalized:
+                            try:
+                                template_id = template['id']
+                                max_downloads = None
+                                if isinstance(template_limits, dict):
+                                    max_downloads = template_limits.get(str(template_id)) or template_limits.get(template_id)
+                                    if max_downloads is not None:
+                                        try:
+                                            max_downloads = int(max_downloads) if max_downloads != '' else None
+                                        except (ValueError, TypeError):
+                                            max_downloads = None
+                                
+                                permission_data = {
+                                    'broker_membership_id': membership_id,
+                                    'template_id': template_id,
+                                    'can_download': True
+                                }
+                                if max_downloads is not None:
+                                    permission_data['max_downloads_per_template'] = max_downloads
+                                
+                                supabase.table('broker_template_permissions').insert(permission_data).execute()
+                                inserted_count += 1
+                                logger.debug(f"Added permission for template {template_name} (ID: {template_id}) to broker membership with limit {max_downloads}")
+                            except Exception as insert_exc:
+                                logger.warning(f"Failed to insert permission for template {template_name}: {insert_exc}")
+                
+                logger.info(f"Set {inserted_count} template permissions for broker membership")
+            
+            # Get updated permissions for response
+            template_limits_response = {}
+            if broker_membership_ids:
+                perms_res = supabase.table('broker_template_permissions').select('template_id, max_downloads_per_template').eq('broker_membership_id', broker_membership_ids[0]).execute()
+                for perm in (perms_res.data or []):
+                    template_id = perm['template_id']
+                    max_downloads = perm.get('max_downloads_per_template')
+                    if max_downloads is not None:
+                        template_limits_response[str(template_id)] = max_downloads
+            
+            # Convert template IDs to file names for response
+            all_templates = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
+            template_id_to_name = {t['id']: t.get('file_name', '') for t in (all_templates.data or [])}
+            
+            if broker_membership_ids:
+                perms_res = supabase.table('broker_template_permissions').select('template_id').eq('broker_membership_id', broker_membership_ids[0]).execute()
+                template_ids = [p['template_id'] for p in (perms_res.data or [])]
+                template_file_names = [ensure_docx_filename(template_id_to_name.get(tid, '')) for tid in template_ids if tid and template_id_to_name.get(tid)]
+            else:
+                template_file_names = []
+            
+            return {
+                "success": True,
+                "membership_data": {
+                    "id": "broker-membership",
+                    "name": "Broker Membership",
+                    "plan_tier": "broker",
+                    "can_download": template_file_names if template_file_names else ['*'],
+                    "template_limits": template_limits_response if template_limits_response else None
+                }
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating broker membership: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating broker membership: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/check-download-permission-db")
@@ -4987,15 +5284,47 @@ async def generate_document(request: Request):
                         template_id = template_res.data[0]['id']
 
                 if template_id:
-                    download_record = {
-                        'user_id': user_id,
-                        'template_id': template_id,
-                        'vessel_imo': vessel_imo,
-                        'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
-                        'file_size': len(file_content)
-                    }
-                    supabase.table('user_document_downloads').insert(download_record).execute()
-                    logger.info(f"Recorded download for user {user_id}, template {template_id}")
+                    # Check per-template download limit before recording
+                    try:
+                        permission_result = supabase.rpc('can_user_download_template', {
+                            'p_user_id': user_id,
+                            'p_template_id': template_id
+                        }).execute()
+                        
+                        if permission_result.data:
+                            perm_data = permission_result.data
+                            can_download = perm_data.get('can_download', False)
+                            limit_reached = perm_data.get('limit_reached', False)
+                            
+                            if not can_download:
+                                logger.warning(f"User {user_id} does not have permission to download template {template_id}")
+                                # Don't block the download, but log it
+                            elif limit_reached:
+                                logger.warning(f"User {user_id} has reached per-template download limit for template {template_id}")
+                                # Don't block the download, but log it
+                            else:
+                                # Record the download
+                                download_record = {
+                                    'user_id': user_id,
+                                    'template_id': template_id,
+                                    'vessel_imo': vessel_imo,
+                                    'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
+                                    'file_size': len(file_content)
+                                }
+                                supabase.table('user_document_downloads').insert(download_record).execute()
+                                logger.info(f"Recorded download for user {user_id}, template {template_id}")
+                    except Exception as perm_check_error:
+                        logger.warning(f"Could not check download permission, recording anyway: {perm_check_error}")
+                        # Fallback: record download anyway if permission check fails
+                        download_record = {
+                            'user_id': user_id,
+                            'template_id': template_id,
+                            'vessel_imo': vessel_imo,
+                            'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
+                            'file_size': len(file_content)
+                        }
+                        supabase.table('user_document_downloads').insert(download_record).execute()
+                        logger.info(f"Recorded download for user {user_id}, template {template_id} (permission check failed)")
             except Exception as e:
                 logger.warning(f"Failed to record download: {e}")
 

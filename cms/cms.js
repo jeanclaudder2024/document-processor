@@ -1077,20 +1077,11 @@ class DocumentCMS {
                 console.log('[loadPlans] 📋 All plan IDs:', Object.keys(data.plans));
                 console.log('[loadPlans] 📋 Plan tiers:', Object.values(data.plans).map(p => p.plan_tier || p.id || 'unknown'));
                 
-                // IMPORTANT: Store plans before displaying - replace completely to ensure all plans are included
-                // NOTE: Filter out 'broker' as it's a membership, not a subscription plan
-                const filteredPlans = {};
-                for (const [planId, plan] of Object.entries(data.plans)) {
-                    const tier = (plan.plan_tier || planId || '').toLowerCase();
-                    if (tier !== 'broker') {
-                        filteredPlans[planId] = plan;
-                    } else {
-                        console.log('[loadPlans] ⚠️ Filtered out broker plan (broker is a membership, not a subscription plan)');
-                    }
-                }
-                this.allPlans = filteredPlans;
-                console.log('[loadPlans] 💾 Stored', Object.keys(this.allPlans).length, 'plans in allPlans (broker excluded):', Object.keys(this.allPlans));
-                this.displayPlans(filteredPlans);
+                // IMPORTANT: Store plans before displaying - include broker membership
+                // Store all plans including broker membership
+                this.allPlans = data.plans || {};
+                console.log('[loadPlans] 💾 Stored', Object.keys(this.allPlans).length, 'plans/memberships in allPlans:', Object.keys(this.allPlans));
+                this.displayPlans(data.plans || {});
                 // Update plan checkboxes in upload form
                 this.populatePlanCheckboxes();
                 // Also update plan checkboxes in metadata modal if open
@@ -1135,30 +1126,36 @@ class DocumentCMS {
             return;
         }
         
-        // Sort plans by plan_tier for consistent display order
-        // NOTE: Broker is a MEMBERSHIP, not a plan - filter it out
-        const sortedPlans = planEntries
-            .filter(([planId, plan]) => {
-                const tier = (plan.plan_tier || planId || '').toLowerCase();
-                // Exclude broker from plans (it's a membership, not a subscription plan)
-                return tier !== 'broker';
-            })
-            .sort(([aId, aPlan], [bId, bPlan]) => {
-                const aTier = aPlan.plan_tier || aId || '';
-                const bTier = bPlan.plan_tier || bId || '';
-                // Order: basic, professional, enterprise (broker is membership, not a plan)
-                const order = ['basic', 'professional', 'enterprise'];
-                const aIndex = order.indexOf(aTier.toLowerCase());
-                const bIndex = order.indexOf(bTier.toLowerCase());
-                if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
-                if (aIndex !== -1) return -1;
-                if (bIndex !== -1) return 1;
-                return aTier.localeCompare(bTier);
-            });
+        // Separate plans and broker membership
+        const subscriptionPlans = [];
+        let brokerMembership = null;
         
-        console.log('[displayPlans] 📋 Rendering', sortedPlans.length, 'plans in order:', sortedPlans.map(([id]) => id));
+        for (const [planId, plan] of planEntries) {
+            const tier = (plan.plan_tier || planId || '').toLowerCase();
+            if (tier === 'broker' || plan.is_membership) {
+                brokerMembership = [planId, plan];
+            } else {
+                subscriptionPlans.push([planId, plan]);
+            }
+        }
         
-        container.innerHTML = sortedPlans.map(([planId, plan]) => {
+        // Sort subscription plans
+        subscriptionPlans.sort(([aId, aPlan], [bId, bPlan]) => {
+            const aTier = aPlan.plan_tier || aId || '';
+            const bTier = bPlan.plan_tier || bId || '';
+            const order = ['basic', 'professional', 'enterprise'];
+            const aIndex = order.indexOf(aTier.toLowerCase());
+            const bIndex = order.indexOf(bTier.toLowerCase());
+            if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
+            if (aIndex !== -1) return -1;
+            if (bIndex !== -1) return 1;
+            return aTier.localeCompare(bTier);
+        });
+        
+        console.log('[displayPlans] 📋 Rendering', subscriptionPlans.length, 'plans and', brokerMembership ? '1 broker membership' : '0 broker memberships');
+        
+        // Render subscription plans first
+        let html = subscriptionPlans.map(([planId, plan]) => {
             const canDownload = plan.can_download || [];
             const canDownloadList = Array.isArray(canDownload) ? canDownload : [canDownload];
             const isAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
@@ -1200,6 +1197,51 @@ class DocumentCMS {
             </div>
         `;
         }).join('');
+        
+        // Add broker membership display if it exists
+        if (brokerMembership) {
+            const [brokerId, broker] = brokerMembership;
+            const canDownload = broker.can_download || [];
+            const canDownloadList = Array.isArray(canDownload) ? canDownload : [canDownload];
+            const isAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
+            const features = Array.isArray(broker.features) ? broker.features : [];
+            
+            html += `
+            <div class="card mb-3 border-warning">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="mb-0">
+                            <i class="fas fa-crown me-2 text-warning"></i>${broker.name || 'Broker Membership'} 
+                            <small class="text-muted">(Membership)</small>
+                        </h5>
+                        <button class="btn btn-sm btn-outline-warning" onclick="cms.editBrokerMembership('${brokerId}')">
+                            <i class="fas fa-edit me-1"></i>Edit
+                        </button>
+                    </div>
+                    <div class="mb-2">
+                        <strong>Download Allowed:</strong>
+                        ${isAllTemplates ? 
+                            '<span class="badge bg-success ms-2">All templates (*)</span>' : 
+                            `<span class="badge bg-info ms-2">${canDownloadList.length} template${canDownloadList.length === 1 ? '' : 's'}</span>`
+                        }
+                        ${!isAllTemplates && canDownloadList.length > 0 ? 
+                            `<ul class="mb-0 mt-2"><li><small>${canDownloadList.map(t => this.formatTemplateLabel(t)).join('</small></li><li><small>')}</small></li></ul>` : ''
+                        }
+                    </div>
+                    <div class="mb-2">
+                        <strong>Download Limits:</strong> <span class="badge bg-warning ms-2">Per-template limits</span>
+                    </div>
+                    ${features.length > 0 ? `
+                    <div>
+                        <strong>Features:</strong> <small class="text-muted">${features.slice(0, 3).join(', ')}${features.length > 3 ? '...' : ''}</small>
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+            `;
+        }
+        
+        container.innerHTML = html;
         
         // Store plans for editing (already stored in loadPlans, but ensure it's set)
         if (!this.allPlans || Object.keys(this.allPlans).length === 0) {
@@ -1505,6 +1547,7 @@ class DocumentCMS {
                                 ${templates.length > 0 ? templates.map(t => {
                                     // Normalize template name - ensure consistent format
                                     let templateName = '';
+                                    let templateId = '';
                                     if (typeof t === 'string') {
                                         templateName = t.endsWith('.docx') ? t : `${t}.docx`;
                                     } else {
@@ -1512,6 +1555,8 @@ class DocumentCMS {
                                         if (templateName && !templateName.endsWith('.docx')) {
                                             templateName = `${templateName}.docx`;
                                         }
+                                        // Get template ID if available
+                                        templateId = t.id || t.template_id || '';
                                     }
                                     // CRITICAL: Get fresh can_download list from plan object
                                     // Normalize can_download: handle both array and single value
@@ -1568,19 +1613,35 @@ class DocumentCMS {
                                         }
                                     }
                                     const displayName = typeof t === 'string' ? t : (t.metadata?.display_name || t.title || t.name || templateName).replace('.docx', '');
+                                    // Get existing per-template limit
+                                    const templateLimits = plan.template_limits || {};
+                                    const existingLimit = templateId ? (templateLimits[templateId] || templateLimits[String(templateId)] || '') : '';
+                                    
                                     return `
-                                        <div class="form-check mb-2">
-                                            <input type="checkbox" class="form-check-input template-checkbox" value="${templateName}" 
-                                                ${isChecked ? 'checked' : ''}>
-                                            <label class="form-check-label">${displayName}</label>
+                                        <div class="d-flex align-items-center mb-2 border-bottom pb-2">
+                                            <div class="form-check flex-grow-1">
+                                                <input type="checkbox" class="form-check-input template-checkbox" value="${templateName}" 
+                                                    data-template-id="${templateId}"
+                                                    ${isChecked ? 'checked' : ''}>
+                                                <label class="form-check-label">${displayName}</label>
+                                            </div>
+                                            <div class="ms-3" style="width: 150px;">
+                                                <input type="number" class="form-control form-control-sm template-limit-input" 
+                                                    data-template-id="${templateId}"
+                                                    placeholder="Limit" 
+                                                    value="${existingLimit}"
+                                                    min="1"
+                                                    ${!isChecked ? 'disabled' : ''}>
+                                                <small class="text-muted d-block" style="font-size: 0.75rem;">Per-template limit</small>
+                                            </div>
                                         </div>
                                     `;
                                 }).join('') : '<p class="text-muted">No templates available. Please upload templates first.</p>'}
                             </div>
                             <div class="mb-3">
-                                <label class="form-label"><strong>Max Downloads Per Month:</strong></label>
+                                <label class="form-label"><strong>Plan-Level Max Downloads Per Month (Fallback):</strong></label>
                                 <input type="number" class="form-control" id="maxDownloads" value="${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : 10}" placeholder="Enter number (use -1 for unlimited)">
-                                <small class="text-muted">Enter -1 for unlimited downloads, or a positive number for the monthly limit. Current value: ${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : 10}</small>
+                                <small class="text-muted">This is used as fallback if per-template limit is not set. Enter -1 for unlimited downloads, or a positive number for the monthly limit. Current value: ${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : 10}</small>
                             </div>
                             <div class="mb-3">
                                 <label class="form-label"><strong>Features (comma-separated):</strong></label>
@@ -1608,6 +1669,24 @@ class DocumentCMS {
         // Show modal
         const modal = new bootstrap.Modal(document.getElementById('editPlanModal'));
         modal.show();
+        
+        // Add event listeners for template checkboxes to enable/disable limit inputs
+        const modalElement = document.getElementById('editPlanModal');
+        if (modalElement) {
+            const checkboxes = modalElement.querySelectorAll('.template-checkbox');
+            checkboxes.forEach(checkbox => {
+                checkbox.addEventListener('change', function() {
+                    const templateId = this.getAttribute('data-template-id');
+                    const limitInput = modalElement.querySelector(`.template-limit-input[data-template-id="${templateId}"]`);
+                    if (limitInput) {
+                        limitInput.disabled = !this.checked;
+                        if (!this.checked) {
+                            limitInput.value = '';
+                        }
+                    }
+                });
+            });
+        }
         
         // Clean up modal when hidden
         document.getElementById('editPlanModal').addEventListener('hidden.bs.modal', function() {
@@ -1700,6 +1779,26 @@ class DocumentCMS {
             const featuresValue = featuresInput ? featuresInput.value : '';
             const features = featuresValue ? featuresValue.split(',').map(f => f.trim()).filter(f => f) : [];
             
+            // Collect per-template download limits
+            const templateLimits = {};
+            const modalElement = document.getElementById('editPlanModal');
+            if (modalElement) {
+                const checkedBoxes = modalElement.querySelectorAll('.template-checkbox:checked');
+                checkedBoxes.forEach(checkbox => {
+                    const templateId = checkbox.getAttribute('data-template-id');
+                    if (templateId) {
+                        const limitInput = modalElement.querySelector(`.template-limit-input[data-template-id="${templateId}"]`);
+                        if (limitInput && limitInput.value.trim() !== '') {
+                            const limitValue = parseInt(limitInput.value.trim(), 10);
+                            if (!isNaN(limitValue) && limitValue > 0) {
+                                templateLimits[templateId] = limitValue;
+                            }
+                        }
+                    }
+                });
+            }
+            console.log('[savePlan] 📋 Collected template limits:', templateLimits);
+            
             if (!this.allPlans || !this.allPlans[planId]) {
                 this.showToast('error', 'Error', 'Plan not found');
                 return;
@@ -1707,6 +1806,7 @@ class DocumentCMS {
             
             // Prepare plan data to send - only send changed fields
             const planDataToSave = {
+                template_limits: templateLimits,
                 can_download: canDownload,
                 max_downloads_per_month: maxDownloads,
                 features: features
@@ -1783,6 +1883,276 @@ class DocumentCMS {
             }
         } catch (error) {
             console.error('Error saving plan:', error);
+            this.showToast('error', 'Save Failed', error.message);
+        }
+    }
+
+    async editBrokerMembership(brokerId) {
+        if (!this.ensureAuthenticated()) return;
+        
+        console.log('[editBrokerMembership] 📝 Opening editor for broker membership:', brokerId);
+        
+        // Reload plans and templates
+        try {
+            await this.loadPlans(true);
+            await new Promise(resolve => setTimeout(resolve, 100));
+            await this.loadTemplates();
+        } catch (error) {
+            console.error('[editBrokerMembership] ❌ Failed to reload data:', error);
+            this.showToast('error', 'Error', 'Failed to reload data. Please refresh the page.');
+            return;
+        }
+        
+        // Get broker membership data
+        const broker = this.allPlans && this.allPlans[brokerId] ? this.allPlans[brokerId] : null;
+        if (!broker) {
+            console.error('[editBrokerMembership] ❌ Broker membership not found:', brokerId);
+            this.showToast('error', 'Error', `Broker membership "${brokerId}" not found`);
+            return;
+        }
+        
+        // Use full template objects (with IDs) instead of just names
+        let templates = [];
+        if (this.templates && this.templates.length > 0 && typeof this.templates[0] === 'object' && this.templates[0].id) {
+            templates = this.templates;
+        } else {
+            templates = this.allTemplates || [];
+        }
+        
+        const canDownload = broker.can_download || [];
+        const canDownloadList = Array.isArray(canDownload) ? canDownload : [canDownload];
+        const hasAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
+        const templateLimits = broker.template_limits || {};
+        
+        // Create modal HTML (similar to editPlan but for broker)
+        const modalHtml = `
+            <div class="modal fade" id="editBrokerModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header bg-warning">
+                            <h5 class="modal-title"><i class="fas fa-crown me-2"></i>Edit Broker Membership</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label"><strong>Allowed Templates:</strong></label>
+                                <div class="mb-2">
+                                    <label class="form-check">
+                                        <input type="radio" name="brokerAccessType" value="all" class="form-check-input" ${hasAllTemplates ? 'checked' : ''} onchange="cms.toggleBrokerTemplateSelection()">
+                                        <span>All templates (unlimited)</span>
+                                    </label>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-check">
+                                        <input type="radio" name="brokerAccessType" value="specific" class="form-check-input" ${!hasAllTemplates ? 'checked' : ''} onchange="cms.toggleBrokerTemplateSelection()">
+                                        <span>Specific templates</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div id="brokerTemplateSelection" class="mb-3 border rounded p-3" style="max-height: 300px; overflow-y: auto; ${hasAllTemplates ? 'display:none;' : 'display:block;'}">
+                                <p class="mb-2"><strong>Select templates:</strong></p>
+                                ${templates.length > 0 ? templates.map(t => {
+                                    let templateName = '';
+                                    if (typeof t === 'string') {
+                                        templateName = t.endsWith('.docx') ? t : `${t}.docx`;
+                                    } else {
+                                        templateName = t.name || t.file_with_extension || t.file_name || '';
+                                        if (templateName && !templateName.endsWith('.docx')) {
+                                            templateName = `${templateName}.docx`;
+                                        }
+                                    }
+                                    // Get template ID if available
+                                    let templateId = '';
+                                    if (typeof t === 'object') {
+                                        templateId = t.id || t.template_id || '';
+                                    }
+                                    
+                                    const normalizedTemplateName = templateName.toLowerCase().endsWith('.docx') ? templateName.toLowerCase() : `${templateName.toLowerCase()}.docx`;
+                                    const templateNameWithoutExt = normalizedTemplateName.replace('.docx', '');
+                                    const isChecked = canDownloadList.some(allowed => {
+                                        if (!allowed || allowed === '*') return false;
+                                        const normalizedAllowed = allowed.toLowerCase().endsWith('.docx') ? allowed.toLowerCase() : `${allowed.toLowerCase()}.docx`;
+                                        const allowedWithoutExt = normalizedAllowed.replace('.docx', '');
+                                        return normalizedAllowed === normalizedTemplateName || 
+                                               allowedWithoutExt === templateNameWithoutExt ||
+                                               allowed.toLowerCase() === templateNameWithoutExt;
+                                    });
+                                    const displayName = typeof t === 'string' ? t : (t.metadata?.display_name || t.title || t.name || templateName).replace('.docx', '');
+                                    const existingLimit = templateId ? (templateLimits[templateId] || templateLimits[String(templateId)] || '') : '';
+                                    
+                                    return `
+                                        <div class="d-flex align-items-center mb-2 border-bottom pb-2">
+                                            <div class="form-check flex-grow-1">
+                                                <input type="checkbox" class="form-check-input broker-template-checkbox" value="${templateName}" 
+                                                    data-template-id="${templateId}"
+                                                    ${isChecked ? 'checked' : ''}>
+                                                <label class="form-check-label">${displayName}</label>
+                                            </div>
+                                            <div class="ms-3" style="width: 150px;">
+                                                <input type="number" class="form-control form-control-sm broker-template-limit-input" 
+                                                    data-template-id="${templateId}"
+                                                    placeholder="Limit" 
+                                                    value="${existingLimit}"
+                                                    min="1"
+                                                    ${!isChecked ? 'disabled' : ''}>
+                                                <small class="text-muted d-block" style="font-size: 0.75rem;">Per-template limit</small>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('') : '<p class="text-muted">No templates available. Please upload templates first.</p>'}
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-warning" onclick="cms.saveBrokerMembership('${brokerId}')">
+                                <i class="fas fa-save me-1"></i>Save Changes
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Remove existing modal if any
+        const existingModal = document.getElementById('editBrokerModal');
+        if (existingModal) existingModal.remove();
+        
+        // Add modal to body
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('editBrokerModal'));
+        modal.show();
+        
+        // Add event listeners for template checkboxes
+        const modalElement = document.getElementById('editBrokerModal');
+        if (modalElement) {
+            const checkboxes = modalElement.querySelectorAll('.broker-template-checkbox');
+            checkboxes.forEach(checkbox => {
+                checkbox.addEventListener('change', function() {
+                    const templateId = this.getAttribute('data-template-id');
+                    const limitInput = modalElement.querySelector(`.broker-template-limit-input[data-template-id="${templateId}"]`);
+                    if (limitInput) {
+                        limitInput.disabled = !this.checked;
+                        if (!this.checked) {
+                            limitInput.value = '';
+                        }
+                    }
+                });
+            });
+        }
+        
+        // Clean up modal when hidden
+        document.getElementById('editBrokerModal').addEventListener('hidden.bs.modal', function() {
+            this.remove();
+        });
+    }
+    
+    toggleBrokerTemplateSelection() {
+        const modalElement = document.getElementById('editBrokerModal');
+        const specificRadio = modalElement ? 
+            modalElement.querySelector('input[name="brokerAccessType"][value="specific"]') :
+            document.querySelector('input[name="brokerAccessType"][value="specific"]');
+        const templateSelection = document.getElementById('brokerTemplateSelection');
+        
+        if (templateSelection && specificRadio) {
+            templateSelection.style.display = specificRadio.checked ? 'block' : 'none';
+        }
+    }
+    
+    async saveBrokerMembership(brokerId) {
+        if (!this.ensureAuthenticated()) return;
+        try {
+            const accessTypeRadio = document.querySelector('input[name="brokerAccessType"]:checked');
+            if (!accessTypeRadio) {
+                this.showToast('error', 'Error', 'Please select access type');
+                return;
+            }
+            
+            const accessType = accessTypeRadio.value;
+            let canDownload = [];
+            
+            if (accessType === 'all') {
+                canDownload = ['*'];
+            } else {
+                const modalElement = document.getElementById('editBrokerModal');
+                const checkboxes = modalElement ? 
+                    modalElement.querySelectorAll('.broker-template-checkbox:checked') : 
+                    document.querySelectorAll('.broker-template-checkbox:checked');
+                
+                canDownload = Array.from(checkboxes).map(cb => cb.value).filter(v => v);
+                
+                if (canDownload.length === 0) {
+                    this.showToast('error', 'Error', 'Please select at least one template');
+                    return;
+                }
+            }
+            
+            // Collect per-template download limits
+            const templateLimits = {};
+            const modalElement = document.getElementById('editBrokerModal');
+            if (modalElement) {
+                const checkedBoxes = modalElement.querySelectorAll('.broker-template-checkbox:checked');
+                checkedBoxes.forEach(checkbox => {
+                    const templateId = checkbox.getAttribute('data-template-id');
+                    if (templateId) {
+                        const limitInput = modalElement.querySelector(`.broker-template-limit-input[data-template-id="${templateId}"]`);
+                        if (limitInput && limitInput.value.trim() !== '') {
+                            const limitValue = parseInt(limitInput.value.trim(), 10);
+                            if (!isNaN(limitValue) && limitValue > 0) {
+                                templateLimits[templateId] = limitValue;
+                            }
+                        }
+                    }
+                });
+            }
+            
+            const membershipDataToSave = {
+                can_download: canDownload,
+                template_limits: templateLimits
+            };
+            
+            console.log('[saveBrokerMembership] 💾 Saving broker membership:', brokerId, membershipDataToSave);
+            
+            const data = await this.apiJson('/update-broker-membership', {
+                method: 'POST',
+                body: JSON.stringify({
+                    membership_data: membershipDataToSave
+                })
+            });
+            
+            if (data && data.success) {
+                this.showToast('success', 'Success', 'Broker membership updated successfully!');
+                
+                // Update local copy
+                if (data.membership_data) {
+                    if (!this.allPlans) {
+                        this.allPlans = {};
+                    }
+                    this.allPlans[brokerId] = data.membership_data;
+                }
+                
+                // Close modal
+                const modalElement = document.getElementById('editBrokerModal');
+                if (modalElement) {
+                    const modal = bootstrap.Modal.getInstance(modalElement);
+                    if (modal) {
+                        modal.hide();
+                    }
+                    setTimeout(() => {
+                        if (modalElement.parentNode) {
+                            modalElement.remove();
+                        }
+                    }, 300);
+                }
+                
+                // Reload plans
+                await this.loadPlans(true);
+            } else {
+                this.showToast('error', 'Error', 'Failed to update broker membership');
+            }
+        } catch (error) {
+            console.error('Error saving broker membership:', error);
             this.showToast('error', 'Save Failed', error.message);
         }
     }
