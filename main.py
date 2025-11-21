@@ -1630,21 +1630,26 @@ async def get_plans_db():
                         total_templates_count = len(all_template_ids)
                         plan_permissions_count = len(plan_template_ids)
                         
-                        logger.debug(f"Plan {plan_tier} (ID: {plan['id']}): {plan_permissions_count} permissions out of {total_templates_count} total templates")
-                        logger.debug(f"Plan {plan_tier} allowed templates: {allowed_templates[:3]}... ({len(allowed_templates)} total)")
+                        logger.info(f"[plans-db] Plan {plan_tier} (ID: {plan['id']}): {plan_permissions_count} permissions out of {total_templates_count} total templates")
+                        logger.info(f"[plans-db] Plan {plan_tier} template IDs: {list(plan_template_ids)[:3]}...")
+                        logger.info(f"[plans-db] All template IDs: {list(all_template_ids)[:3]}...")
+                        logger.info(f"[plans-db] Plan {plan_tier} allowed templates: {allowed_templates[:3]}... ({len(allowed_templates)} total)")
                         
                         # If plan has permissions for ALL templates (exact match), treat as "*"
-                        # This means plan_template_ids must equal all_template_ids
-                        if total_templates_count > 0 and plan_permissions_count >= total_templates_count:
-                            # Double check: does plan have permissions for every single template?
+                        # CRITICAL: Must be EXACT match - plan_template_ids must equal all_template_ids
+                        if total_templates_count > 0 and plan_permissions_count > 0:
+                            # Check if plan has permissions for every single template (exact set match)
                             if plan_template_ids == all_template_ids:
-                                logger.info(f"Plan {plan_tier} has permissions for ALL {total_templates_count} templates - treating as '*'")
+                                logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for ALL {total_templates_count} templates - treating as '*'")
                                 allowed_templates = ['*']
                             else:
-                                # Plan has many permissions but not all - show specific templates
-                                logger.info(f"Plan {plan_tier} has permissions for {plan_permissions_count} templates (not all {total_templates_count}) - showing specific templates")
+                                # Plan has some permissions but not all - show specific templates
+                                logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for {plan_permissions_count} templates (not all {total_templates_count}) - showing specific templates")
+                                # allowed_templates already contains the specific template names
                         elif plan_permissions_count > 0:
-                            logger.info(f"Plan {plan_tier} has permissions for {plan_permissions_count} specific templates: {allowed_templates[:3]}...")
+                            logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for {plan_permissions_count} specific templates: {allowed_templates[:3]}...")
+                        else:
+                            logger.info(f"[plans-db] ⚠️ Plan {plan_tier} has NO template permissions")
                 except Exception as e:
                     logger.warning(
                         f"Could not fetch permissions for plan {plan_tier}: {e}")
