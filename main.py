@@ -1637,25 +1637,34 @@ async def get_plans_db():
                         
                         # If plan has permissions for ALL templates (exact match), treat as "*"
                         # CRITICAL: Must be EXACT match - plan_template_ids must equal all_template_ids
+                        # AND there must be at least 1 template in the database
                         if total_templates_count > 0 and plan_permissions_count > 0:
                             # Check if plan has permissions for every single template (exact set match)
-                            if plan_template_ids == all_template_ids:
-                                logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for ALL {total_templates_count} templates - treating as '*'")
+                            # Use set comparison to ensure exact match
+                            if plan_template_ids == all_template_ids and len(plan_template_ids) == len(all_template_ids) and len(all_template_ids) > 0:
+                                logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for ALL {total_templates_count} templates (exact match) - treating as '*'")
                                 allowed_templates = ['*']
                             else:
                                 # Plan has some permissions but not all - show specific templates
                                 logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for {plan_permissions_count} templates (not all {total_templates_count}) - showing specific templates")
+                                logger.info(f"[plans-db] Plan template IDs set: {sorted(list(plan_template_ids))[:3]}...")
+                                logger.info(f"[plans-db] All template IDs set: {sorted(list(all_template_ids))[:3]}...")
+                                logger.info(f"[plans-db] Sets equal? {plan_template_ids == all_template_ids}")
                                 # allowed_templates already contains the specific template names
+                                # Make sure we don't accidentally return '*' if we have specific templates
+                                if allowed_templates and allowed_templates != ['*']:
+                                    logger.info(f"[plans-db] Returning specific templates: {allowed_templates[:3]}...")
                         elif plan_permissions_count > 0:
                             logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for {plan_permissions_count} specific templates: {allowed_templates[:3]}...")
                         else:
-                            logger.info(f"[plans-db] ⚠️ Plan {plan_tier} has NO template permissions")
+                            logger.info(f"[plans-db] ⚠️ Plan {plan_tier} has NO template permissions - returning empty array")
                 except Exception as e:
                     logger.warning(
                         f"Could not fetch permissions for plan {plan_tier}: {e}")
-                    # Default to all templates if permissions table doesn't
-                    # exist
-                    allowed_templates = ['*']
+                    # CRITICAL: Don't default to '*' - return empty array
+                    # This allows CMS to show "No templates selected" instead of "All templates"
+                    allowed_templates = []
+                    logger.info(f"[plans-db] Plan {plan_tier} - exception occurred, returning empty array (not '*')")
 
                 # CRITICAL: If no permissions set, return empty array (not '*')
                 # This allows the CMS to show "No templates selected" instead of "All templates"
