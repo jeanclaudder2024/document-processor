@@ -3189,55 +3189,14 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                 logger.error(traceback.format_exc())
         
         # Only update JSON file if database update failed
+        # CRITICAL: Don't use plans.json fallback - only use database
+        # If database update failed, raise error instead of falling back to JSON
         if not database_update_success:
-            plans = read_json_file(PLANS_PATH, {})
-            if plan_id not in plans:
-                raise HTTPException(status_code=404, detail=f"Plan '{plan_id}' not found")
+            logger.error(f"[update-plan] Database update failed for plan {plan_id}")
+            raise HTTPException(status_code=500, detail=f"Failed to update plan '{plan_id}' in database. Please check database connection.")
         
-        # Get existing plan data
-        existing_plan = plans.get(plan_id, {})
-        
-        # Merge with existing plan data to preserve other fields
-        # Only update fields that are provided in plan_data
-        updated_plan = existing_plan.copy()
-        
-        # Update specific fields if provided
-        if 'can_download' in plan_data:
-            can_download = plan_data['can_download']
-            # Normalize: ensure it's a list and remove .docx extensions for consistency
-            if isinstance(can_download, str):
-                updated_plan['can_download'] = [ensure_docx_filename(can_download) if can_download != '*' else '*']
-            elif isinstance(can_download, list):
-                normalized = []
-                for t in can_download:
-                    if not t:
-                        continue
-                    if t == '*':
-                        normalized.append('*')
-                    elif isinstance(t, str):
-                        normalized.append(ensure_docx_filename(t))
-                    else:
-                        normalized.append(t)
-                updated_plan['can_download'] = normalized
-        
-        if 'max_downloads_per_month' in plan_data:
-            updated_plan['max_downloads_per_month'] = plan_data['max_downloads_per_month']
-        
-        if 'features' in plan_data:
-            updated_plan['features'] = plan_data['features'] if isinstance(plan_data['features'], list) else []
-        
-        # Preserve other fields from plan_data if they exist
-        for key in ['name', 'description', 'monthly_price', 'annual_price', 'plan_tier', 'is_active']:
-            if key in plan_data:
-                updated_plan[key] = plan_data[key]
-        
-        plans[plan_id] = updated_plan
-        write_json_atomic(PLANS_PATH, plans)
-        
-        logger.info(f"Updated plan: {plan_id}")
-        logger.info(f"  - can_download: {updated_plan.get('can_download')}")
-        logger.info(f"  - max_downloads_per_month: {updated_plan.get('max_downloads_per_month')}")
-        logger.info(f"  - features: {updated_plan.get('features')}")
+        # All updates are done in database above - no need for JSON fallback
+        logger.info(f"[update-plan] ✅ Plan {plan_id} updated successfully in database (no JSON fallback used)")
         
         return {"success": True, "plan_id": plan_id, "plan_data": updated_plan}
     except HTTPException:
