@@ -1179,7 +1179,8 @@ class DocumentCMS {
             // Use plan_tier as the identifier for editing (backend expects this)
             const editPlanId = plan.plan_tier || plan.id || planId;
             
-            console.log('[displayPlans] 📋 Rendering plan:', planId, 'tier:', planTier, 'name:', planName, 'editId:', editPlanId, 'can_download:', canDownloadList.length);
+            console.log('[displayPlans] 📋 Rendering plan:', planId, 'tier:', planTier, 'name:', planName, 'editId:', editPlanId);
+            console.log('[displayPlans] 📋 can_download:', canDownloadList, 'isAllTemplates:', isAllTemplates);
             
             return `
             <div class="card mb-3">
@@ -1768,11 +1769,13 @@ class DocumentCMS {
                 console.log('[savePlan] 📋 Found', checkboxes.length, 'checked template checkboxes');
                 canDownload = Array.from(checkboxes).map(cb => {
                     const value = cb.value;
-                    console.log('[savePlan] 📋 Template checkbox value:', value);
-                    return value;
+                    // Ensure .docx extension for consistency
+                    const normalizedValue = value.endsWith('.docx') ? value : `${value}.docx`;
+                    console.log('[savePlan] 📋 Template checkbox value:', value, '→ normalized:', normalizedValue);
+                    return normalizedValue;
                 }).filter(v => v);
                 
-                console.log('[savePlan] 📋 Selected templates:', canDownload);
+                console.log('[savePlan] 📋 Selected templates (normalized):', canDownload);
                 
                 if (canDownload.length === 0) {
                     console.error('[savePlan] ❌ No templates selected');
@@ -1904,11 +1907,30 @@ class DocumentCMS {
                 
                 // CRITICAL: Force reload plans from database to get latest data
                 console.log('[savePlan] 🔄 Reloading plans after save...');
+                console.log('[savePlan] 📋 Response plan_data:', JSON.stringify(data.plan_data, null, 2));
                 
-                // Wait a moment for database to be ready
-                await new Promise(resolve => setTimeout(resolve, 500));
+                // Update local copy immediately with response data
+                if (data.plan_data) {
+                    const responsePlanId = data.plan_data.plan_tier || data.plan_data.id || planId;
+                    if (!this.allPlans) {
+                        this.allPlans = {};
+                    }
+                    // Update by multiple keys for compatibility
+                    this.allPlans[responsePlanId] = data.plan_data;
+                    this.allPlans[planId] = data.plan_data;
+                    if (data.plan_data.plan_tier) {
+                        this.allPlans[data.plan_data.plan_tier] = data.plan_data;
+                    }
+                    console.log('[savePlan] ✅ Updated local plan copy immediately:', responsePlanId, 'can_download:', data.plan_data.can_download);
+                    
+                    // Force immediate display update with saved data
+                    this.displayPlans(this.allPlans);
+                }
                 
-                // Force reload with cache busting
+                // Wait a moment for database to be ready, then reload from database
+                await new Promise(resolve => setTimeout(resolve, 800));
+                
+                // Force reload with cache busting to get latest from database
                 await this.loadPlans(true);
                 
                 // Wait for display to update
@@ -1922,7 +1944,8 @@ class DocumentCMS {
                         setTimeout(() => {
                             container.style.opacity = '1';
                             // Scroll to the plan that was just edited
-                            const planCard = container.querySelector(`[onclick*="editPlan('${planId}')"]`)?.closest('.card');
+                            const planCard = container.querySelector(`[onclick*="editPlan('${planId}')"]`)?.closest('.card') ||
+                                           container.querySelector(`[onclick*="editPlan('${data.plan_data?.plan_tier || planId}')"]`)?.closest('.card');
                             if (planCard) {
                                 planCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
                                 // Highlight the card briefly
