@@ -1760,22 +1760,42 @@ class DocumentCMS {
                 canDownload = ['*'];
                 console.log('[savePlan] ✅ Setting can_download to ["*"] (all templates)');
             } else {
-                // CRITICAL: Must query from within the modal to get correct checkboxes
+                // CRITICAL: Use template IDs instead of names for reliable matching
                 const modalElement = document.getElementById('editPlanModal');
                 const checkboxes = modalElement ? 
                     modalElement.querySelectorAll('.template-checkbox:checked') : 
                     document.querySelectorAll('.template-checkbox:checked');
                 
                 console.log('[savePlan] 📋 Found', checkboxes.length, 'checked template checkboxes');
-                canDownload = Array.from(checkboxes).map(cb => {
-                    const value = cb.value;
-                    // Ensure .docx extension for consistency
-                    const normalizedValue = value.endsWith('.docx') ? value : `${value}.docx`;
-                    console.log('[savePlan] 📋 Template checkbox value:', value, '→ normalized:', normalizedValue);
-                    return normalizedValue;
-                }).filter(v => v);
                 
-                console.log('[savePlan] 📋 Selected templates (normalized):', canDownload);
+                // Collect template IDs and names
+                const templateIds = [];
+                const templateNames = [];
+                
+                Array.from(checkboxes).forEach(cb => {
+                    const templateId = cb.getAttribute('data-template-id');
+                    const templateName = cb.value;
+                    
+                    if (templateId) {
+                        // Use ID if available (more reliable)
+                        templateIds.push(templateId);
+                        console.log('[savePlan] 📋 Template ID:', templateId, 'name:', templateName);
+                    } else {
+                        // Fallback to name if no ID
+                        const normalizedValue = templateName.endsWith('.docx') ? templateName : `${templateName}.docx`;
+                        templateNames.push(normalizedValue);
+                        console.log('[savePlan] 📋 Template name (no ID):', normalizedValue);
+                    }
+                });
+                
+                // Send both IDs and names for maximum compatibility
+                // Backend will prioritize IDs if provided
+                canDownload = {
+                    template_ids: templateIds,
+                    template_names: templateNames
+                };
+                
+                console.log('[savePlan] 📋 Selected templates - IDs:', templateIds, 'Names:', templateNames);
                 
                 if (canDownload.length === 0) {
                     console.error('[savePlan] ❌ No templates selected');

@@ -2885,6 +2885,19 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                     # Get per-template limits if provided
                     template_limits = plan_data.get('template_limits', {})  # {template_id: max_downloads, ...}
                     
+                    # CRITICAL: Handle new format with template_ids and template_names
+                    template_ids_from_request = None
+                    if isinstance(allowed, dict):
+                        # New format: {template_ids: [...], template_names: [...]}
+                        template_ids_from_request = allowed.get('template_ids', [])
+                        template_names_from_request = allowed.get('template_names', [])
+                        if template_ids_from_request:
+                            logger.info(f"[update-plan] Using template IDs format: {len(template_ids_from_request)} IDs")
+                            allowed = template_ids_from_request  # Use IDs for matching
+                        elif template_names_from_request:
+                            logger.info(f"[update-plan] Using template names format: {len(template_names_from_request)} names")
+                            allowed = template_names_from_request  # Fallback to names
+                    
                     if allowed:
                         # Get all templates
                         templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
@@ -2916,7 +2929,53 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     
                                     supabase.table('plan_template_permissions').insert(permission_data).execute()
                                 logger.info(f"Set all templates permission for plan {plan_id}")
-                            elif isinstance(allowed, list):
+                            elif isinstance(allowed, list) and len(allowed) > 0:
+                                # Check if this is a list of template IDs (UUIDs) or template names
+                                is_uuid_list = all(isinstance(item, str) and len(item) == 36 and '-' in item for item in allowed[:3])
+                                
+                                if is_uuid_list or template_ids_from_request:
+                                    # This is a list of template IDs - direct matching
+                                    logger.info(f"[update-plan] Processing {len(allowed)} template IDs")
+                                    inserted_count = 0
+                                    for template_id_str in allowed:
+                                        try:
+                                            # Try to find template by ID
+                                            template_res = supabase.table('document_templates').select('id, file_name').eq('id', template_id_str).eq('is_active', True).limit(1).execute()
+                                            
+                                            if template_res.data and len(template_res.data) > 0:
+                                                template = template_res.data[0]
+                                                template_id = template['id']
+                                                
+                                                # Get per-template limit if provided
+                                                max_downloads = None
+                                                if isinstance(template_limits, dict):
+                                                    max_downloads = template_limits.get(str(template_id)) or template_limits.get(template_id)
+                                                    if max_downloads is not None:
+                                                        try:
+                                                            max_downloads = int(max_downloads) if max_downloads != '' else None
+                                                        except (ValueError, TypeError):
+                                                            max_downloads = None
+                                                
+                                                permission_data = {
+                                                    'plan_id': db_plan_id,
+                                                    'template_id': template_id,
+                                                    'can_download': True
+                                                }
+                                                if max_downloads is not None:
+                                                    permission_data['max_downloads_per_template'] = max_downloads
+                                                
+                                                supabase.table('plan_template_permissions').insert(permission_data).execute()
+                                                inserted_count += 1
+                                                logger.info(f"[update-plan] ✅ Added permission for template ID {template_id} ({template.get('file_name', 'unknown')})")
+                                            else:
+                                                logger.warning(f"[update-plan] ⚠️ Template ID {template_id_str} not found in database")
+                                        except Exception as id_exc:
+                                            logger.warning(f"[update-plan] Failed to process template ID {template_id_str}: {id_exc}")
+                                    
+                                    logger.info(f"[update-plan] ✅ Set {inserted_count} template permissions using IDs")
+                                else:
+                                    # This is a list of template names - use name matching
+                                    logger.info(f"[update-plan] Processing {len(allowed)} template names")
                                 # Normalize template names from can_download list (may have .docx or not)
                                 # Store both normalized keys AND original names for flexible matching
                                 template_names_normalized = set()
