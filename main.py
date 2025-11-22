@@ -114,9 +114,17 @@ SUPABASE_KEY = os.getenv(
     "SUPABASE_KEY",
      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
 
+# CRITICAL: Use service_role key for backend operations to bypass RLS
+# Service role key has full access and bypasses Row-Level Security policies
+SUPABASE_SERVICE_ROLE_KEY = os.getenv(
+    "SUPABASE_SERVICE_ROLE_KEY",
+    SUPABASE_KEY  # Fallback to regular key if service role key not set
+)
+
 try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    logger.info("Successfully connected to Supabase")
+    # Use service_role key for backend operations (bypasses RLS)
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    logger.info("Successfully connected to Supabase (using service_role key for backend operations)")
 except Exception as e:
     logger.error(f"Failed to connect to Supabase: {e}")
     supabase = None
