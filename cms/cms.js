@@ -1565,13 +1565,13 @@ class DocumentCMS {
                                 <label class="form-label"><strong>Allowed Templates:</strong></label>
                                 <div class="mb-2">
                                     <label class="form-check">
-                                        <input type="radio" name="accessType" value="all" class="form-check-input" ${plan.can_download && plan.can_download[0] === '*' ? 'checked' : ''} onchange="cms.toggleTemplateSelection()">
+                                        <input type="radio" name="accessType" value="all" class="form-check-input" ${plan.can_download && plan.can_download.length === 1 && plan.can_download[0] === '*' ? 'checked' : ''} onchange="cms.toggleTemplateSelection()">
                                         <span>All templates (unlimited)</span>
                                     </label>
                                 </div>
                                 <div class="mb-2">
                                     <label class="form-check">
-                                        <input type="radio" name="accessType" value="specific" class="form-check-input" ${(plan.can_download && plan.can_download.length > 0 && plan.can_download[0] !== '*') ? 'checked' : ''} onchange="cms.toggleTemplateSelection()">
+                                        <input type="radio" name="accessType" value="specific" class="form-check-input" ${!(plan.can_download && plan.can_download.length === 1 && plan.can_download[0] === '*') ? 'checked' : ''} onchange="cms.toggleTemplateSelection()">
                                         <span>Specific templates</span>
                                     </label>
                                 </div>

@@ -1709,7 +1709,7 @@ async def get_plans_db():
                     "monthly_price": float(plan.get('monthly_price', 0)),
                     "annual_price": float(plan.get('annual_price', 0)),
                     "max_downloads_per_month": plan.get('max_downloads_per_month', 10),
-                    "can_download": normalized_templates if normalized_templates else ['*'],
+                    "can_download": normalized_templates if normalized_templates else [],  # CRITICAL: Return empty array, not ['*'] - allows CMS to show "No templates selected"
                     "template_limits": template_limits,  # Include per-template download limits
                     "features": list(plan.get('features', [])) if isinstance(plan.get('features'), (list, tuple)) else (plan.get('features', []) if plan.get('features') else []),
                     "is_active": plan.get('is_active', True)
@@ -2919,12 +2919,19 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                         # New format: {template_ids: [...], template_names: [...]}
                         template_ids_from_request = allowed.get('template_ids', [])
                         template_names_from_request = allowed.get('template_names', [])
+                        # Filter out empty strings and None values from template_ids
+                        template_ids_from_request = [tid for tid in template_ids_from_request if tid and str(tid).strip()]
+                        template_names_from_request = [tname for tname in template_names_from_request if tname and str(tname).strip()]
+                        
                         if template_ids_from_request:
                             logger.info(f"[update-plan] Using template IDs format: {len(template_ids_from_request)} IDs")
                             allowed = template_ids_from_request  # Use IDs for matching
                         elif template_names_from_request:
                             logger.info(f"[update-plan] Using template names format: {len(template_names_from_request)} names")
                             allowed = template_names_from_request  # Fallback to names
+                        else:
+                            logger.warning(f"[update-plan] ⚠️ Both template_ids and template_names are empty or invalid!")
+                            allowed = []  # Explicitly set to empty list
                     
                     if allowed:
                         # Get all templates
