@@ -1440,112 +1440,79 @@ class DocumentCMS {
         }
     }
 
+    // ========================================================================
+    // REBUILT EDIT PLAN - CLEAN IMPLEMENTATION
+    // ========================================================================
+    
     async editPlan(planId) {
         if (!this.ensureAuthenticated()) return;
         
-        console.log('[editPlan] 📝 Opening editor for plan:', planId);
+        console.log('[editPlan] 🆕 Opening plan editor for:', planId);
         
-        // CRITICAL: Always reload plans and templates to get latest data
-        try {
-            console.log('[editPlan] 🔄 Reloading plans and templates for plan editor...');
-            // Reload plans first to get latest plans from database (force reload with cache busting)
-            await this.loadPlans(true);
-            // Wait a bit to ensure data is loaded
-            await new Promise(resolve => setTimeout(resolve, 100));
-            // Reload templates to get latest templates
+        // Get plan data
+        const plan = this.allPlans && this.allPlans[planId] ? this.allPlans[planId] : null;
+        if (!plan) {
+            this.showToast('error', 'Error', 'Plan not found');
+            return;
+        }
+        
+        // Ensure templates are loaded
+        if (!this.templates || this.templates.length === 0) {
             await this.loadTemplates();
+        }
+        
+        // Get current can_download - normalize to array
+        const currentCanDownload = Array.isArray(plan.can_download) ? plan.can_download : (plan.can_download ? [plan.can_download] : []);
+        const isAllTemplates = currentCanDownload.length === 1 && currentCanDownload[0] === '*';
+        
+        console.log('[editPlan] 📋 Plan:', plan.name, 'can_download:', currentCanDownload, 'length:', currentCanDownload.length);
+        
+        // Build template checkboxes
+        const templateCheckboxes = this.templates.map(t => {
+            const templateId = t.id || '';
+            const templateName = t.name || t.file_name || '';
+            const displayName = t.metadata?.display_name || t.title || templateName.replace('.docx', '');
             
-            const plansCount = this.allPlans ? Object.keys(this.allPlans).length : 0;
-            const templatesCount = this.templates ? this.templates.length : 0;
-            const allTemplatesCount = this.allTemplates ? this.allTemplates.length : 0;
+            // Check if this template is selected
+            let isChecked = false;
+            if (!isAllTemplates && currentCanDownload.length > 0) {
+                // Check by ID first, then by name
+                isChecked = currentCanDownload.some(allowed => {
+                    if (allowed === '*') return false;
+                    // Try matching by ID
+                    if (templateId && (allowed === templateId || String(allowed) === String(templateId))) return true;
+                    // Try matching by name
+                    const normalizedAllowed = allowed.toLowerCase().replace('.docx', '');
+                    const normalizedName = templateName.toLowerCase().replace('.docx', '');
+                    return normalizedAllowed === normalizedName;
+                });
+            }
             
-            console.log('[editPlan] ✅ Plans reloaded:', plansCount, 'plans');
-            console.log('[editPlan] ✅ Plan IDs:', this.allPlans ? Object.keys(this.allPlans) : []);
-            console.log('[editPlan] ✅ Templates loaded:', templatesCount);
-            console.log('[editPlan] ✅ allTemplates:', allTemplatesCount);
-        } catch (error) {
-            console.error('[editPlan] ❌ Failed to reload plans/templates:', error);
-            this.showToast('error', 'Error', 'Failed to reload data. Please refresh the page.');
-            return;
-        }
-        
-        // Check if plan exists after reload
-        if (!this.allPlans || !this.allPlans[planId]) {
-            console.error('[editPlan] ❌ Plan not found after reload. Available plans:', this.allPlans ? Object.keys(this.allPlans) : []);
-            this.showToast('error', 'Error', `Plan "${planId}" not found. Available plans: ${this.allPlans ? Object.keys(this.allPlans).join(', ') : 'none'}`);
-            return;
-        }
-        
-        // Ensure allTemplates is populated
-        if (!this.allTemplates || this.allTemplates.length === 0) {
-            if (this.templates && this.templates.length > 0) {
-                this.allTemplates = this.templates.map(t => {
-                    if (typeof t === 'string') {
-                        return t.endsWith('.docx') ? t : `${t}.docx`;
-                    }
-                    const name = t.name || t.file_with_extension || t.file_name || '';
-                    return name.endsWith('.docx') ? name : `${name}.docx`;
-                }).filter(t => t && t.trim() !== '');
-                this.allTemplates = [...new Set(this.allTemplates)];
-            } else {
-                this.showToast('error', 'Error', 'No templates found. Please upload templates first.');
-                return;
-            }
-        }
-        
-        // CRITICAL: Get fresh plan data from allPlans (just reloaded)
-        // Try to find plan by planId (could be tier or UUID)
-        let plan = this.allPlans[planId];
-        if (!plan) {
-            // Try to find by plan_tier or id
-            for (const [key, p] of Object.entries(this.allPlans)) {
-                if (p.plan_tier === planId || key === planId || p.id === planId || String(p.id) === String(planId)) {
-                    plan = p;
-                    console.log('[editPlan] ✅ Found plan by search:', key, 'plan_tier:', p.plan_tier, 'id:', p.id);
-                    break;
-                }
-            }
-        }
-        
-        // If still not found, try case-insensitive search
-        if (!plan) {
-            const planIdLower = String(planId).toLowerCase();
-            for (const [key, p] of Object.entries(this.allPlans)) {
-                const tierLower = (p.plan_tier || '').toLowerCase();
-                const keyLower = key.toLowerCase();
-                if (tierLower === planIdLower || keyLower === planIdLower) {
-                    plan = p;
-                    console.log('[editPlan] ✅ Found plan by case-insensitive search:', key);
-                    break;
-                }
-            }
-        }
-        
-        if (!plan) {
-            console.error('[editPlan] ❌ Plan not found:', planId);
-            this.showToast('error', 'Error', `Plan "${planId}" not found`);
-            return;
-        }
-        
-        // CRITICAL: Use this.templates (full objects with IDs) instead of allTemplates (just names)
-        const templates = this.templates || [];
-        const templateNames = this.allTemplates || [];
-        
-        // CRITICAL: Log plan.can_download to verify it's updated
-        console.log('[editPlan] 📋 Editing plan:', planId);
-        console.log('[editPlan] 📋 Plan can_download:', plan.can_download);
-        console.log('[editPlan] 📋 Plan max_downloads_per_month:', plan.max_downloads_per_month);
-        console.log('[editPlan] 📋 Plan data:', JSON.stringify(plan, null, 2));
-        console.log('[editPlan] 📋 Templates available (with IDs):', templates.length, templates);
-        console.log('[editPlan] 📋 Template names:', templateNames.length, templateNames);
-        console.log('[editPlan] 📋 First template object:', templates[0]);
-        
-        // Validate plan data
-        if (!plan) {
-            console.error('[editPlan] ❌ Plan object is null or undefined');
-            this.showToast('error', 'Error', 'Plan data is invalid');
-            return;
-        }
+            // Get per-template limit
+            const templateLimits = plan.template_limits || {};
+            const existingLimit = templateId ? (templateLimits[templateId] || templateLimits[String(templateId)] || '') : '';
+            
+            return `
+                <div class="d-flex align-items-center mb-2 border-bottom pb-2">
+                    <div class="form-check flex-grow-1">
+                        <input type="checkbox" class="form-check-input template-checkbox" 
+                            value="${templateName}" 
+                            data-template-id="${templateId}"
+                            ${isChecked ? 'checked' : ''}>
+                        <label class="form-check-label">${displayName}</label>
+                    </div>
+                    <div class="ms-3" style="width: 150px;">
+                        <input type="number" class="form-control form-control-sm template-limit-input" 
+                            data-template-id="${templateId}"
+                            placeholder="Limit" 
+                            value="${existingLimit}"
+                            min="1"
+                            ${!isChecked ? 'disabled' : ''}>
+                        <small class="text-muted d-block" style="font-size: 0.75rem;">Per-template limit</small>
+                    </div>
+                </div>
+            `;
+        }).join('');
         
         // Create modal HTML
         const modalHtml = `
@@ -1553,142 +1520,46 @@ class DocumentCMS {
                 <div class="modal-dialog modal-lg">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title">Edit Plan: ${plan.name}</h5>
+                            <h5 class="modal-title">Edit Plan: ${plan.name || planId}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <div class="mb-3">
-                                <label class="form-label"><strong>Allowed Templates:</strong></label>
+                                <label class="form-label"><strong>Template Access:</strong></label>
                                 <div class="mb-2">
                                     <label class="form-check">
-                                        <input type="radio" name="accessType" value="all" class="form-check-input" ${plan.can_download && plan.can_download.length === 1 && plan.can_download[0] === '*' ? 'checked' : ''} onchange="cms.toggleTemplateSelection()">
-                                        <span>All templates (unlimited)</span>
+                                        <input type="radio" name="accessType" value="all" class="form-check-input" 
+                                            ${isAllTemplates ? 'checked' : ''} 
+                                            onchange="cms.toggleTemplateSelection()">
+                                        <span>All templates</span>
                                     </label>
                                 </div>
                                 <div class="mb-2">
                                     <label class="form-check">
-                                        <input type="radio" name="accessType" value="specific" class="form-check-input" ${!(plan.can_download && plan.can_download.length === 1 && plan.can_download[0] === '*') ? 'checked' : ''} onchange="cms.toggleTemplateSelection()">
+                                        <input type="radio" name="accessType" value="specific" class="form-check-input" 
+                                            ${!isAllTemplates ? 'checked' : ''} 
+                                            onchange="cms.toggleTemplateSelection()">
                                         <span>Specific templates</span>
                                     </label>
                                 </div>
                             </div>
-                            <div id="templateSelection" class="mb-3 border rounded p-3" style="max-height: 300px; overflow-y: auto; ${(plan.can_download && plan.can_download.length === 1 && plan.can_download[0] === '*') ? 'display:none;' : 'display:block;'}">
+                            <div id="templateSelection" class="mb-3 border rounded p-3" 
+                                style="max-height: 300px; overflow-y: auto; ${isAllTemplates ? 'display:none;' : 'display:block;'}">
                                 <p class="mb-2"><strong>Select templates:</strong></p>
-                                ${templates.length > 0 ? templates.map(t => {
-                                    // Normalize template name - ensure consistent format
-                                    let templateName = '';
-                                    let templateId = '';
-                                    if (typeof t === 'string') {
-                                        templateName = t.endsWith('.docx') ? t : `${t}.docx`;
-                                        // Try to find ID from this.templates array
-                                        const templateObj = this.templates.find(tmpl => {
-                                            const tmplName = tmpl.name || tmpl.file_with_extension || tmpl.file_name || '';
-                                            return tmplName === templateName || tmplName === t || tmplName.replace('.docx', '') === t.replace('.docx', '');
-                                        });
-                                        templateId = templateObj ? (templateObj.id || templateObj.template_id || '') : '';
-                                    } else {
-                                        templateName = t.name || t.file_with_extension || t.file_name || '';
-                                        if (templateName && !templateName.endsWith('.docx')) {
-                                            templateName = `${templateName}.docx`;
-                                        }
-                                        // Get template ID - CRITICAL for reliable matching
-                                        templateId = t.id || t.template_id || '';
-                                        if (!templateId) {
-                                            console.warn('[editPlan] ⚠️ Template has NO ID:', templateName, 'Object:', t);
-                                        } else {
-                                            console.log('[editPlan] ✅ Template:', templateName, 'ID:', templateId);
-                                        }
-                                    }
-                                    // CRITICAL: Get fresh can_download list from plan object
-                                    // Normalize can_download: handle both array and single value
-                                    let canDownloadList = [];
-                                    if (plan.can_download) {
-                                        if (Array.isArray(plan.can_download)) {
-                                            canDownloadList = [...plan.can_download];
-                                        } else if (typeof plan.can_download === 'string') {
-                                            canDownloadList = [plan.can_download];
-                                        }
-                                    }
-                                    
-                                    console.log('[editPlan] 🔍 Checking template:', templateName, 'against can_download:', canDownloadList);
-                                    
-                                    // Check if plan has all templates access
-                                    const hasAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
-                                    
-                                    // Normalize template name for comparison (lowercase, ensure .docx)
-                                    const normalizedTemplateName = templateName.toLowerCase().endsWith('.docx') ? templateName.toLowerCase() : `${templateName.toLowerCase()}.docx`;
-                                    const templateNameWithoutExt = normalizedTemplateName.replace('.docx', '');
-                                    
-                                    // Check if this specific template is allowed
-                                    let isChecked = false;
-                                    if (hasAllTemplates) {
-                                        // If plan has all templates, don't check individual templates
-                                        isChecked = false; // Will be handled by radio button
-                                        console.log('[editPlan] ✅ Plan has all templates access, not checking individual template');
-                                    } else {
-                                        // Check if this template is in the allowed list
-                                        // Try multiple matching strategies for flexibility
-                                        isChecked = canDownloadList.some(allowed => {
-                                            if (!allowed || allowed === '*') return false;
-                                            
-                                            // Normalize allowed template name
-                                            const normalizedAllowed = allowed.toLowerCase().endsWith('.docx') ? allowed.toLowerCase() : `${allowed.toLowerCase()}.docx`;
-                                            const allowedWithoutExt = normalizedAllowed.replace('.docx', '');
-                                            
-                                            // Match with or without extension, case-insensitive
-                                            const match = normalizedAllowed === normalizedTemplateName || 
-                                                         allowedWithoutExt === templateNameWithoutExt ||
-                                                         allowed.toLowerCase() === templateNameWithoutExt ||
-                                                         allowed.toLowerCase() === templateName.toLowerCase() ||
-                                                         allowed.toLowerCase().replace('.docx', '') === templateNameWithoutExt;
-                                            
-                                            if (match) {
-                                                console.log('[editPlan] ✅ Template', templateName, 'matches allowed template:', allowed);
-                                            }
-                                            
-                                            return match;
-                                        });
-                                        
-                                        if (!isChecked) {
-                                            console.log('[editPlan] ❌ Template', templateName, 'NOT in can_download list');
-                                        }
-                                    }
-                                    const displayName = typeof t === 'string' ? t : (t.metadata?.display_name || t.title || t.name || templateName).replace('.docx', '');
-                                    // Get existing per-template limit
-                                    const templateLimits = plan.template_limits || {};
-                                    const existingLimit = templateId ? (templateLimits[templateId] || templateLimits[String(templateId)] || '') : '';
-                                    
-                                    return `
-                                        <div class="d-flex align-items-center mb-2 border-bottom pb-2">
-                                            <div class="form-check flex-grow-1">
-                                                <input type="checkbox" class="form-check-input template-checkbox" value="${templateName}" 
-                                                    data-template-id="${templateId}"
-                                                    ${isChecked ? 'checked' : ''}>
-                                                <label class="form-check-label">${displayName}</label>
-                                            </div>
-                                            <div class="ms-3" style="width: 150px;">
-                                                <input type="number" class="form-control form-control-sm template-limit-input" 
-                                                    data-template-id="${templateId}"
-                                                    placeholder="Limit" 
-                                                    value="${existingLimit}"
-                                                    min="1"
-                                                    ${!isChecked ? 'disabled' : ''}>
-                                                <small class="text-muted d-block" style="font-size: 0.75rem;">Per-template limit</small>
-                                            </div>
-                                        </div>
-                                    `;
-                                }).join('') : '<p class="text-muted">No templates available. Please upload templates first.</p>'}
+                                ${templateCheckboxes || '<p class="text-muted">No templates available</p>'}
                             </div>
                             <div class="mb-3">
-                                <label class="form-label"><strong>Plan-Level Max Downloads Per Month (Fallback):</strong></label>
-                                <input type="number" class="form-control" id="maxDownloads" value="${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : 10}" placeholder="Enter number (use -1 for unlimited)">
-                                <small class="text-muted">This is used as fallback if per-template limit is not set. Enter -1 for unlimited downloads, or a positive number for the monthly limit.</small>
+                                <label class="form-label"><strong>Max Downloads Per Month (Fallback):</strong></label>
+                                <input type="number" class="form-control" id="maxDownloads" 
+                                    value="${plan.max_downloads_per_month !== undefined ? plan.max_downloads_per_month : 10}" 
+                                    placeholder="Enter number (use -1 for unlimited)">
+                                <small class="text-muted">Used as fallback if per-template limit is not set</small>
                             </div>
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                             <button type="button" class="btn btn-primary" onclick="cms.savePlan('${planId}')">
-                                <i class="fas fa-save me-1"></i>Save Changes
+                                <i class="fas fa-save me-1"></i>Save
                             </button>
                         </div>
                     </div>
@@ -1696,7 +1567,7 @@ class DocumentCMS {
             </div>
         `;
         
-        // Remove existing modal if any
+        // Remove existing modal
         const existingModal = document.getElementById('editPlanModal');
         if (existingModal) existingModal.remove();
         
@@ -1707,74 +1578,71 @@ class DocumentCMS {
         const modal = new bootstrap.Modal(document.getElementById('editPlanModal'));
         modal.show();
         
-        // Add event listeners for template checkboxes to enable/disable limit inputs
-        const modalElement = document.getElementById('editPlanModal');
-        if (modalElement) {
-            const checkboxes = modalElement.querySelectorAll('.template-checkbox');
-            checkboxes.forEach(checkbox => {
-                checkbox.addEventListener('change', function() {
+        // Add event listeners
+        const modalEl = document.getElementById('editPlanModal');
+        if (modalEl) {
+            // Enable/disable limit inputs when checkboxes change
+            modalEl.querySelectorAll('.template-checkbox').forEach(cb => {
+                cb.addEventListener('change', function() {
                     const templateId = this.getAttribute('data-template-id');
-                    const limitInput = modalElement.querySelector(`.template-limit-input[data-template-id="${templateId}"]`);
+                    const limitInput = modalEl.querySelector(`.template-limit-input[data-template-id="${templateId}"]`);
                     if (limitInput) {
                         limitInput.disabled = !this.checked;
-                        if (!this.checked) {
-                            limitInput.value = '';
-                        }
+                        if (!this.checked) limitInput.value = '';
                     }
                 });
             });
+            
+            // Clean up on close
+            modalEl.addEventListener('hidden.bs.modal', function() {
+                this.remove();
+            });
         }
-        
-        // Clean up modal when hidden
-        document.getElementById('editPlanModal').addEventListener('hidden.bs.modal', function() {
-            this.remove();
-        });
     }
     
     toggleTemplateSelection() {
-        // CRITICAL: Query from within modal to ensure correct elements
-        const modalElement = document.getElementById('editPlanModal');
-        const specificRadio = modalElement ? 
-            modalElement.querySelector('input[name="accessType"][value="specific"]') :
-            document.querySelector('input[name="accessType"][value="specific"]');
+        const modalEl = document.getElementById('editPlanModal');
+        const specificRadio = modalEl?.querySelector('input[name="accessType"][value="specific"]');
         const templateSelection = document.getElementById('templateSelection');
         
         if (templateSelection && specificRadio) {
-            const isChecked = specificRadio.checked;
-            console.log('[toggleTemplateSelection] 🔄 Toggling template selection, specific checked:', isChecked);
-            templateSelection.style.display = isChecked ? 'block' : 'none';
-        } else {
-            console.warn('[toggleTemplateSelection] ⚠️ Could not find elements:', { modalElement, specificRadio, templateSelection });
+            templateSelection.style.display = specificRadio.checked ? 'block' : 'none';
         }
     }
     
+    // ========================================================================
+    // REBUILT SAVE PLAN - CLEAN IMPLEMENTATION
+    // ========================================================================
+    
     async savePlan(planId) {
         if (!this.ensureAuthenticated()) return;
+        
         try {
+            console.log('[savePlan] 🆕 Saving plan:', planId);
+            
+            // Get access type
             const accessTypeRadio = document.querySelector('input[name="accessType"]:checked');
             if (!accessTypeRadio) {
-                console.error('[savePlan] ❌ No access type radio selected');
                 this.showToast('error', 'Error', 'Please select access type');
                 return;
             }
             
             const accessType = accessTypeRadio.value;
-            console.log('[savePlan] 📋 Access type selected:', accessType);
             let canDownload = [];
             
             if (accessType === 'all') {
                 canDownload = ['*'];
-                console.log('[savePlan] ✅ Setting can_download to ["*"] (all templates)');
             } else {
-                // CRITICAL: Use template IDs instead of names for reliable matching
-                const modalElement = document.getElementById('editPlanModal');
-                const checkboxes = modalElement ? 
-                    modalElement.querySelectorAll('.template-checkbox:checked') : 
-                    document.querySelectorAll('.template-checkbox:checked');
+                // Get selected templates
+                const modalEl = document.getElementById('editPlanModal');
+                const checkboxes = modalEl?.querySelectorAll('.template-checkbox:checked') || [];
                 
-                console.log('[savePlan] 📋 Found', checkboxes.length, 'checked template checkboxes');
+                if (checkboxes.length === 0) {
+                    this.showToast('error', 'Error', 'Please select at least one template');
+                    return;
+                }
                 
-                // Collect template IDs and names
+                // Collect template IDs (preferred) and names (fallback)
                 const templateIds = [];
                 const templateNames = [];
                 
@@ -1782,68 +1650,42 @@ class DocumentCMS {
                     const templateId = cb.getAttribute('data-template-id');
                     const templateName = cb.value;
                     
-                    if (templateId) {
-                        // Use ID if available (more reliable)
+                    if (templateId && templateId.trim()) {
                         templateIds.push(templateId);
-                        console.log('[savePlan] 📋 Template ID:', templateId, 'name:', templateName);
                     } else {
-                        // Fallback to name if no ID
-                        const normalizedValue = templateName.endsWith('.docx') ? templateName : `${templateName}.docx`;
-                        templateNames.push(normalizedValue);
-                        console.log('[savePlan] 📋 Template name (no ID):', normalizedValue);
+                        const normalizedName = templateName.endsWith('.docx') ? templateName : `${templateName}.docx`;
+                        templateNames.push(normalizedName);
                     }
                 });
                 
-                // Send both IDs and names for maximum compatibility
-                // Backend will prioritize IDs if provided
                 canDownload = {
                     template_ids: templateIds,
                     template_names: templateNames
                 };
                 
-                console.log('[savePlan] 📋 Selected templates - IDs:', templateIds, 'Names:', templateNames);
-                
-                if (templateIds.length === 0 && templateNames.length === 0) {
-                    console.error('[savePlan] ❌ No templates selected');
-                    this.showToast('error', 'Error', 'Please select at least one template');
-                    return;
-                }
+                console.log('[savePlan] 📋 Selected:', templateIds.length, 'IDs,', templateNames.length, 'names');
             }
             
+            // Get max downloads
             const maxDownloadsInput = document.getElementById('maxDownloads');
-            if (!maxDownloadsInput) {
-                this.showToast('error', 'Error', 'Max downloads input not found');
-                return;
-            }
-            // Parse max downloads - handle empty string, null, -1 for unlimited, and valid numbers
-            const maxDownloadsValue = maxDownloadsInput.value.trim();
-            let maxDownloads;
-            // Get existing plan to use as fallback
-            const existingPlan = this.allPlans && this.allPlans[planId] ? this.allPlans[planId] : {};
-            if (maxDownloadsValue === '' || maxDownloadsValue === null || maxDownloadsValue === undefined) {
-                // If empty, use existing value or default to 10
-                maxDownloads = existingPlan.max_downloads_per_month !== undefined ? existingPlan.max_downloads_per_month : 10;
-            } else {
+            const maxDownloadsValue = maxDownloadsInput?.value.trim() || '';
+            let maxDownloads = 10;
+            if (maxDownloadsValue) {
                 const parsed = parseInt(maxDownloadsValue, 10);
-                if (isNaN(parsed)) {
-                    // Invalid input, use existing value or default
-                    maxDownloads = existingPlan.max_downloads_per_month !== undefined ? existingPlan.max_downloads_per_month : 10;
-                } else {
-                    // Valid number (can be -1 for unlimited, 0, or positive number)
+                if (!isNaN(parsed)) {
                     maxDownloads = parsed;
                 }
             }
             
-            // Collect per-template download limits
+            // Get per-template limits
             const templateLimits = {};
-            const modalElement = document.getElementById('editPlanModal');
-            if (modalElement) {
-                const checkedBoxes = modalElement.querySelectorAll('.template-checkbox:checked');
-                checkedBoxes.forEach(checkbox => {
-                    const templateId = checkbox.getAttribute('data-template-id');
+            const modalEl = document.getElementById('editPlanModal');
+            if (modalEl) {
+                modalEl.querySelectorAll('.template-checkbox:checked').forEach(cb => {
+                    const templateId = cb.getAttribute('data-template-id');
                     if (templateId) {
-                        const limitInput = modalElement.querySelector(`.template-limit-input[data-template-id="${templateId}"]`);
-                        if (limitInput && limitInput.value.trim() !== '') {
+                        const limitInput = modalEl.querySelector(`.template-limit-input[data-template-id="${templateId}"]`);
+                        if (limitInput && limitInput.value.trim()) {
                             const limitValue = parseInt(limitInput.value.trim(), 10);
                             if (!isNaN(limitValue) && limitValue > 0) {
                                 templateLimits[templateId] = limitValue;
@@ -1852,148 +1694,83 @@ class DocumentCMS {
                     }
                 });
             }
-            console.log('[savePlan] 📋 Collected template limits:', templateLimits);
             
-            if (!this.allPlans || !this.allPlans[planId]) {
+            // Get plan to update
+            const plan = this.allPlans && this.allPlans[planId] ? this.allPlans[planId] : null;
+            if (!plan) {
                 this.showToast('error', 'Error', 'Plan not found');
                 return;
             }
             
-            // Prepare plan data to send - only send changed fields
-            const planDataToSave = {
-                template_limits: templateLimits,
+            const backendPlanId = plan.plan_tier || plan.id || planId;
+            
+            // Prepare data
+            const planData = {
                 can_download: canDownload,
-                max_downloads_per_month: maxDownloads
+                max_downloads_per_month: maxDownloads,
+                template_limits: templateLimits
             };
             
-            // Preserve existing plan fields (use existingPlan already defined above)
-            if (existingPlan.name) planDataToSave.name = existingPlan.name;
-            if (existingPlan.description) planDataToSave.description = existingPlan.description;
-            if (existingPlan.monthly_price !== undefined) planDataToSave.monthly_price = existingPlan.monthly_price;
-            if (existingPlan.annual_price !== undefined) planDataToSave.annual_price = existingPlan.annual_price;
-            if (existingPlan.plan_tier) planDataToSave.plan_tier = existingPlan.plan_tier;
-            
-            console.log('[savePlan] 💾 Saving plan:', planId, planDataToSave);
-            
-            // Get the actual plan_tier or UUID to send to backend
-            // Backend expects plan_tier (like "basic", "professional", "enterprise") or UUID
-            const planToUpdate = this.allPlans[planId] || plan;
-            const backendPlanId = planToUpdate.plan_tier || planToUpdate.id || planId;
-            console.log('[savePlan] 📋 Using backend plan ID:', backendPlanId, '(original planId:', planId, ')');
+            console.log('[savePlan] 💾 Sending:', JSON.stringify(planData, null, 2));
             
             // Save to API
-            const data = await this.apiJson('/update-plan', {
+            const response = await this.apiJson('/update-plan', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
                 body: JSON.stringify({
                     plan_id: backendPlanId,
-                    plan_data: planDataToSave
+                    plan_data: planData
                 })
             });
             
-            if (data && data.success) {
-                console.log('[savePlan] ✅ Plan saved successfully');
-                console.log('[savePlan] 📋 Response data:', JSON.stringify(data, null, 2));
+            if (response && response.success) {
+                console.log('[savePlan] ✅ Saved successfully');
+                console.log('[savePlan] 📋 Response:', JSON.stringify(response.plan_data, null, 2));
+                
                 this.showToast('success', 'Success', 'Plan updated successfully!');
                 
-                // Update local copy with returned data if available
-                if (data.plan_data) {
-                    if (!this.allPlans) {
-                        this.allPlans = {};
-                    }
-                    // CRITICAL: Use plan_tier as key if planId was a tier, otherwise use planId
-                    const planKey = data.plan_data.plan_tier || planId;
-                    this.allPlans[planKey] = data.plan_data;
-                    // Also update by original planId for compatibility
-                    this.allPlans[planId] = data.plan_data;
-                    console.log('[savePlan] ✅ Updated local plan copy:', this.allPlans[planKey]);
+                // Close modal
+                const modalEl = document.getElementById('editPlanModal');
+                if (modalEl) {
+                    const modal = bootstrap.Modal.getInstance(modalEl);
+                    if (modal) modal.hide();
+                    setTimeout(() => modalEl.remove(), 300);
                 }
                 
-                // Close modal first
-                const modalElement = document.getElementById('editPlanModal');
-                if (modalElement) {
-                    const modal = bootstrap.Modal.getInstance(modalElement);
-                    if (modal) {
-                        modal.hide();
-                    }
-                    // Remove modal after hiding
-                    setTimeout(() => {
-                        if (modalElement.parentNode) {
-                            modalElement.remove();
-                        }
-                    }, 300);
-                }
-                
-                // CRITICAL: Force reload plans from database to get latest data
-                console.log('[savePlan] 🔄 Reloading plans after save...');
-                console.log('[savePlan] 📋 Response plan_data:', JSON.stringify(data.plan_data, null, 2));
-                
-                // Update local copy immediately with response data
-                if (data.plan_data) {
-                    const responsePlanId = data.plan_data.plan_tier || data.plan_data.id || planId;
-                    if (!this.allPlans) {
-                        this.allPlans = {};
-                    }
-                    // Merge with existing plan data to preserve all fields
-                    const existingPlan = this.allPlans[responsePlanId] || this.allPlans[planId] || {};
-                    const mergedPlanData = {
-                        ...existingPlan,
-                        ...data.plan_data,
-                        // Ensure can_download is always an array
-                        can_download: Array.isArray(data.plan_data.can_download) ? data.plan_data.can_download : (data.plan_data.can_download ? [data.plan_data.can_download] : [])
+                // Update local plan data
+                if (response.plan_data) {
+                    const responsePlanId = response.plan_data.plan_tier || planId;
+                    if (!this.allPlans) this.allPlans = {};
+                    
+                    // Ensure can_download is array
+                    const canDownloadArray = Array.isArray(response.plan_data.can_download) 
+                        ? response.plan_data.can_download 
+                        : (response.plan_data.can_download ? [response.plan_data.can_download] : []);
+                    
+                    this.allPlans[responsePlanId] = {
+                        ...plan,
+                        ...response.plan_data,
+                        can_download: canDownloadArray
                     };
+                    this.allPlans[planId] = this.allPlans[responsePlanId];
                     
-                    // Update by multiple keys for compatibility
-                    this.allPlans[responsePlanId] = mergedPlanData;
-                    this.allPlans[planId] = mergedPlanData;
-                    if (data.plan_data.plan_tier) {
-                        this.allPlans[data.plan_data.plan_tier] = mergedPlanData;
-                    }
-                    console.log('[savePlan] ✅ Updated local plan copy immediately:', responsePlanId, 'can_download:', mergedPlanData.can_download, 'length:', mergedPlanData.can_download.length);
+                    console.log('[savePlan] ✅ Updated local plan, can_download length:', canDownloadArray.length);
                     
-                    // Force immediate display update with saved data
+                    // Update display immediately
                     this.displayPlans(this.allPlans);
                 }
                 
-                // Wait a moment for database to be ready, then reload from database
-                await new Promise(resolve => setTimeout(resolve, 800));
+                // Reload from database after delay
+                setTimeout(async () => {
+                    await this.loadPlans(true);
+                }, 1000);
                 
-                // Force reload with cache busting to get latest from database
-                await this.loadPlans(true);
-                
-                // Wait for display to update
-                await new Promise(resolve => setTimeout(resolve, 300));
-                
-                // Force a visual refresh and scroll to the updated plan
-                setTimeout(() => {
-                    const container = document.getElementById('plansList');
-                    if (container) {
-                        container.style.opacity = '0.5';
-                        setTimeout(() => {
-                            container.style.opacity = '1';
-                            // Scroll to the plan that was just edited
-                            const planCard = container.querySelector(`[onclick*="editPlan('${planId}')"]`)?.closest('.card') ||
-                                           container.querySelector(`[onclick*="editPlan('${data.plan_data?.plan_tier || planId}')"]`)?.closest('.card');
-                            if (planCard) {
-                                planCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                // Highlight the card briefly
-                                planCard.style.transition = 'box-shadow 0.3s';
-                                planCard.style.boxShadow = '0 0 20px rgba(0, 123, 255, 0.5)';
-                                setTimeout(() => {
-                                    planCard.style.boxShadow = '';
-                                }, 2000);
-                            }
-                        }, 200);
-                    }
-                }, 100);
             } else {
-                console.error('[savePlan] ❌ Save failed - no success response:', data);
-                this.showToast('error', 'Error', 'Failed to update plan');
+                console.error('[savePlan] ❌ Save failed:', response);
+                this.showToast('error', 'Error', 'Failed to save plan');
             }
+            
         } catch (error) {
-            console.error('Error saving plan:', error);
+            console.error('[savePlan] ❌ Error:', error);
             this.showToast('error', 'Save Failed', error.message);
         }
     }
