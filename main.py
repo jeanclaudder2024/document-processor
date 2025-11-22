@@ -3067,6 +3067,8 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                 if is_uuid_list or template_ids_from_request:
                                     # This is a list of template IDs - direct matching
                                     logger.info(f"[update-plan] Processing {len(allowed)} template IDs")
+                                    logger.info(f"[update-plan] 📋 Template IDs from request: {template_ids_from_request}")
+                                    logger.info(f"[update-plan] 📋 Template IDs in allowed list: {allowed[:5]}...")
                                     inserted_count = 0
                                     for template_id_str in allowed:
                                         try:
