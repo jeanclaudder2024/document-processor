@@ -1507,7 +1507,8 @@ async def get_templates(request: Request):
                     # Get plan permissions for this template
                     plan_names = []
                     can_download_plans = []
-                    display_plan_name = None  # Initialize before try block
+                    display_plan_name = None
+                    can_download = True  # Default to public
                     
                     try:
                         # Get all plans that have permission for this template
@@ -1515,17 +1516,26 @@ async def get_templates(request: Request):
                             'plan_id, can_download, max_downloads_per_template'
                         ).eq('template_id', template_id).eq('can_download', True).execute()
                         
-                        if perms_res.data:
+                        logger.info(f"[templates] Template {template_id} ({file_name}) - Query returned {len(perms_res.data) if perms_res.data else 0} permissions")
+                        
+                        if perms_res.data and len(perms_res.data) > 0:
                             plan_ids = [p['plan_id'] for p in perms_res.data]
+                            logger.info(f"[templates] Template {template_id} ({file_name}) - Found plan_ids: {plan_ids}")
+                            
                             if plan_ids:
-                                # Get plan names
+                                # Get plan names - CRITICAL: Filter by is_active=True
                                 plans_info = supabase.table('subscription_plans').select(
                                     'id, plan_name, plan_tier'
-                                ).in_('id', plan_ids).execute()
+                                ).in_('id', plan_ids).eq('is_active', True).execute()
                                 
-                                if plans_info.data:
+                                logger.info(f"[templates] Template {template_id} ({file_name}) - Found {len(plans_info.data) if plans_info.data else 0} active plans")
+                                
+                                if plans_info.data and len(plans_info.data) > 0:
                                     plan_names = [p['plan_name'] for p in plans_info.data]
                                     can_download_plans = [p['plan_tier'] for p in plans_info.data]
+                                    can_download = True
+                                    
+                                    logger.info(f"[templates] Template {template_id} ({file_name}) - Plan names: {plan_names}")
                                     
                                     # Determine plan_name for display
                                     # Check if template has permissions for ALL active plans
@@ -1533,32 +1543,40 @@ async def get_templates(request: Request):
                                     all_plan_ids = set(p['id'] for p in (all_plans_res.data or []))
                                     plan_ids_set = set(plan_ids)
                                     
+                                    logger.info(f"[templates] Template {template_id} ({file_name}) - All plan IDs: {all_plan_ids}, Template plan IDs: {plan_ids_set}")
+                                    
                                     # Only show "All Plans" if template has permissions for EVERY active plan (exact match)
                                     if plan_ids_set == all_plan_ids and len(plan_ids_set) > 0 and len(all_plan_ids) > 0:
                                         display_plan_name = "All Plans"
-                                        logger.debug(f"Template {template_id} ({file_name}) has permissions for all {len(all_plan_ids)} plans - showing 'All Plans'")
+                                        logger.info(f"[templates] Template {template_id} ({file_name}) has permissions for all {len(all_plan_ids)} plans - showing 'All Plans'")
                                     elif len(plan_names) > 0:
                                         # Show specific plan names (what user configured in CMS)
                                         if len(plan_names) <= 2:
                                             display_plan_name = ", ".join(plan_names)
                                         else:
                                             display_plan_name = ", ".join(plan_names[:2]) + f" +{len(plan_names)-2} more"
-                                        logger.debug(f"Template {template_id} ({file_name}) has permissions for {len(plan_names)} specific plans: {plan_names}")
+                                        logger.info(f"[templates] Template {template_id} ({file_name}) has permissions for {len(plan_names)} specific plans: {plan_names}")
                                     else:
                                         display_plan_name = None
+                                        logger.warning(f"[templates] Template {template_id} ({file_name}) - plan_names is empty but plans_info.data exists")
                                 else:
-                                    # No plan info found
+                                    # No plan info found - permissions exist but plans not found
+                                    logger.warning(f"[templates] Template {template_id} ({file_name}) - Permissions exist but no plan info found for plan_ids: {plan_ids}")
                                     display_plan_name = None
+                                    can_download = False
                             else:
-                                # No plan IDs
+                                logger.warning(f"[templates] Template {template_id} ({file_name}) - Permissions exist but plan_ids is empty")
                                 display_plan_name = None
+                                can_download = False
                         else:
                             # No permissions found - template is public/available to all
                             display_plan_name = None
-                            logger.debug(f"Template {template_id} ({file_name}) has no plan permissions - available to all")
+                            can_download = True
+                            logger.debug(f"[templates] Template {template_id} ({file_name}) has no plan permissions - available to all (public)")
                     except Exception as perm_exc:
-                        logger.debug(f"Could not fetch plan permissions for template {template_id}: {perm_exc}")
+                        logger.error(f"[templates] Error fetching plan permissions for template {template_id} ({file_name}): {perm_exc}", exc_info=True)
                         display_plan_name = None
+                        can_download = True  # Default to public on error
                     
                     template_payload = {
                         "id": str(template_id),
@@ -1583,7 +1601,7 @@ async def get_templates(request: Request):
                         # Add plan information
                         "plan_name": display_plan_name,
                         "plan_tiers": can_download_plans,
-                        "can_download": len(plan_names) > 0  # True if at least one plan has access
+                        "can_download": can_download  # True if has plan permissions or is public
                     }
                     templates.append(template_payload)
                     templates_by_key[file_name] = template_payload
@@ -1659,6 +1677,9 @@ async def get_templates(request: Request):
             # For local templates, check if they exist in database for plan permissions
             plan_names = []
             can_download_plans = []
+            display_plan_name = None
+            can_download = True  # Default to public for local templates
+            
             try:
                 if SUPABASE_ENABLED:
                     # Try to find template in database by file_name
@@ -1670,17 +1691,23 @@ async def get_templates(request: Request):
                             'plan_id, can_download'
                         ).eq('template_id', db_template_id).eq('can_download', True).execute()
                         
-                        if perms_res.data:
+                        if perms_res.data and len(perms_res.data) > 0:
                             plan_ids = [p['plan_id'] for p in perms_res.data]
                             if plan_ids:
-                                plans_info = supabase.table('subscription_plans').select('id, plan_name, plan_tier').in_('id', plan_ids).execute()
-                                if plans_info.data:
+                                plans_info = supabase.table('subscription_plans').select('id, plan_name, plan_tier').in_('id', plan_ids).eq('is_active', True).execute()
+                                if plans_info.data and len(plans_info.data) > 0:
                                     plan_names = [p['plan_name'] for p in plans_info.data]
                                     can_download_plans = [p['plan_tier'] for p in plans_info.data]
-            except Exception:
+                                    can_download = True
+                                    
+                                    # Determine display name
+                                    if len(plan_names) <= 2:
+                                        display_plan_name = ", ".join(plan_names)
+                                    else:
+                                        display_plan_name = ", ".join(plan_names[:2]) + f" +{len(plan_names)-2} more"
+            except Exception as e:
+                logger.debug(f"Could not get plan info for local template {file_name}: {e}")
                 pass  # If we can't get plan info, template is still available (public)
-            
-            display_plan_name = ", ".join(plan_names) if plan_names else None
             
             template_payload = {
                 "id": template_id,
@@ -1703,7 +1730,7 @@ async def get_templates(request: Request):
                 # Add plan information
                 "plan_name": display_plan_name,
                 "plan_tiers": can_download_plans,
-                "can_download": len(plan_names) > 0 if plan_names else True  # Public if no plan restrictions
+                "can_download": can_download  # True if has plan permissions or is public
             }
             templates.append(template_payload)
             templates_by_key[file_name] = template_payload
