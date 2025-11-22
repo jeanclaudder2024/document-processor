@@ -1616,10 +1616,16 @@ async def get_plans_db():
                 allowed_templates = []
                 template_limits = {}  # Store per-template download limits
                 try:
+                    # CRITICAL: Log the plan_id we're querying with
+                    plan_db_id = plan['id']
+                    logger.info(f"[plans-db] 🔍 Querying permissions for plan {plan_tier} (ID: {plan_db_id})")
+                    
                     # CRITICAL: Fetch both can_download AND max_downloads_per_template
                     permissions_res = supabase.table('plan_template_permissions').select(
-                        'template_id, can_download, max_downloads_per_template').eq('plan_id', plan['id']).execute()
+                        'template_id, can_download, max_downloads_per_template').eq('plan_id', plan_db_id).execute()
 
+                    logger.info(f"[plans-db] 📊 Query result: {len(permissions_res.data) if permissions_res.data else 0} permission records found")
+                    
                     if permissions_res.data:
                         logger.info(f"[plans-db] Plan {plan_tier} found {len(permissions_res.data)} permission records")
                         # Get all template IDs that this plan has permissions for
