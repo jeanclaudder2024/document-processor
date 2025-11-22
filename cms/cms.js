@@ -1468,10 +1468,18 @@ class DocumentCMS {
         console.log('[editPlan] 📋 Plan:', plan.name, 'can_download:', currentCanDownload, 'length:', currentCanDownload.length);
         
         // Build template checkboxes
+        console.log('[editPlan] 📋 Templates loaded:', this.templates.length);
+        console.log('[editPlan] 📋 First template object:', this.templates[0]);
+        console.log('[editPlan] 📋 Template IDs available:', this.templates.map(t => t.id || 'NO_ID').slice(0, 5));
+        
         const templateCheckboxes = this.templates.map(t => {
             const templateId = t.id || '';
             const templateName = t.name || t.file_name || '';
             const displayName = t.metadata?.display_name || t.title || templateName.replace('.docx', '');
+            
+            if (!templateId) {
+                console.warn('[editPlan] ⚠️ Template has NO ID:', templateName, 'Object:', t);
+            }
             
             // Check if this template is selected
             let isChecked = false;
@@ -1650,11 +1658,21 @@ class DocumentCMS {
                     const templateId = cb.getAttribute('data-template-id');
                     const templateName = cb.value;
                     
+                    console.log('[savePlan] 🔍 Processing checkbox:', { 
+                        templateId, 
+                        templateName, 
+                        hasId: !!templateId, 
+                        idLength: templateId ? templateId.length : 0,
+                        idValue: templateId 
+                    });
+                    
                     if (templateId && templateId.trim()) {
                         templateIds.push(templateId);
+                        console.log('[savePlan] ✅ Added template ID:', templateId);
                     } else {
                         const normalizedName = templateName.endsWith('.docx') ? templateName : `${templateName}.docx`;
                         templateNames.push(normalizedName);
+                        console.log('[savePlan] ⚠️ No template ID, using name:', normalizedName);
                     }
                 });
                 
