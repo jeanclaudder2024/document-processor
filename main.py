@@ -3004,6 +3004,12 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                     # Check both 'allowed_templates' and 'can_download' for compatibility
                     allowed = plan_data.get('allowed_templates') or plan_data.get('can_download')
                     
+                    logger.info(f"[update-plan] 📥 Received 'allowed' value: {allowed}")
+                    logger.info(f"[update-plan] 📥 Type of 'allowed': {type(allowed)}")
+                    if isinstance(allowed, dict):
+                        logger.info(f"[update-plan] 📥 Dict keys: {list(allowed.keys())}")
+                        logger.info(f"[update-plan] 📥 Dict values: {allowed}")
+                    
                     # Get per-template limits if provided
                     template_limits = plan_data.get('template_limits', {})  # {template_id: max_downloads, ...}
                     
@@ -3024,8 +3030,13 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                             logger.info(f"[update-plan] Using template names format: {len(template_names_from_request)} names")
                             allowed = template_names_from_request  # Fallback to names
                         else:
-                            logger.warning(f"[update-plan] ⚠️ Both template_ids and template_names are empty or invalid!")
+                            logger.error(f"[update-plan] ❌ Both template_ids and template_names are empty or invalid!")
+                            logger.error(f"[update-plan] ❌ Original allowed value: {allowed}")
+                            logger.error(f"[update-plan] ❌ This means NO templates were selected in frontend!")
                             allowed = []  # Explicitly set to empty list
+                    
+                    logger.info(f"[update-plan] 📊 Final 'allowed' value after processing: {allowed}")
+                    logger.info(f"[update-plan] 📊 Will process permissions: {bool(allowed)}")
                     
                     if allowed:
                         # Get all templates (including inactive for matching, but we'll only insert active ones)
