@@ -3077,20 +3077,17 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     inserted_count = 0
                                     for template_id_str in allowed:
                                         try:
-                                            # Try to find template by ID (check both active and inactive for matching)
-                                            # CRITICAL: Don't filter by is_active when matching by ID - we need to find the template even if inactive
+                                            # CRITICAL: Find template by ID - don't filter by is_active when matching by exact ID
+                                            # We match by exact UUID, so we should find it regardless of active status
                                             template_res = supabase.table('document_templates').select('id, file_name, is_active').eq('id', template_id_str).limit(1).execute()
-                                            
-                                            # But only proceed if template is active
-                                            if template_res.data and len(template_res.data) > 0:
-                                                template = template_res.data[0]
-                                                if not template.get('is_active', True):
-                                                    logger.warning(f"[update-plan] ⚠️ Template ID {template_id_str} is inactive, skipping")
-                                                    continue
                                             
                                             if template_res.data and len(template_res.data) > 0:
                                                 template = template_res.data[0]
                                                 template_id = template['id']
+                                                
+                                                # Check if template is active - warn but still allow (for backward compatibility)
+                                                if not template.get('is_active', True):
+                                                    logger.warning(f"[update-plan] ⚠️ Template ID {template_id_str} ({template.get('file_name', 'unknown')}) is inactive, but creating permission anyway")
                                                 
                                                 # Get per-template limit if provided
                                                 max_downloads = None
@@ -3110,11 +3107,14 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                                 if max_downloads is not None:
                                                     permission_data['max_downloads_per_template'] = max_downloads
                                                 
-                                                supabase.table('plan_template_permissions').insert(permission_data).execute()
+                                                insert_result = supabase.table('plan_template_permissions').insert(permission_data).execute()
                                                 inserted_count += 1
-                                                logger.info(f"[update-plan] ✅ Added permission for template ID {template_id} ({template.get('file_name', 'unknown')})")
+                                                logger.info(f"[update-plan] ✅ Added permission for template ID {template_id} ({template.get('file_name', 'unknown')}) to plan_id {db_plan_id}")
+                                                logger.info(f"[update-plan] 📋 Insert result: {len(insert_result.data) if insert_result.data else 0} records inserted")
                                             else:
-                                                logger.warning(f"[update-plan] ⚠️ Template ID {template_id_str} not found in database")
+                                                logger.error(f"[update-plan] ❌ Template ID {template_id_str} NOT FOUND in database!")
+                                                logger.error(f"[update-plan] ❌ This means the template_id sent from frontend doesn't exist in document_templates table")
+                                                logger.error(f"[update-plan] ❌ Check if template was deleted or ID is incorrect")
                                         except Exception as id_exc:
                                             logger.warning(f"[update-plan] Failed to process template ID {template_id_str}: {id_exc}")
                                     
