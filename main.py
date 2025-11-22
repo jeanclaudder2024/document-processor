@@ -3989,13 +3989,49 @@ async def get_user_downloadable_templates(request: Request):
                         if requires_broker:
                             continue
                 
-                # CRITICAL: Always use user's actual plan name and max_downloads
-                # Don't show template's plan restrictions - show user's current plan
+                # Get template's required plan (which plan is needed to download this template)
+                template_plan_name = None
+                template_plan_tiers = []
+                try:
+                    # Get plan permissions for this template
+                    perms_res = supabase.table('plan_template_permissions').select(
+                        'plan_id, can_download, max_downloads_per_template'
+                    ).eq('template_id', template_id).eq('can_download', True).execute()
+                    
+                    if perms_res.data and len(perms_res.data) > 0:
+                        plan_ids = [p['plan_id'] for p in perms_res.data]
+                        if plan_ids:
+                            # Get plan names
+                            plans_info = supabase.table('subscription_plans').select(
+                                'id, plan_name, plan_tier'
+                            ).in_('id', plan_ids).eq('is_active', True).execute()
+                            
+                            if plans_info.data and len(plans_info.data) > 0:
+                                plan_names = [p['plan_name'] for p in plans_info.data]
+                                template_plan_tiers = [p['plan_tier'] for p in plans_info.data]
+                                
+                                # Determine plan_name for display
+                                all_plans_res = supabase.table('subscription_plans').select('id').eq('is_active', True).execute()
+                                all_plan_ids = set(p['id'] for p in (all_plans_res.data or []))
+                                plan_ids_set = set(plan_ids)
+                                
+                                # Only show "All Plans" if template has permissions for EVERY active plan
+                                if plan_ids_set == all_plan_ids and len(plan_ids_set) > 0 and len(all_plan_ids) > 0:
+                                    template_plan_name = "All Plans"
+                                elif len(plan_names) > 0:
+                                    if len(plan_names) <= 2:
+                                        template_plan_name = ", ".join(plan_names)
+                                    else:
+                                        template_plan_name = ", ".join(plan_names[:2]) + f" +{len(plan_names)-2} more"
+                except Exception as perm_exc:
+                    logger.debug(f"Could not fetch template plan permissions for template {template_id}: {perm_exc}")
+                
+                # Use user's plan info for max_downloads calculation
                 plan_name = None
                 plan_tier_val = None
                 final_max_downloads = t.get('max_downloads', 10)  # Default from RPC function
                 
-                # Always use user's plan info if available
+                # Always use user's plan info if available (for max_downloads)
                 if user_plan_info:
                     plan_name = user_plan_info['plan_name']
                     plan_tier_val = user_plan_info['plan_tier']
@@ -4045,8 +4081,9 @@ async def get_user_downloadable_templates(request: Request):
                     "max_downloads": final_max_downloads,  # Use user's plan max_downloads, not template's
                     "current_downloads": t['current_downloads'],
                     "remaining_downloads": t['remaining_downloads'],
-                    "plan_name": plan_name if plan_name else (user_plan_info['plan_name'] if user_plan_info else None),  # Always show user's plan name
-                    "plan_tier": plan_tier_val if plan_tier_val else (user_plan_info['plan_tier'] if user_plan_info else None),
+                    "plan_name": template_plan_name,  # Show template's required plan (which plan allows downloading)
+                    "plan_tier": template_plan_tiers[0] if template_plan_tiers else None,  # First plan tier if multiple
+                    "plan_tiers": template_plan_tiers,  # All plan tiers that allow this template
                     "metadata": {
                         "display_name": display_name,  # Always include display_name
                         "description": description or metadata_entry.get('description', ''),  # Always include description
