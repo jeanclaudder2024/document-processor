@@ -1507,6 +1507,8 @@ async def get_templates(request: Request):
                     # Get plan permissions for this template
                     plan_names = []
                     can_download_plans = []
+                    display_plan_name = None  # Initialize before try block
+                    
                     try:
                         # Get all plans that have permission for this template
                         perms_res = supabase.table('plan_template_permissions').select(
@@ -1524,26 +1526,38 @@ async def get_templates(request: Request):
                                 if plans_info.data:
                                     plan_names = [p['plan_name'] for p in plans_info.data]
                                     can_download_plans = [p['plan_tier'] for p in plans_info.data]
+                                    
+                                    # Determine plan_name for display
+                                    # Check if template has permissions for ALL active plans
+                                    all_plans_res = supabase.table('subscription_plans').select('id').eq('is_active', True).execute()
+                                    all_plan_ids = set(p['id'] for p in (all_plans_res.data or []))
+                                    plan_ids_set = set(plan_ids)
+                                    
+                                    # Only show "All Plans" if template has permissions for EVERY active plan (exact match)
+                                    if plan_ids_set == all_plan_ids and len(plan_ids_set) > 0 and len(all_plan_ids) > 0:
+                                        display_plan_name = "All Plans"
+                                        logger.debug(f"Template {template_id} ({file_name}) has permissions for all {len(all_plan_ids)} plans - showing 'All Plans'")
+                                    elif len(plan_names) > 0:
+                                        # Show specific plan names (what user configured in CMS)
+                                        if len(plan_names) <= 2:
+                                            display_plan_name = ", ".join(plan_names)
+                                        else:
+                                            display_plan_name = ", ".join(plan_names[:2]) + f" +{len(plan_names)-2} more"
+                                        logger.debug(f"Template {template_id} ({file_name}) has permissions for {len(plan_names)} specific plans: {plan_names}")
+                                    else:
+                                        display_plan_name = None
+                                else:
+                                    # No plan info found
+                                    display_plan_name = None
+                            else:
+                                # No plan IDs
+                                display_plan_name = None
+                        else:
+                            # No permissions found - template is public/available to all
+                            display_plan_name = None
+                            logger.debug(f"Template {template_id} ({file_name}) has no plan permissions - available to all")
                     except Exception as perm_exc:
                         logger.debug(f"Could not fetch plan permissions for template {template_id}: {perm_exc}")
-                    
-                    # Determine plan_name for display
-                    # If template has permissions for all plans, show "All Plans"
-                    # Otherwise show the specific plan names
-                    if len(plan_names) >= 3:  # If 3 or more plans, likely "All Plans"
-                        # Check if it's actually all plans
-                        all_plans_res = supabase.table('subscription_plans').select('id').eq('is_active', True).execute()
-                        all_plan_ids = set(p['id'] for p in (all_plans_res.data or []))
-                        plan_ids_set = set(plan_ids) if 'plan_ids' in locals() else set()
-                        if plan_ids_set == all_plan_ids and len(plan_ids_set) > 0:
-                            display_plan_name = "All Plans"
-                        elif len(plan_names) > 0:
-                            display_plan_name = ", ".join(plan_names[:2]) + (f" +{len(plan_names)-2} more" if len(plan_names) > 2 else "")
-                        else:
-                            display_plan_name = None
-                    elif len(plan_names) > 0:
-                        display_plan_name = ", ".join(plan_names)
-                    else:
                         display_plan_name = None
                     
                     template_payload = {
