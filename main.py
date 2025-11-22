@@ -1621,23 +1621,44 @@ async def get_plans_db():
                         'template_id, can_download, max_downloads_per_template').eq('plan_id', plan['id']).execute()
 
                     if permissions_res.data:
+                        logger.info(f"[plans-db] Plan {plan_tier} found {len(permissions_res.data)} permission records")
                         # Get all template IDs that this plan has permissions for
                         plan_template_ids = set()
+                        skipped_permissions = []
                         for perm in permissions_res.data:
-                            if perm.get('can_download'):
-                                template_id = perm['template_id']
-                                plan_template_ids.add(template_id)
-                                
-                                # Store per-template download limit
-                                if perm.get('max_downloads_per_template') is not None:
-                                    template_limits[str(template_id)] = perm['max_downloads_per_template']
-                                
-                                # Add template file_name to allowed_templates list
-                                template_info = template_map.get(template_id)
-                                if template_info:
-                                    file_name = template_info.get('file_name', '')
-                                    if file_name and file_name not in allowed_templates:
-                                        allowed_templates.append(file_name)
+                            can_download_value = perm.get('can_download')
+                            template_id = perm.get('template_id')
+                            
+                            logger.debug(f"[plans-db] Permission record: template_id={template_id}, can_download={can_download_value}")
+                            
+                            if can_download_value:  # True or truthy value
+                                if template_id:
+                                    plan_template_ids.add(template_id)
+                                    
+                                    # Store per-template download limit
+                                    if perm.get('max_downloads_per_template') is not None:
+                                        template_limits[str(template_id)] = perm['max_downloads_per_template']
+                                    
+                                    # Add template file_name to allowed_templates list
+                                    template_info = template_map.get(template_id)
+                                    if template_info:
+                                        file_name = template_info.get('file_name', '')
+                                        if file_name and file_name not in allowed_templates:
+                                            allowed_templates.append(file_name)
+                                            logger.debug(f"[plans-db] ✅ Added template '{file_name}' (ID: {template_id}) to allowed_templates")
+                                        elif not file_name:
+                                            logger.warning(f"[plans-db] ⚠️ Template ID {template_id} has no file_name in template_info")
+                                    else:
+                                        skipped_permissions.append(template_id)
+                                        logger.warning(f"[plans-db] ⚠️ Template ID {template_id} not found in template_map (permission exists but template missing from map)")
+                                else:
+                                    logger.warning(f"[plans-db] ⚠️ Permission record has no template_id: {perm}")
+                            else:
+                                logger.debug(f"[plans-db] Skipping permission with can_download=False or None for template_id={template_id}")
+                        
+                        if skipped_permissions:
+                            logger.warning(f"[plans-db] ⚠️ Plan {plan_tier} has {len(skipped_permissions)} permissions for templates not in template_map: {skipped_permissions[:3]}...")
+                        logger.info(f"[plans-db] Plan {plan_tier} mapped {len(allowed_templates)} templates from {len(plan_template_ids)} permission template IDs")
                         
                         # CRITICAL: Check if plan has permissions for ALL available templates
                         # Only treat as "*" if plan has permissions for EVERY active template
