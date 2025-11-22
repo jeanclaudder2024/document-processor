@@ -1664,6 +1664,17 @@ class DocumentCMS {
                 };
                 
                 console.log('[savePlan] 📋 Selected:', templateIds.length, 'IDs,', templateNames.length, 'names');
+                console.log('[savePlan] 📋 Template IDs:', templateIds);
+                console.log('[savePlan] 📋 Template names:', templateNames);
+                
+                // CRITICAL: Check if template IDs are valid
+                if (templateIds.length === 0 && templateNames.length === 0) {
+                    console.error('[savePlan] ❌ NO TEMPLATES SELECTED! Both IDs and names are empty!');
+                } else if (templateIds.length === 0) {
+                    console.warn('[savePlan] ⚠️ No template IDs found, using names only');
+                } else {
+                    console.log('[savePlan] ✅ Using template IDs for reliable matching');
+                }
             }
             
             // Get max downloads
@@ -1711,7 +1722,11 @@ class DocumentCMS {
                 template_limits: templateLimits
             };
             
-            console.log('[savePlan] 💾 Sending:', JSON.stringify(planData, null, 2));
+            console.log('[savePlan] 💾 Sending plan data:');
+            console.log('[savePlan] 💾 can_download:', JSON.stringify(planData.can_download, null, 2));
+            console.log('[savePlan] 💾 max_downloads_per_month:', planData.max_downloads_per_month);
+            console.log('[savePlan] 💾 template_limits:', JSON.stringify(planData.template_limits, null, 2));
+            console.log('[savePlan] 💾 Full planData:', JSON.stringify(planData, null, 2));
             
             // Save to API
             const response = await this.apiJson('/update-plan', {
