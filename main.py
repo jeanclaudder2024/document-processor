@@ -879,6 +879,69 @@ async def root():
     return {"message": "Document Processing API v2.0", "status": "running"}
 
 
+@app.get("/debug-plan-permissions")
+async def debug_plan_permissions(plan_tier: str = None):
+    """Debug endpoint to check plan permissions in database"""
+    if not SUPABASE_ENABLED or not supabase:
+        return {"error": "Supabase not enabled"}
+    
+    try:
+        result = {
+            "plans": {},
+            "templates": {},
+            "permissions": {}
+        }
+        
+        # Get all plans
+        plans_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('is_active', True).execute()
+        if plans_res.data:
+            for plan in plans_res.data:
+                plan_id = plan['id']
+                tier = plan.get('plan_tier', 'unknown')
+                
+                if plan_tier and tier != plan_tier:
+                    continue
+                
+                result["plans"][tier] = {
+                    "plan_id": str(plan_id),
+                    "plan_tier": tier,
+                    "plan_name": plan.get('plan_name', '')
+                }
+                
+                # Get permissions for this plan
+                perms_res = supabase.table('plan_template_permissions').select(
+                    'template_id, can_download, max_downloads_per_template'
+                ).eq('plan_id', plan_id).execute()
+                
+                result["permissions"][tier] = {
+                    "plan_id": str(plan_id),
+                    "count": len(perms_res.data) if perms_res.data else 0,
+                    "permissions": perms_res.data if perms_res.data else []
+                }
+        
+        # Get all templates
+        templates_res = supabase.table('document_templates').select('id, file_name, is_active').execute()
+        if templates_res.data:
+            for template in templates_res.data:
+                template_id = str(template['id'])
+                result["templates"][template_id] = {
+                    "file_name": template.get('file_name', ''),
+                    "is_active": template.get('is_active', True)
+                }
+        
+        return {
+            "success": True,
+            "data": result,
+            "summary": {
+                "total_plans": len(result["plans"]),
+                "total_templates": len(result["templates"]),
+                "plans_with_permissions": sum(1 for p in result["permissions"].values() if p["count"] > 0)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Debug endpoint error: {e}", exc_info=True)
+        return {"error": str(e), "traceback": str(e.__traceback__)}
+
 @app.get("/health")
 async def health_check():
     return {
