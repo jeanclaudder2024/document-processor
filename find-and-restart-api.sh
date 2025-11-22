@@ -166,3 +166,4 @@ echo "   1. Is the API running? Check: ps aux | grep python"
 echo "   2. Is it on port 8000? Check: lsof -i :8000"
 echo "   3. Where is the project? Check: find /opt /home -name main.py 2>/dev/null"
 
+
