@@ -3028,8 +3028,13 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                             allowed = []  # Explicitly set to empty list
                     
                     if allowed:
-                        # Get all templates
-                        templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
+                        # Get all templates (including inactive for matching, but we'll only insert active ones)
+                        # CRITICAL: Query ALL templates first to ensure we can match template IDs even if they're inactive
+                        templates_res_all = supabase.table('document_templates').select('id, file_name, is_active').execute()
+                        # Filter to active templates for insertion
+                        templates_res = type('obj', (object,), {'data': [t for t in (templates_res_all.data or []) if t.get('is_active', True)]})()
+                        
+                        logger.info(f"[update-plan] 📊 Found {len(templates_res_all.data) if templates_res_all.data else 0} total templates ({len(templates_res.data) if templates_res.data else 0} active)")
                         
                         if templates_res.data:
                             # CRITICAL: Delete existing permissions FIRST to clear old data
@@ -3072,8 +3077,16 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     inserted_count = 0
                                     for template_id_str in allowed:
                                         try:
-                                            # Try to find template by ID
-                                            template_res = supabase.table('document_templates').select('id, file_name').eq('id', template_id_str).eq('is_active', True).limit(1).execute()
+                                            # Try to find template by ID (check both active and inactive for matching)
+                                            # CRITICAL: Don't filter by is_active when matching by ID - we need to find the template even if inactive
+                                            template_res = supabase.table('document_templates').select('id, file_name, is_active').eq('id', template_id_str).limit(1).execute()
+                                            
+                                            # But only proceed if template is active
+                                            if template_res.data and len(template_res.data) > 0:
+                                                template = template_res.data[0]
+                                                if not template.get('is_active', True):
+                                                    logger.warning(f"[update-plan] ⚠️ Template ID {template_id_str} is inactive, skipping")
+                                                    continue
                                             
                                             if template_res.data and len(template_res.data) > 0:
                                                 template = template_res.data[0]
@@ -3217,12 +3230,15 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                         except Exception as insert_exc:
                                             logger.warning(f"Failed to insert permission for template {template_name}: {insert_exc}")
                                 
-                                logger.info(f"Set {inserted_count} template permissions for plan {plan_id} (matched {len(template_names_normalized)} template names)")
+                                logger.info(f"[update-plan] ✅ Set {inserted_count} template permissions for plan {plan_id} (matched {len(template_names_normalized)} template names)")
                                 
-                                # CRITICAL: If no templates were matched, log warning
+                                # CRITICAL: If no templates were matched, log error
                                 if inserted_count == 0:
-                                    logger.warning(f"[update-plan] ⚠️ No templates matched for plan {plan_id}! Sent templates: {allowed[:5]}...")
-                                    logger.warning(f"[update-plan] Available templates in DB: {[t.get('file_name', '') for t in templates_res.data[:5]]}")
+                                    logger.error(f"[update-plan] ❌❌❌ NO TEMPLATES MATCHED FOR PLAN {plan_id}!")
+                                    logger.error(f"[update-plan] ❌ Sent templates: {allowed[:5]}...")
+                                    logger.error(f"[update-plan] ❌ Available templates in DB: {[t.get('file_name', '') for t in (templates_res.data or [])[:5]]}")
+                                    logger.error(f"[update-plan] ❌ Template IDs sent: {template_ids_from_request[:5] if template_ids_from_request else 'NONE'}...")
+                                    logger.error(f"[update-plan] ❌ This means NO permissions will be saved! Plan will have 0 templates!")
                     
                     logger.info(f"Updated plan in database: {plan_id}")
                     database_update_success = True
