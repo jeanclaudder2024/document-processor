@@ -1642,6 +1642,32 @@ async def get_templates(request: Request):
             metadata_entry = metadata_map.get(file_name, {})
 
             template_id = hashlib.md5(file_name.encode()).hexdigest()[:12]
+            # For local templates, check if they exist in database for plan permissions
+            plan_names = []
+            can_download_plans = []
+            try:
+                if SUPABASE_ENABLED:
+                    # Try to find template in database by file_name
+                    db_template_res = supabase.table('document_templates').select('id').eq('file_name', file_name).limit(1).execute()
+                    if db_template_res.data:
+                        db_template_id = db_template_res.data[0]['id']
+                        # Get plan permissions
+                        perms_res = supabase.table('plan_template_permissions').select(
+                            'plan_id, can_download'
+                        ).eq('template_id', db_template_id).eq('can_download', True).execute()
+                        
+                        if perms_res.data:
+                            plan_ids = [p['plan_id'] for p in perms_res.data]
+                            if plan_ids:
+                                plans_info = supabase.table('subscription_plans').select('id, plan_name, plan_tier').in_('id', plan_ids).execute()
+                                if plans_info.data:
+                                    plan_names = [p['plan_name'] for p in plans_info.data]
+                                    can_download_plans = [p['plan_tier'] for p in plans_info.data]
+            except Exception:
+                pass  # If we can't get plan info, template is still available (public)
+            
+            display_plan_name = ", ".join(plan_names) if plan_names else None
+            
             template_payload = {
                 "id": template_id,
                 "name": file_name,
@@ -1659,7 +1685,11 @@ async def get_templates(request: Request):
                 "created_at": created_at,
                 "placeholders": placeholders,
                 "placeholder_count": len(placeholders),
-                "is_active": True
+                "is_active": True,
+                # Add plan information
+                "plan_name": display_plan_name,
+                "plan_tiers": can_download_plans,
+                "can_download": len(plan_names) > 0 if plan_names else True  # Public if no plan restrictions
             }
             templates.append(template_payload)
             templates_by_key[file_name] = template_payload
