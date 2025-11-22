@@ -1585,15 +1585,19 @@ async def get_plans_db():
                 }
 
             # Get all templates (may not exist yet, so handle gracefully)
+            # CRITICAL: Query ALL templates (including inactive) to ensure we can map all template_ids from permissions
             template_map = {}
             all_template_ids = set()
+            all_active_template_ids = set()
             try:
                 templates_res = supabase.table('document_templates').select(
-                    'id, file_name, title').eq('is_active', True).execute()
+                    'id, file_name, title, is_active').execute()
                 if templates_res.data:
+                    # Include ALL templates in map (active and inactive) to ensure we can map all permissions
                     template_map = {t['id']: t for t in templates_res.data}
                     all_template_ids = set(t['id'] for t in templates_res.data)
-                    logger.info(f"Fetched {len(template_map)} active templates from database")
+                    all_active_template_ids = set(t['id'] for t in templates_res.data if t.get('is_active', True))
+                    logger.info(f"Fetched {len(template_map)} templates from database ({len(all_active_template_ids)} active)")
             except Exception as e:
                 logger.warning(f"Could not fetch templates from database: {e}")
 
@@ -1637,21 +1641,21 @@ async def get_plans_db():
                         
                         # CRITICAL: Check if plan has permissions for ALL available templates
                         # Only treat as "*" if plan has permissions for EVERY active template
-                        total_templates_count = len(all_template_ids)
+                        total_templates_count = len(all_active_template_ids) if all_active_template_ids else len(all_template_ids)
                         plan_permissions_count = len(plan_template_ids)
                         
-                        logger.info(f"[plans-db] Plan {plan_tier} (ID: {plan['id']}): {plan_permissions_count} permissions out of {total_templates_count} total templates")
+                        logger.info(f"[plans-db] Plan {plan_tier} (ID: {plan['id']}): {plan_permissions_count} permissions out of {total_templates_count} total active templates")
                         logger.info(f"[plans-db] Plan {plan_tier} template IDs: {list(plan_template_ids)[:3]}...")
-                        logger.info(f"[plans-db] All template IDs: {list(all_template_ids)[:3]}...")
+                        logger.info(f"[plans-db] All active template IDs: {list(all_active_template_ids)[:3]}...")
                         logger.info(f"[plans-db] Plan {plan_tier} allowed templates: {allowed_templates[:3]}... ({len(allowed_templates)} total)")
                         
                         # If plan has permissions for ALL templates (exact match), treat as "*"
-                        # CRITICAL: Must be EXACT match - plan_template_ids must equal all_template_ids
+                        # CRITICAL: Must be EXACT match - plan_template_ids must equal all_active_template_ids
                         # AND there must be at least 1 template in the database
                         if total_templates_count > 0 and plan_permissions_count > 0:
-                            # Check if plan has permissions for every single template (exact set match)
+                            # Check if plan has permissions for every single active template (exact set match)
                             # Use set comparison to ensure exact match
-                            if plan_template_ids == all_template_ids and len(plan_template_ids) == len(all_template_ids) and len(all_template_ids) > 0:
+                            if plan_template_ids == all_active_template_ids and len(plan_template_ids) == len(all_active_template_ids) and len(all_active_template_ids) > 0:
                                 logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for ALL {total_templates_count} templates (exact match) - treating as '*'")
                                 allowed_templates = ['*']
                             else:
@@ -3138,11 +3142,12 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                         updated_plan_data = updated_plan_res.data[0]
                         # CRITICAL: Wait a moment for database to be ready, then get fresh permissions
                         import time
-                        time.sleep(0.2)  # Small delay to ensure database is updated
+                        time.sleep(0.5)  # Increased delay to ensure database transaction is committed
                         
                         # Get template permissions for response (including per-template limits)
-                        perms_res = supabase.table('plan_template_permissions').select('template_id, max_downloads_per_template').eq('plan_id', db_plan_id).execute()
-                        template_ids = [p['template_id'] for p in (perms_res.data or [])]
+                        # CRITICAL: Filter by can_download=True to ensure we only get valid permissions
+                        perms_res = supabase.table('plan_template_permissions').select('template_id, max_downloads_per_template, can_download').eq('plan_id', db_plan_id).eq('can_download', True).execute()
+                        template_ids = [p['template_id'] for p in (perms_res.data or []) if p.get('can_download', True)]
                         
                         logger.info(f"[update-plan] After save - Found {len(template_ids)} template permissions for plan {plan_id}")
                         if len(template_ids) == 0:
@@ -3157,27 +3162,41 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                 template_limits_response[str(template_id)] = max_downloads
                         
                         # Check if all templates - need to convert template_ids to file_names for response
-                        all_templates = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
-                        all_template_ids = set(t['id'] for t in (all_templates.data or []))
+                        # CRITICAL: Query ALL templates (including inactive) to ensure we can map all template_ids from permissions
+                        all_templates = supabase.table('document_templates').select('id, file_name, is_active').execute()
+                        all_active_template_ids = set(t['id'] for t in (all_templates.data or []) if t.get('is_active', True))
                         plan_template_ids_set = set(template_ids)
                         
-                        logger.info(f"[update-plan] Plan {plan_id} has permissions for {len(plan_template_ids_set)} templates out of {len(all_template_ids)} total templates")
+                        logger.info(f"[update-plan] Plan {plan_id} has permissions for {len(plan_template_ids_set)} templates out of {len(all_active_template_ids)} total active templates")
                         logger.info(f"[update-plan] Plan template IDs: {list(plan_template_ids_set)[:5]}...")
-                        logger.info(f"[update-plan] All template IDs: {list(all_template_ids)[:5]}...")
-                        logger.info(f"[update-plan] Sets equal? {plan_template_ids_set == all_template_ids}")
+                        logger.info(f"[update-plan] All active template IDs: {list(all_active_template_ids)[:5]}...")
+                        logger.info(f"[update-plan] Sets equal? {plan_template_ids_set == all_active_template_ids}")
                         
                         # Convert template IDs to file names for CMS response
+                        # CRITICAL: Include ALL templates in map (active and inactive) to ensure we can map all permissions
                         template_id_to_name = {t['id']: t.get('file_name', '') for t in (all_templates.data or [])}
-                        template_file_names = [ensure_docx_filename(template_id_to_name.get(tid, '')) for tid in template_ids if tid and template_id_to_name.get(tid)]
+                        template_file_names = []
+                        missing_template_ids = []
+                        for tid in template_ids:
+                            if tid:
+                                template_name = template_id_to_name.get(tid)
+                                if template_name:
+                                    template_file_names.append(ensure_docx_filename(template_name))
+                                else:
+                                    missing_template_ids.append(tid)
+                                    logger.warning(f"[update-plan] ⚠️ Template ID {tid} not found in template map - permission exists but template missing!")
+                        
+                        if missing_template_ids:
+                            logger.warning(f"[update-plan] ⚠️ {len(missing_template_ids)} template IDs from permissions not found in database: {missing_template_ids[:3]}...")
                         
                         logger.info(f"[update-plan] Template file names for response: {template_file_names[:5]}... (total: {len(template_file_names)})")
                         
                         # CRITICAL: Only return '*' if plan has permissions for EVERY single template (exact set match)
                         # AND there are actually templates in the database
-                        is_all_templates = (all_template_ids and 
-                                          len(all_template_ids) > 0 and 
+                        is_all_templates = (all_active_template_ids and 
+                                          len(all_active_template_ids) > 0 and 
                                           len(plan_template_ids_set) > 0 and
-                                          plan_template_ids_set == all_template_ids)
+                                          plan_template_ids_set == all_active_template_ids)
                         can_download = ['*'] if is_all_templates else (template_file_names if template_file_names else [])
                         
                         logger.info(f"[update-plan] Returning can_download: {'[*]' if is_all_templates else f'{len(template_file_names)} specific templates'}")
