@@ -1173,7 +1173,6 @@ class DocumentCMS {
             const canDownloadList = Array.isArray(canDownload) ? canDownload : [canDownload];
             const isAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
             const maxDownloads = plan.max_downloads_per_month !== undefined ? plan.max_downloads_per_month : 10;
-            const features = Array.isArray(plan.features) ? plan.features : [];
             const planTier = plan.plan_tier || planId;
             const planName = plan.name || plan.plan_name || planId;
             // Use plan_tier as the identifier for editing (backend expects this)
@@ -1195,20 +1194,19 @@ class DocumentCMS {
                         <strong>Download Allowed:</strong>
                         ${isAllTemplates ? 
                             '<span class="badge bg-success ms-2">All templates (*)</span>' : 
-                            `<span class="badge bg-info ms-2">${canDownloadList.length} template${canDownloadList.length === 1 ? '' : 's'}</span>`
+                            canDownloadList.length > 0 ?
+                            `<span class="badge bg-info ms-2">${canDownloadList.length} template${canDownloadList.length === 1 ? '' : 's'}</span>` :
+                            '<span class="badge bg-warning ms-2">No templates selected</span>'
                         }
                         ${!isAllTemplates && canDownloadList.length > 0 ? 
-                            `<ul class="mb-0 mt-2"><li><small>${canDownloadList.map(t => this.formatTemplateLabel(t)).join('</small></li><li><small>')}</small></li></ul>` : ''
+                            `<ul class="mb-0 mt-2"><li><small>${canDownloadList.map(t => this.formatTemplateLabel(t)).join('</small></li><li><small>')}</small></li></ul>` : 
+                            !isAllTemplates && canDownloadList.length === 0 ?
+                            '<p class="text-muted small mb-0 mt-1"><i class="fas fa-exclamation-triangle me-1"></i>Please select templates for this plan</p>' : ''
                         }
                     </div>
                     <div class="mb-2">
                         <strong>Max Downloads:</strong> ${maxDownloads === -1 ? '<span class="badge bg-success ms-2">Unlimited</span>' : `<span class="badge bg-secondary ms-2">${maxDownloads}/month</span>`}
                     </div>
-                    ${features.length > 0 ? `
-                    <div>
-                        <strong>Features:</strong> <small class="text-muted">${features.slice(0, 3).join(', ')}${features.length > 3 ? '...' : ''}</small>
-                    </div>
-                    ` : ''}
                 </div>
             </div>
         `;
@@ -1220,7 +1218,6 @@ class DocumentCMS {
             const canDownload = broker.can_download || [];
             const canDownloadList = Array.isArray(canDownload) ? canDownload : [canDownload];
             const isAllTemplates = canDownloadList.length === 1 && canDownloadList[0] === '*';
-            const features = Array.isArray(broker.features) ? broker.features : [];
             
             html += `
             <div class="card mb-3 border-warning">
@@ -1238,20 +1235,19 @@ class DocumentCMS {
                         <strong>Download Allowed:</strong>
                         ${isAllTemplates ? 
                             '<span class="badge bg-success ms-2">All templates (*)</span>' : 
-                            `<span class="badge bg-info ms-2">${canDownloadList.length} template${canDownloadList.length === 1 ? '' : 's'}</span>`
+                            canDownloadList.length > 0 ?
+                            `<span class="badge bg-info ms-2">${canDownloadList.length} template${canDownloadList.length === 1 ? '' : 's'}</span>` :
+                            '<span class="badge bg-warning ms-2">No templates selected</span>'
                         }
                         ${!isAllTemplates && canDownloadList.length > 0 ? 
-                            `<ul class="mb-0 mt-2"><li><small>${canDownloadList.map(t => this.formatTemplateLabel(t)).join('</small></li><li><small>')}</small></li></ul>` : ''
+                            `<ul class="mb-0 mt-2"><li><small>${canDownloadList.map(t => this.formatTemplateLabel(t)).join('</small></li><li><small>')}</small></li></ul>` : 
+                            !isAllTemplates && canDownloadList.length === 0 ?
+                            '<p class="text-muted small mb-0 mt-1"><i class="fas fa-exclamation-triangle me-1"></i>Please select templates for this plan</p>' : ''
                         }
                     </div>
                     <div class="mb-2">
                         <strong>Download Limits:</strong> <span class="badge bg-warning ms-2">Per-template limits</span>
                     </div>
-                    ${features.length > 0 ? `
-                    <div>
-                        <strong>Features:</strong> <small class="text-muted">${features.slice(0, 3).join(', ')}${features.length > 3 ? '...' : ''}</small>
-                    </div>
-                    ` : ''}
                 </div>
             </div>
             `;
@@ -1686,11 +1682,7 @@ class DocumentCMS {
                             <div class="mb-3">
                                 <label class="form-label"><strong>Plan-Level Max Downloads Per Month (Fallback):</strong></label>
                                 <input type="number" class="form-control" id="maxDownloads" value="${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : 10}" placeholder="Enter number (use -1 for unlimited)">
-                                <small class="text-muted">This is used as fallback if per-template limit is not set. Enter -1 for unlimited downloads, or a positive number for the monthly limit. Current value: ${plan.max_downloads_per_month !== undefined && plan.max_downloads_per_month !== null ? plan.max_downloads_per_month : 10}</small>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label"><strong>Features (comma-separated):</strong></label>
-                                <input type="text" class="form-control" id="planFeatures" value="${plan.features && Array.isArray(plan.features) ? plan.features.join(', ') : (plan.features || '')}">
+                                <small class="text-muted">This is used as fallback if per-template limit is not set. Enter -1 for unlimited downloads, or a positive number for the monthly limit.</small>
                             </div>
                         </div>
                         <div class="modal-footer">
@@ -1842,10 +1834,6 @@ class DocumentCMS {
                 }
             }
             
-            const featuresInput = document.getElementById('planFeatures');
-            const featuresValue = featuresInput ? featuresInput.value : '';
-            const features = featuresValue ? featuresValue.split(',').map(f => f.trim()).filter(f => f) : [];
-            
             // Collect per-template download limits
             const templateLimits = {};
             const modalElement = document.getElementById('editPlanModal');
@@ -1875,8 +1863,7 @@ class DocumentCMS {
             const planDataToSave = {
                 template_limits: templateLimits,
                 can_download: canDownload,
-                max_downloads_per_month: maxDownloads,
-                features: features
+                max_downloads_per_month: maxDownloads
             };
             
             // Preserve existing plan fields (use existingPlan already defined above)
@@ -1949,13 +1936,22 @@ class DocumentCMS {
                     if (!this.allPlans) {
                         this.allPlans = {};
                     }
+                    // Merge with existing plan data to preserve all fields
+                    const existingPlan = this.allPlans[responsePlanId] || this.allPlans[planId] || {};
+                    const mergedPlanData = {
+                        ...existingPlan,
+                        ...data.plan_data,
+                        // Ensure can_download is always an array
+                        can_download: Array.isArray(data.plan_data.can_download) ? data.plan_data.can_download : (data.plan_data.can_download ? [data.plan_data.can_download] : [])
+                    };
+                    
                     // Update by multiple keys for compatibility
-                    this.allPlans[responsePlanId] = data.plan_data;
-                    this.allPlans[planId] = data.plan_data;
+                    this.allPlans[responsePlanId] = mergedPlanData;
+                    this.allPlans[planId] = mergedPlanData;
                     if (data.plan_data.plan_tier) {
-                        this.allPlans[data.plan_data.plan_tier] = data.plan_data;
+                        this.allPlans[data.plan_data.plan_tier] = mergedPlanData;
                     }
-                    console.log('[savePlan] ✅ Updated local plan copy immediately:', responsePlanId, 'can_download:', data.plan_data.can_download);
+                    console.log('[savePlan] ✅ Updated local plan copy immediately:', responsePlanId, 'can_download:', mergedPlanData.can_download, 'length:', mergedPlanData.can_download.length);
                     
                     // Force immediate display update with saved data
                     this.displayPlans(this.allPlans);
