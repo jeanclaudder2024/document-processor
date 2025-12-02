@@ -5936,6 +5936,99 @@ async def process_document_legacy(request: Request):
     return await generate_document(request)
 
 # ============================================================================
+# EMAIL SERVICE ENDPOINTS
+# ============================================================================
+
+try:
+    from email_service import EmailService
+    EMAIL_SERVICE_AVAILABLE = True
+except ImportError:
+    EMAIL_SERVICE_AVAILABLE = False
+    logger.warning("Email service not available. Email endpoints will be disabled.")
+
+@app.options("/email/test-smtp")
+async def options_test_smtp(request: Request):
+    """Handle CORS preflight for test-smtp endpoint"""
+    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
+
+@app.post("/email/test-smtp")
+async def test_smtp_connection(request: Request):
+    """Test SMTP connection with provided configuration"""
+    if not EMAIL_SERVICE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Email service not available")
+    
+    try:
+        body = await request.json()
+        
+        # Map frontend field names to backend field names
+        config = {
+            'host': body.get('host', ''),
+            'port': body.get('port', 587),
+            'username': body.get('username', ''),
+            'password': body.get('password', ''),
+            'enable_tls': body.get('enableTLS', True),
+        }
+        
+        # Validate required fields
+        if not config['host'] or not config['username'] or not config['password']:
+            raise HTTPException(status_code=400, detail="Missing required fields: host, username, password")
+        
+        # Test connection
+        result = EmailService.test_smtp_connection(config)
+        
+        if result.get('success'):
+            return {"success": True, "message": result.get('message', 'SMTP connection successful')}
+        else:
+            return {"success": False, "message": result.get('error', 'Connection test failed')}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error testing SMTP connection: {e}")
+        return {"success": False, "message": str(e)}
+
+@app.options("/email/test-imap")
+async def options_test_imap(request: Request):
+    """Handle CORS preflight for test-imap endpoint"""
+    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
+
+@app.post("/email/test-imap")
+async def test_imap_connection(request: Request):
+    """Test IMAP connection with provided configuration"""
+    if not EMAIL_SERVICE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Email service not available")
+    
+    try:
+        body = await request.json()
+        
+        # Map frontend field names to backend field names
+        config = {
+            'host': body.get('host', ''),
+            'port': body.get('port', 993),
+            'username': body.get('username', ''),
+            'password': body.get('password', ''),
+            'enable_tls': body.get('enableTLS', True),
+        }
+        
+        # Validate required fields
+        if not config['host'] or not config['username'] or not config['password']:
+            raise HTTPException(status_code=400, detail="Missing required fields: host, username, password")
+        
+        # Test connection
+        result = EmailService.test_imap_connection(config)
+        
+        if result.get('success'):
+            return {"success": True, "message": result.get('message', 'IMAP connection successful')}
+        else:
+            return {"success": False, "message": result.get('error', 'Connection test failed')}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error testing IMAP connection: {e}")
+        return {"success": False, "message": str(e)}
+
+# ============================================================================
 # STARTUP
 # ============================================================================
 
