@@ -5947,39 +5947,52 @@ except ImportError:
     logger.warning("Email service not available. Email endpoints will be disabled.")
 
 @app.options("/email/test-smtp")
+@app.options("/api/email/test-smtp")  # Also support direct /api path
 async def options_test_smtp(request: Request):
     """Handle CORS preflight for test-smtp endpoint"""
     return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
 @app.post("/email/test-smtp")
+@app.post("/api/email/test-smtp")  # Also support direct /api path
 async def test_smtp_connection(request: Request):
     """Test SMTP connection with provided configuration"""
-    if not EMAIL_SERVICE_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Email service not available")
+    try:
+        import smtplib
+    except ImportError:
+        raise HTTPException(status_code=503, detail="SMTP library not available")
     
     try:
         body = await request.json()
         
         # Map frontend field names to backend field names
-        config = {
-            'host': body.get('host', ''),
-            'port': body.get('port', 587),
-            'username': body.get('username', ''),
-            'password': body.get('password', ''),
-            'enable_tls': body.get('enableTLS', True),
-        }
+        host = body.get('host', '')
+        port = body.get('port', 587)
+        username = body.get('username', '')
+        password = body.get('password', '')
+        enable_tls = body.get('enableTLS', True)
         
         # Validate required fields
-        if not config['host'] or not config['username'] or not config['password']:
+        if not host or not username or not password:
             raise HTTPException(status_code=400, detail="Missing required fields: host, username, password")
         
-        # Test connection
-        result = EmailService.test_smtp_connection(config)
-        
-        if result.get('success'):
-            return {"success": True, "message": result.get('message', 'SMTP connection successful')}
-        else:
-            return {"success": False, "message": result.get('error', 'Connection test failed')}
+        # Test SMTP connection directly (simpler and more reliable)
+        try:
+            if enable_tls:
+                server = smtplib.SMTP(host, port, timeout=10)
+                server.starttls()
+            else:
+                server = smtplib.SMTP(host, port, timeout=10)
+            
+            server.login(username, password)
+            server.quit()
+            
+            return {"success": True, "message": "SMTP connection successful"}
+        except smtplib.SMTPAuthenticationError as e:
+            return {"success": False, "message": f"Authentication failed: {str(e)}"}
+        except smtplib.SMTPConnectError as e:
+            return {"success": False, "message": f"Connection failed: {str(e)}"}
+        except Exception as e:
+            return {"success": False, "message": f"SMTP error: {str(e)}"}
             
     except HTTPException:
         raise
@@ -5988,39 +6001,49 @@ async def test_smtp_connection(request: Request):
         return {"success": False, "message": str(e)}
 
 @app.options("/email/test-imap")
+@app.options("/api/email/test-imap")  # Also support direct /api path
 async def options_test_imap(request: Request):
     """Handle CORS preflight for test-imap endpoint"""
     return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
 @app.post("/email/test-imap")
+@app.post("/api/email/test-imap")  # Also support direct /api path
 async def test_imap_connection(request: Request):
     """Test IMAP connection with provided configuration"""
-    if not EMAIL_SERVICE_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Email service not available")
+    try:
+        import imaplib
+    except ImportError:
+        raise HTTPException(status_code=503, detail="IMAP library not available")
     
     try:
         body = await request.json()
         
         # Map frontend field names to backend field names
-        config = {
-            'host': body.get('host', ''),
-            'port': body.get('port', 993),
-            'username': body.get('username', ''),
-            'password': body.get('password', ''),
-            'enable_tls': body.get('enableTLS', True),
-        }
+        host = body.get('host', '')
+        port = body.get('port', 993)
+        username = body.get('username', '')
+        password = body.get('password', '')
+        enable_tls = body.get('enableTLS', True)
         
         # Validate required fields
-        if not config['host'] or not config['username'] or not config['password']:
+        if not host or not username or not password:
             raise HTTPException(status_code=400, detail="Missing required fields: host, username, password")
         
-        # Test connection
-        result = EmailService.test_imap_connection(config)
-        
-        if result.get('success'):
-            return {"success": True, "message": result.get('message', 'IMAP connection successful')}
-        else:
-            return {"success": False, "message": result.get('error', 'Connection test failed')}
+        # Test IMAP connection directly (simpler and more reliable)
+        try:
+            if enable_tls:
+                mail = imaplib.IMAP4_SSL(host, port, timeout=10)
+            else:
+                mail = imaplib.IMAP4(host, port, timeout=10)
+            
+            mail.login(username, password)
+            mail.logout()
+            
+            return {"success": True, "message": "IMAP connection successful"}
+        except imaplib.IMAP4.error as e:
+            return {"success": False, "message": f"IMAP authentication failed: {str(e)}"}
+        except Exception as e:
+            return {"success": False, "message": f"IMAP error: {str(e)}"}
             
     except HTTPException:
         raise
