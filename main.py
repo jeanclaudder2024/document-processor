@@ -5918,12 +5918,18 @@ async def generate_document(request: Request):
         encoded_filename = quote(filename.encode('utf-8'))
         content_disposition = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
         
-        # FastAPI automatically sets Content-Type from media_type parameter
-        # We just need to set Content-Disposition for proper file download
+        # Explicitly set headers to ensure PDF downloads correctly
+        # Set both Content-Type and use media_type parameter for maximum compatibility
+        headers = {
+            "Content-Disposition": content_disposition,
+            "Content-Type": media_type,
+            "X-Content-Type-Options": "nosniff"  # Prevent MIME type sniffing
+        }
+        
         return Response(
             content=file_content,
             media_type=media_type,
-            headers={"Content-Disposition": content_disposition}
+            headers=headers
         )
     except HTTPException:
         raise
