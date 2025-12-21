@@ -6,16 +6,21 @@ Handles Word document processing with vessel data from Supabase
 import os
 import json
 import hashlib
+import hmac
+import secrets
 import uuid
 import tempfile
 import logging
 import csv
+import asyncio
+import aiohttp
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from docx import Document
@@ -5975,9 +5980,13 @@ async def test_smtp_connection(request: Request):
         if not host or not username or not password:
             raise HTTPException(status_code=400, detail="Missing required fields: host, username, password")
         
-        # Test SMTP connection directly (simpler and more reliable)
+        # Test SMTP connection - handle SSL (port 465) and TLS (port 587) properly
         try:
-            if enable_tls:
+            # Port 465 typically uses SSL (SMTP_SSL)
+            if port == 465:
+                server = smtplib.SMTP_SSL(host, port, timeout=10)
+            # Port 587 and others use TLS with STARTTLS when enabled
+            elif enable_tls:
                 server = smtplib.SMTP(host, port, timeout=10)
                 server.starttls()
             else:
@@ -5988,11 +5997,22 @@ async def test_smtp_connection(request: Request):
             
             return {"success": True, "message": "SMTP connection successful"}
         except smtplib.SMTPAuthenticationError as e:
-            return {"success": False, "message": f"Authentication failed: {str(e)}"}
+            error_msg = str(e)
+            if "authentication failed" in error_msg.lower() or "535" in error_msg:
+                return {"success": False, "message": f"Authentication failed. Please check your username and password. {error_msg}"}
+            return {"success": False, "message": f"Authentication failed: {error_msg}"}
         except smtplib.SMTPConnectError as e:
-            return {"success": False, "message": f"Connection failed: {str(e)}"}
+            error_msg = str(e)
+            return {"success": False, "message": f"Connection failed to {host}:{port}. Please check the server address and port. {error_msg}"}
+        except (smtplib.SMTPServerDisconnected, ConnectionError, OSError) as e:
+            error_msg = str(e)
+            if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+                return {"success": False, "message": f"Connection timed out. Server {host}:{port} may be unreachable or firewall is blocking the connection."}
+            return {"success": False, "message": f"Connection error: {error_msg}"}
         except Exception as e:
-            return {"success": False, "message": f"SMTP error: {str(e)}"}
+            error_msg = str(e)
+            logger.error(f"SMTP connection test error: {error_msg}")
+            return {"success": False, "message": f"SMTP error: {error_msg}"}
             
     except HTTPException:
         raise
@@ -6050,6 +6070,435 @@ async def test_imap_connection(request: Request):
     except Exception as e:
         logger.error(f"Error testing IMAP connection: {e}")
         return {"success": False, "message": str(e)}
+
+# ============================================================================
+# API KEY AUTHENTICATION
+# ============================================================================
+
+security = HTTPBearer()
+
+async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify API key from Authorization header"""
+    api_key = credentials.credentials
+    
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database connection unavailable")
+    
+    try:
+        # Hash the provided API key
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        
+        # Look up API key in database
+        result = supabase.table('api_keys').select('*').eq('key_hash', key_hash).eq('is_active', True).single().execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        api_key_record = result.data
+        
+        # Check if key is expired
+        if api_key_record.get('expires_at'):
+            expires_at = datetime.fromisoformat(api_key_record['expires_at'].replace('Z', '+00:00'))
+            if expires_at < datetime.now(expires_at.tzinfo):
+                raise HTTPException(status_code=401, detail="API key has expired")
+        
+        # Update last_used_at
+        supabase.table('api_keys').update({
+            'last_used_at': datetime.now().isoformat()
+        }).eq('id', api_key_record['id']).execute()
+        
+        return api_key_record
+    except Exception as e:
+        logger.error(f"API key verification error: {e}")
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+def log_api_usage(api_key_id: str, endpoint: str, method: str, status_code: int, 
+                  response_time_ms: int, ip_address: str, user_agent: str = None):
+    """Log API usage for analytics"""
+    try:
+        if supabase:
+            supabase.table('api_usage_logs').insert({
+                'api_key_id': api_key_id,
+                'endpoint': endpoint,
+                'method': method,
+                'status_code': status_code,
+                'response_time_ms': response_time_ms,
+                'ip_address': ip_address,
+                'user_agent': user_agent,
+            }).execute()
+    except Exception as e:
+        logger.error(f"Failed to log API usage: {e}")
+
+# ============================================================================
+# API KEY MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.options("/api-keys/generate")
+@app.options("/api/api-keys/generate")
+async def options_generate_api_key(request: Request):
+    """Handle CORS preflight for generate API key endpoint"""
+    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
+
+@app.post("/api-keys/generate")
+@app.post("/api/api-keys/generate")
+async def generate_api_key(request: Request):
+    """Generate a new API key (admin only - should be protected by admin auth)"""
+    try:
+        body = await request.json()
+        name = body.get('name', '')
+        description = body.get('description', '')
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="Name is required")
+        
+        # Generate API key
+        prefix = "pk_live_"
+        random_part = secrets.token_urlsafe(24)
+        api_key = prefix + random_part
+        
+        # Hash the key for storage
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        key_prefix = api_key[:20]  # First 20 chars for display
+        
+        # Store in database
+        if not supabase:
+            raise HTTPException(status_code=503, detail="Database connection unavailable")
+        
+        result = supabase.table('api_keys').insert({
+            'name': name,
+            'description': description,
+            'key_hash': key_hash,
+            'key_prefix': key_prefix,
+            'permissions': {},
+            'rate_limit_per_minute': 60,
+            'rate_limit_per_hour': 1000,
+            'rate_limit_per_day': 10000,
+            'is_active': True,
+        }).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create API key")
+        
+        return {
+            "success": True,
+            "api_key": api_key,  # Only returned once!
+            "key_id": result.data[0]['id'],
+            "key_prefix": key_prefix,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating API key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# PUBLIC API ENDPOINTS (Require API Key)
+# ============================================================================
+
+@app.get("/api/v1/vessels")
+async def get_vessels_api(
+    api_key_record: dict = Depends(verify_api_key),
+    request: Request = None,
+    limit: int = 100,
+    offset: int = 0,
+    imo: Optional[str] = None,
+):
+    """Get list of vessels (API endpoint)"""
+    start_time = datetime.now()
+    try:
+        if not supabase:
+            raise HTTPException(status_code=503, detail="Database connection unavailable")
+        
+        query = supabase.table('vessels').select('*')
+        
+        if imo:
+            query = query.eq('imo', imo)
+        
+        query = query.range(offset, offset + limit - 1).order('created_at', desc=True)
+        result = query.execute()
+        
+        response_time = int((datetime.now() - start_time).total_seconds() * 1000)
+        client_ip = request.client.host if request else None
+        user_agent = request.headers.get('user-agent') if request else None
+        
+        log_api_usage(
+            api_key_record['id'],
+            '/api/v1/vessels',
+            'GET',
+            200,
+            response_time,
+            client_ip,
+            user_agent
+        )
+        
+        return {
+            "success": True,
+            "data": result.data or [],
+            "count": len(result.data or []),
+            "limit": limit,
+            "offset": offset,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching vessels: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/vessels/{imo}")
+async def get_vessel_by_imo_api(
+    imo: str,
+    api_key_record: dict = Depends(verify_api_key),
+    request: Request = None,
+):
+    """Get vessel by IMO number (API endpoint)"""
+    start_time = datetime.now()
+    try:
+        if not supabase:
+            raise HTTPException(status_code=503, detail="Database connection unavailable")
+        
+        result = supabase.table('vessels').select('*').eq('imo', imo).single().execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Vessel not found")
+        
+        response_time = int((datetime.now() - start_time).total_seconds() * 1000)
+        client_ip = request.client.host if request else None
+        user_agent = request.headers.get('user-agent') if request else None
+        
+        log_api_usage(
+            api_key_record['id'],
+            f'/api/v1/vessels/{imo}',
+            'GET',
+            200,
+            response_time,
+            client_ip,
+            user_agent
+        )
+        
+        return {
+            "success": True,
+            "data": result.data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching vessel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/ports")
+async def get_ports_api(
+    api_key_record: dict = Depends(verify_api_key),
+    request: Request = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Get list of ports (API endpoint)"""
+    start_time = datetime.now()
+    try:
+        if not supabase:
+            raise HTTPException(status_code=503, detail="Database connection unavailable")
+        
+        result = supabase.table('ports').select('*').range(offset, offset + limit - 1).order('created_at', desc=True).execute()
+        
+        response_time = int((datetime.now() - start_time).total_seconds() * 1000)
+        client_ip = request.client.host if request else None
+        user_agent = request.headers.get('user-agent') if request else None
+        
+        log_api_usage(
+            api_key_record['id'],
+            '/api/v1/ports',
+            'GET',
+            200,
+            response_time,
+            client_ip,
+            user_agent
+        )
+        
+        return {
+            "success": True,
+            "data": result.data or [],
+            "count": len(result.data or []),
+            "limit": limit,
+            "offset": offset,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching ports: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/companies")
+async def get_companies_api(
+    api_key_record: dict = Depends(verify_api_key),
+    request: Request = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Get list of companies (API endpoint)"""
+    start_time = datetime.now()
+    try:
+        if not supabase:
+            raise HTTPException(status_code=503, detail="Database connection unavailable")
+        
+        result = supabase.table('companies').select('*').range(offset, offset + limit - 1).order('created_at', desc=True).execute()
+        
+        response_time = int((datetime.now() - start_time).total_seconds() * 1000)
+        client_ip = request.client.host if request else None
+        user_agent = request.headers.get('user-agent') if request else None
+        
+        log_api_usage(
+            api_key_record['id'],
+            '/api/v1/companies',
+            'GET',
+            200,
+            response_time,
+            client_ip,
+            user_agent
+        )
+        
+        return {
+            "success": True,
+            "data": result.data or [],
+            "count": len(result.data or []),
+            "limit": limit,
+            "offset": offset,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching companies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# WEBHOOK DELIVERY SYSTEM
+# ============================================================================
+
+async def deliver_webhook(webhook_id: str, event_type: str, payload: dict):
+    """Deliver a webhook to a configured endpoint"""
+    try:
+        if not supabase:
+            logger.error("Supabase not available for webhook delivery")
+            return
+        
+        # Get webhook configuration
+        result = supabase.table('webhooks').select('*').eq('id', webhook_id).eq('is_active', True).single().execute()
+        
+        if not result.data:
+            logger.warning(f"Webhook {webhook_id} not found or inactive")
+            return
+        
+        webhook = result.data
+        
+        # Check if webhook listens to this event
+        events = webhook.get('events', [])
+        if event_type not in events:
+            logger.debug(f"Webhook {webhook_id} does not listen to event {event_type}")
+            return
+        
+        # Prepare webhook payload
+        webhook_payload = {
+            "event": event_type,
+            "timestamp": datetime.now().isoformat(),
+            "data": payload,
+        }
+        
+        # Add HMAC signature if secret is configured
+        headers = webhook.get('headers', {}) or {}
+        if webhook.get('secret'):
+            import hmac
+            import base64
+            secret = webhook['secret']
+            signature = hmac.new(
+                secret.encode(),
+                json.dumps(webhook_payload).encode(),
+                hashlib.sha256
+            ).digest()
+            headers['X-Webhook-Signature'] = base64.b64encode(signature).decode()
+        
+        headers['Content-Type'] = 'application/json'
+        
+        # Create delivery log entry
+        delivery_id = str(uuid.uuid4())
+        supabase.table('webhook_deliveries').insert({
+            'id': delivery_id,
+            'webhook_id': webhook_id,
+            'event_type': event_type,
+            'payload': webhook_payload,
+            'status': 'pending',
+            'attempt_number': 1,
+        }).execute()
+        
+        # Attempt delivery
+        timeout = webhook.get('timeout_seconds', 30)
+        retry_count = webhook.get('retry_count', 3)
+        
+        for attempt in range(1, retry_count + 1):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        webhook['url'],
+                        json=webhook_payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=timeout)
+                    ) as response:
+                        status_code = response.status
+                        response_text = await response.text()
+                        
+                        # Update delivery log
+                        supabase.table('webhook_deliveries').update({
+                            'status': 'success' if 200 <= status_code < 300 else 'failed',
+                            'status_code': status_code,
+                            'response_body': response_text[:1000],  # Limit response body size
+                            'delivered_at': datetime.now().isoformat(),
+                            'attempt_number': attempt,
+                        }).eq('id', delivery_id).execute()
+                        
+                        if 200 <= status_code < 300:
+                            logger.info(f"Webhook {webhook_id} delivered successfully (attempt {attempt})")
+                            return
+                        else:
+                            logger.warning(f"Webhook {webhook_id} returned status {status_code} (attempt {attempt})")
+                            
+            except asyncio.TimeoutError:
+                error_msg = f"Timeout after {timeout}s"
+                logger.warning(f"Webhook {webhook_id} timeout (attempt {attempt})")
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Webhook {webhook_id} delivery error (attempt {attempt}): {e}")
+            
+            # Update delivery log with error
+            supabase.table('webhook_deliveries').update({
+                'status': 'retrying' if attempt < retry_count else 'failed',
+                'error_message': error_msg,
+                'attempt_number': attempt,
+            }).eq('id', delivery_id).execute()
+            
+            # Wait before retry (exponential backoff)
+            if attempt < retry_count:
+                await asyncio.sleep(2 ** attempt)
+        
+        logger.error(f"Webhook {webhook_id} failed after {retry_count} attempts")
+        
+    except Exception as e:
+        logger.error(f"Error delivering webhook {webhook_id}: {e}")
+
+async def trigger_webhook_event(event_type: str, payload: dict):
+    """Trigger webhook delivery for all active webhooks listening to this event"""
+    try:
+        if not supabase:
+            return
+        
+        # Get all active webhooks
+        result = supabase.table('webhooks').select('id').eq('is_active', True).execute()
+        
+        if not result.data:
+            return
+        
+        # Deliver to all matching webhooks
+        tasks = []
+        for webhook in result.data:
+            tasks.append(deliver_webhook(webhook['id'], event_type, payload))
+        
+        # Deliver asynchronously (don't wait)
+        if tasks:
+            asyncio.create_task(asyncio.gather(*tasks, return_exceptions=True))
+    
+    except Exception as e:
+        logger.error(f"Error triggering webhook event {event_type}: {e}")
 
 # ============================================================================
 # STARTUP
