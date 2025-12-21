@@ -5889,27 +5889,13 @@ async def generate_document(request: Request):
         if not template_display_name:
             template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
         
-        # Convert PDF to images and create zip file
+        # Read file content - return PDF file directly
         if pdf_path.endswith('.pdf') and os.path.exists(pdf_path):
-            base_filename = f"{template_display_name}_{vessel_imo}"
-            logger.info(f"Converting PDF to images for download: {base_filename}")
-            logger.info(f"PDF file path: {pdf_path}, exists: {os.path.exists(pdf_path)}")
-            
-            try:
-                # Convert PDF pages to images and create zip
-                zip_content = convert_pdf_to_images_zip(pdf_path, base_filename)
-                file_content = zip_content
-                media_type = "application/zip"
-                filename = f"{template_display_name}_{vessel_imo}_images.zip"
-                logger.info(f"Successfully created zip file with images: {filename} ({len(zip_content)} bytes)")
-            except Exception as zip_error:
-                logger.error(f"Failed to convert PDF to images zip: {zip_error}")
-                # Fallback: return PDF if conversion fails
-                logger.warning("Falling back to PDF download due to conversion error")
-                with open(pdf_path, 'rb') as f:
-                    file_content = f.read()
-                media_type = "application/pdf"
-                filename = f"{template_display_name}_{vessel_imo}.pdf"
+            with open(pdf_path, 'rb') as f:
+                file_content = f.read()
+            media_type = "application/pdf"
+            filename = f"{template_display_name}_{vessel_imo}.pdf"
+            logger.info(f"Returning PDF file: {filename} ({len(file_content)} bytes)")
         else:
             # If no PDF, return DOCX
             with open(processed_docx, 'rb') as f:
@@ -5961,7 +5947,7 @@ async def generate_document(request: Request):
                                     'user_id': user_id,
                                     'template_id': template_id,
                                     'vessel_imo': vessel_imo,
-                                    'download_type': 'zip' if pdf_path.endswith('.pdf') else 'docx',
+                                    'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
                                     'file_size': len(file_content)
                                 }
                                 supabase.table('user_document_downloads').insert(download_record).execute()
@@ -5973,7 +5959,7 @@ async def generate_document(request: Request):
                             'user_id': user_id,
                             'template_id': template_id,
                             'vessel_imo': vessel_imo,
-                            'download_type': 'zip' if pdf_path.endswith('.pdf') else 'docx',
+                            'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
                             'file_size': len(file_content)
                         }
                         supabase.table('user_document_downloads').insert(download_record).execute()
