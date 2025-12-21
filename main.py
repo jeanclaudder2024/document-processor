@@ -16,6 +16,7 @@ import asyncio
 import aiohttp
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
+from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -5912,11 +5913,18 @@ async def generate_document(request: Request):
         except Exception as cleanup_error:
             logger.debug(f"Cleanup warning: {cleanup_error}")
 
-        # Return file
+        # Return file with properly encoded filename for PDF download
+        # Use RFC 5987 format for better browser compatibility
+        encoded_filename = quote(filename.encode('utf-8'))
+        content_disposition = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
+        
         return Response(
             content=file_content,
             media_type=media_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={
+                "Content-Disposition": content_disposition,
+                "Content-Type": media_type
+            }
         )
     except HTTPException:
         raise
