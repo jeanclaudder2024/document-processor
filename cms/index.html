@@ -264,30 +264,34 @@
             <!-- Data Sources Tab -->
             <div class="tab-pane fade" id="data" role="tabpanel">
                 <div class="row">
-                    <div class="col-md-12">
-                        <div class="card">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <h5 class="mb-0"><i class="fas fa-database me-2"></i>Data Sources</h5>
-                                <button class="btn btn-sm btn-outline-primary" onclick="cms.loadDataSources()">
-                                    <i class="fas fa-sync me-1"></i>Refresh
-                                </button>
+                    <div class="col-md-4">
+                        <!-- Upload CSV Card -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-success text-white">
+                                <h5 class="mb-0"><i class="fas fa-upload me-2"></i>Upload CSV Dataset</h5>
                             </div>
                             <div class="card-body">
-                                <div id="dataSourcesList">
-                                    <div class="text-center text-muted py-4">
-                                        <i class="fas fa-spinner fa-spin me-2"></i>Loading data sources...
-                                    </div>
+                                <div class="mb-3">
+                                    <label class="form-label"><strong>Dataset Name</strong></label>
+                                    <input type="text" class="form-control" id="csvDataType" placeholder="e.g., buyers_sellers" required>
+                                    <small class="text-muted">Enter a name for this dataset (letters, numbers, and underscores only)</small>
                                 </div>
+                                <div class="upload-area" id="csvUploadArea" onclick="document.getElementById('csvFile').click()">
+                                    <i class="fas fa-file-csv fa-3x text-muted mb-3"></i>
+                                    <h5>Drop CSV file here</h5>
+                                    <p class="text-muted mb-0">or click to browse</p>
+                                    <input type="file" id="csvFile" accept=".csv" style="display: none;" onchange="cms.handleCSVSelect(event)">
+                                </div>
+                                <button class="btn btn-success w-100 mt-3" onclick="cms.uploadCSV()">
+                                    <i class="fas fa-upload me-2"></i>Upload CSV
+                                </button>
+                                <small class="text-muted d-block mt-2 text-center">
+                                    <i class="fas fa-info-circle me-1"></i>CSV files can be used as data sources for placeholders
+                                </small>
                             </div>
                         </div>
                     </div>
-                </div>
-            </div>
-
-            <!-- Data Sources Tab -->
-            <div class="tab-pane fade" id="data" role="tabpanel">
-                <div class="row">
-                    <div class="col-md-12">
+                    <div class="col-md-8">
                         <div class="card">
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <h5 class="mb-0"><i class="fas fa-database me-2"></i>Data Sources</h5>
@@ -381,6 +385,51 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body" id="placeholderList">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Template Detail Modal -->
+    <div class="modal fade" id="templateDetailModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-info-circle me-2"></i>Template Details · <span id="detailTemplateName"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-4">
+                        <h6 class="text-muted mb-2">Description</h6>
+                        <p id="detailTemplateDescription" class="mb-0">No description provided</p>
+                    </div>
+                    <hr>
+                    <div class="mb-3">
+                        <h6 class="text-muted mb-3">Placeholder Configurations</h6>
+                        <div id="detailPlaceholdersList" class="table-responsive">
+                            <table class="table table-sm table-bordered">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width: 20%;">Placeholder</th>
+                                        <th style="width: 15%;">Source</th>
+                                        <th style="width: 65%;">Configuration Details</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="detailPlaceholdersTableBody">
+                                    <tr>
+                                        <td colspan="3" class="text-center text-muted py-4">
+                                            <i class="fas fa-spinner fa-spin me-2"></i>Loading placeholder details...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>

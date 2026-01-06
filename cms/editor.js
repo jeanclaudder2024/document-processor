@@ -370,7 +370,7 @@ class TemplateEditor {
 
         container.innerHTML = this.placeholders.map(ph => {
             const setting = this.currentSettings[ph] || { 
-                source: 'random', 
+                source: 'database', 
                 customValue: '', 
                 databaseTable: '',
                 databaseField: '', 
@@ -386,9 +386,9 @@ class TemplateEditor {
                         <strong><code>${ph}</code></strong>
                         <select class="form-select form-select-sm" style="width: 150px;" 
                                 onchange="editor.handleSourceChange('${ph}', this.value)">
+                            <option value="database" ${setting.source === 'database' || !setting.source ? 'selected' : ''}>Database</option>
                             <option value="random" ${setting.source === 'random' ? 'selected' : ''}>Random</option>
                             <option value="custom" ${setting.source === 'custom' ? 'selected' : ''}>Custom</option>
-                            <option value="database" ${setting.source === 'database' ? 'selected' : ''}>Database</option>
                             <option value="csv" ${setting.source === 'csv' ? 'selected' : ''}>CSV</option>
                         </select>
                     </div>

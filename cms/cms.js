@@ -158,6 +158,107 @@ class DocumentCMS {
         modal.show();
     }
 
+    async viewTemplateDetails(templateName) {
+        const template = this.findTemplateByName(templateName);
+        if (!template) {
+            this.showToast('error', 'Not Found', 'Template not found');
+            return;
+        }
+
+        const modalEl = document.getElementById('templateDetailModal');
+        const nameEl = document.getElementById('detailTemplateName');
+        const descEl = document.getElementById('detailTemplateDescription');
+        const tableBodyEl = document.getElementById('detailPlaceholdersTableBody');
+
+        if (!modalEl || !nameEl || !descEl || !tableBodyEl) {
+            console.warn('Template detail modal elements missing');
+            return;
+        }
+
+        // Set template name and description
+        const displayName = template.metadata?.display_name || template.title || template.name;
+        nameEl.textContent = displayName;
+        descEl.textContent = template.metadata?.description || template.description || 'No description provided';
+
+        // Load placeholder settings from API
+        try {
+            const templateId = template.id || template.name;
+            const templateData = await this.apiJson(`/templates/${encodeURIComponent(templateId)}`);
+            const settings = templateData.settings || {};
+            const placeholders = templateData.placeholders || [];
+
+            if (placeholders.length === 0) {
+                tableBodyEl.innerHTML = `
+                    <tr>
+                        <td colspan="3" class="text-center text-muted py-4">
+                            No placeholders found in this template.
+                        </td>
+                    </tr>
+                `;
+            } else {
+                tableBodyEl.innerHTML = placeholders.map(ph => {
+                    const setting = settings[ph] || {};
+                    const source = setting.source || 'database';
+                    let configDetails = '';
+
+                    if (source === 'database') {
+                        const table = setting.databaseTable || 'vessels';
+                        const field = setting.databaseField || 'Auto-match';
+                        configDetails = `<strong>Table:</strong> ${table}<br><strong>Field:</strong> ${field}`;
+                        if (!setting.databaseField) {
+                            configDetails += '<br><small class="text-muted">Will try to match automatically, falls back to random if not found</small>';
+                        }
+                    } else if (source === 'csv') {
+                        const csvId = setting.csvId || 'Not set';
+                        const csvField = setting.csvField || 'Not set';
+                        const csvRow = setting.csvRow !== undefined ? setting.csvRow : 0;
+                        configDetails = `<strong>CSV File:</strong> ${csvId}<br><strong>Field:</strong> ${csvField}<br><strong>Row:</strong> ${csvRow}`;
+                    } else if (source === 'custom') {
+                        const customValue = setting.customValue || 'Not set';
+                        configDetails = `<strong>Custom Value:</strong> ${customValue}`;
+                    } else if (source === 'random') {
+                        const randomOption = setting.randomOption || 'ai';
+                        const optionLabels = {
+                            'ai': 'AI Generated (using OpenAI)',
+                            'auto': 'Auto (different per vessel)',
+                            'fixed': 'Fixed (same for all vessels)'
+                        };
+                        configDetails = `<strong>Mode:</strong> ${optionLabels[randomOption] || randomOption}`;
+                    } else {
+                        configDetails = '<span class="text-muted">Not configured</span>';
+                    }
+
+                    const sourceLabels = {
+                        'database': '<span class="badge bg-primary">Database</span>',
+                        'csv': '<span class="badge bg-info">CSV</span>',
+                        'custom': '<span class="badge bg-success">Custom</span>',
+                        'random': '<span class="badge bg-warning">Random</span>'
+                    };
+
+                    return `
+                        <tr>
+                            <td><code>${ph}</code></td>
+                            <td>${sourceLabels[source] || source}</td>
+                            <td>${configDetails}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+        } catch (error) {
+            console.error('Error loading template details:', error);
+            tableBodyEl.innerHTML = `
+                <tr>
+                    <td colspan="3" class="text-center text-danger py-4">
+                        <i class="fas fa-exclamation-triangle me-2"></i>Error loading placeholder details: ${error.message}
+                    </td>
+                </tr>
+            `;
+        }
+
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+    }
+
     openMetadataModal(templateName) {
         const template = this.findTemplateByName(templateName);
         if (!template) {
@@ -674,6 +775,9 @@ class DocumentCMS {
                                 </div>
                             </div>
                             <div class="d-flex flex-column align-items-end gap-2">
+                                <button class="btn btn-sm btn-info w-100" onclick="cms.viewTemplateDetails('${template.name}')">
+                                    <i class="fas fa-info-circle me-1"></i>View Details
+                                </button>
                                 <button class="btn btn-sm btn-success w-100" onclick="cms.testGenerateDocument('${template.name}')">
                                     <i class="fas fa-vial me-1"></i>Test
                                 </button>
@@ -1443,7 +1547,7 @@ class DocumentCMS {
     // ========================================================================
     // REBUILT EDIT PLAN - CLEAN IMPLEMENTATION
     // ========================================================================
-    
+
     async editPlan(planId) {
         if (!this.ensureAuthenticated()) return;
         
@@ -1477,12 +1581,12 @@ class DocumentCMS {
             const templateName = t.name || t.file_name || '';
             const displayName = t.metadata?.display_name || t.title || templateName.replace('.docx', '');
             
-            if (!templateId) {
-                console.warn('[editPlan] ⚠️ Template has NO ID:', templateName, 'Object:', t);
+                                        if (!templateId) {
+                                            console.warn('[editPlan] ⚠️ Template has NO ID:', templateName, 'Object:', t);
             }
             
             // Check if this template is selected
-            let isChecked = false;
+                                    let isChecked = false;
             if (!isAllTemplates && currentCanDownload.length > 0) {
                 // Check by ID first, then by name
                 isChecked = currentCanDownload.some(allowed => {
@@ -1497,29 +1601,29 @@ class DocumentCMS {
             }
             
             // Get per-template limit
-            const templateLimits = plan.template_limits || {};
-            const existingLimit = templateId ? (templateLimits[templateId] || templateLimits[String(templateId)] || '') : '';
-            
-            return `
-                <div class="d-flex align-items-center mb-2 border-bottom pb-2">
-                    <div class="form-check flex-grow-1">
+                                    const templateLimits = plan.template_limits || {};
+                                    const existingLimit = templateId ? (templateLimits[templateId] || templateLimits[String(templateId)] || '') : '';
+                                    
+                                    return `
+                                        <div class="d-flex align-items-center mb-2 border-bottom pb-2">
+                                            <div class="form-check flex-grow-1">
                         <input type="checkbox" class="form-check-input template-checkbox" 
                             value="${templateName}" 
-                            data-template-id="${templateId}"
-                            ${isChecked ? 'checked' : ''}>
-                        <label class="form-check-label">${displayName}</label>
-                    </div>
-                    <div class="ms-3" style="width: 150px;">
-                        <input type="number" class="form-control form-control-sm template-limit-input" 
-                            data-template-id="${templateId}"
-                            placeholder="Limit" 
-                            value="${existingLimit}"
-                            min="1"
-                            ${!isChecked ? 'disabled' : ''}>
-                        <small class="text-muted d-block" style="font-size: 0.75rem;">Per-template limit</small>
-                    </div>
-                </div>
-            `;
+                                                    data-template-id="${templateId}"
+                                                    ${isChecked ? 'checked' : ''}>
+                                                <label class="form-check-label">${displayName}</label>
+                                            </div>
+                                            <div class="ms-3" style="width: 150px;">
+                                                <input type="number" class="form-control form-control-sm template-limit-input" 
+                                                    data-template-id="${templateId}"
+                                                    placeholder="Limit" 
+                                                    value="${existingLimit}"
+                                                    min="1"
+                                                    ${!isChecked ? 'disabled' : ''}>
+                                                <small class="text-muted d-block" style="font-size: 0.75rem;">Per-template limit</small>
+                                            </div>
+                                        </div>
+                                    `;
         }).join('');
         
         // Create modal HTML
@@ -1530,7 +1634,7 @@ class DocumentCMS {
                         <div class="modal-header">
                             <h5 class="modal-title">Edit Plan: ${plan.name || planId}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
+                            </div>
                         <div class="modal-body">
                             <div class="mb-3">
                                 <label class="form-label"><strong>Template Access:</strong></label>
@@ -1600,11 +1704,11 @@ class DocumentCMS {
                     }
                 });
             });
-            
+        
             // Clean up on close
             modalEl.addEventListener('hidden.bs.modal', function() {
-                this.remove();
-            });
+            this.remove();
+        });
         }
     }
     
@@ -1773,7 +1877,7 @@ class DocumentCMS {
                 if (response.plan_data) {
                     const responsePlanId = response.plan_data.plan_tier || planId;
                     if (!this.allPlans) this.allPlans = {};
-                    
+                
                     // Ensure can_download is array
                     const canDownloadArray = Array.isArray(response.plan_data.can_download) 
                         ? response.plan_data.can_download 
@@ -1794,7 +1898,7 @@ class DocumentCMS {
                 
                 // Reload from database after delay
                 setTimeout(async () => {
-                    await this.loadPlans(true);
+                await this.loadPlans(true);
                 }, 1000);
                 
             } else {

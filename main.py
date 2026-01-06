@@ -5395,6 +5395,75 @@ def convert_pdf_to_images_zip(pdf_path: str, base_filename: str) -> bytes:
         raise HTTPException(status_code=500, detail=f"Failed to convert PDF to images: {str(e)}")
 
 
+def merge_images_to_pdf(pdf_path: str) -> bytes:
+    """Convert PDF to images and merge them back into a single high-quality PDF
+    
+    This function:
+    1. Converts PDF pages to high-resolution images
+    2. Merges all images back into a single PDF file
+    
+    Args:
+        pdf_path: Path to the source PDF file
+        
+    Returns:
+        bytes: PDF file content with all pages merged as images
+    """
+    if not FITZ_AVAILABLE:
+        raise HTTPException(status_code=500, detail="PyMuPDF (fitz) is not available. Cannot merge images to PDF.")
+    
+    try:
+        # Open source PDF
+        source_pdf = fitz.open(pdf_path)
+        total_pages = len(source_pdf)
+        logger.info(f"Merging {total_pages} pages from PDF to images and back to PDF")
+        
+        # Create a new PDF document
+        merged_pdf = fitz.open()
+        
+        # Process each page
+        for page_num in range(total_pages):
+            page = source_pdf[page_num]
+            
+            # Render page to image at high resolution (2x for better quality)
+            # This gives us 150 DPI equivalent (72 * 2.083)
+            mat = fitz.Matrix(2.0, 2.0)
+            pix = page.get_pixmap(matrix=mat)
+            
+            # Get page dimensions
+            page_rect = page.rect
+            
+            # Create a new page in the merged PDF with the same dimensions
+            new_page = merged_pdf.new_page(width=page_rect.width, height=page_rect.height)
+            
+            # Insert the image into the new page
+            # The pixmap is at 2x resolution, so we need to scale it down to fit the page
+            # Use the full page rect to ensure the image fills the page correctly
+            img_rect = fitz.Rect(0, 0, page_rect.width, page_rect.height)
+            
+            # Convert pixmap to image and insert (fitz handles the scaling automatically)
+            new_page.insert_image(img_rect, pixmap=pix)
+            
+            # Clean up pixmap to free memory
+            pix = None
+            
+            logger.debug(f"Merged page {page_num + 1}/{total_pages} into PDF")
+        
+        source_pdf.close()
+        
+        # Save merged PDF to bytes
+        pdf_bytes = merged_pdf.tobytes()
+        merged_pdf.close()
+        
+        logger.info(f"Successfully merged {total_pages} pages into PDF ({len(pdf_bytes)} bytes)")
+        return pdf_bytes
+        
+    except Exception as e:
+        logger.error(f"Error merging images to PDF: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to merge images to PDF: {str(e)}")
+
+
 @app.options("/generate-document")
 async def options_generate_document(request: Request):
     """Handle CORS preflight for generate-document endpoint"""
@@ -5751,15 +5820,27 @@ async def generate_document(request: Request):
                                 table_info = f" from {database_table}" if database_table and database_table.lower() != 'vessels' else ""
                                 logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}'{table_info})")
                             else:
-                                logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any field in {database_table or 'vessels'}!")
+                                logger.warning(f"  ⚠️  Could not match '{placeholder}' to any field in {database_table or 'vessels'}!")
                                 if database_field:
-                                    logger.error(f"  ❌ Explicit field '{database_field}' not found in data")
-                                logger.error(f"  ❌ Available fields: {list(source_data.keys())[:20]}...")  # Show first 20
-                                logger.error(f"  ❌ This will use RANDOM data!")
-                                logger.error(f"  💡 TIP: Check if databaseField in CMS matches field names exactly (case-insensitive)")
+                                    logger.warning(f"  ⚠️  Explicit field '{database_field}' not found in data")
+                                logger.warning(f"  ⚠️  Available fields: {list(source_data.keys())[:20]}...")  # Show first 20
+                                logger.info(f"  🔄 Auto-fallback: Trying random data generation...")
+                                # Auto-fallback to random when database lookup fails
+                                random_option = setting.get('randomOption', 'ai')
+                                seed_imo = None if random_option == 'fixed' else vessel_imo
+                                data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
+                                found = True
+                                logger.info(f"  ✅ Auto-fallback: {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option})")
+                                logger.info(f"  💡 TIP: Check if databaseField in CMS matches field names exactly (case-insensitive)")
                         else:
-                            logger.error(f"  ❌❌❌ FAILED: No data available from {database_table or 'vessels'} table!")
-                            logger.error(f"  ❌ This will use RANDOM data!")
+                            logger.warning(f"  ⚠️  No data available from {database_table or 'vessels'} table!")
+                            logger.info(f"  🔄 Auto-fallback: Trying random data generation...")
+                            # Auto-fallback to random when no data available
+                            random_option = setting.get('randomOption', 'ai')
+                            seed_imo = None if random_option == 'fixed' else vessel_imo
+                            data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
+                            found = True
+                            logger.info(f"  ✅ Auto-fallback: {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option})")
 
                     elif source == 'csv':
                         csv_id = setting.get('csvId', '')
@@ -5821,29 +5902,56 @@ async def generate_document(request: Request):
                     logger.warning(f"   Will use random data as fallback")
 
             if not found:
-                # Try intelligent matching even if not configured in CMS
-                # This helps match common vessel fields automatically
-                logger.info(f"  🔍 {placeholder}: Not found in configured sources, trying intelligent database matching...")
-                intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
+                # If source is 'database' but no setting was found, try intelligent matching first
+                # This handles new placeholders that default to database source
+                source = setting.get('source', 'database') if setting else 'database'
                 
-                if intelligent_field and intelligent_value:
-                    data_mapping[placeholder] = intelligent_value
-                    found = True
-                    logger.info(f"  ✅✅✅ AUTO-MATCHED: {placeholder} = '{intelligent_value}' (from vessel field '{intelligent_field}')")
-                    logger.info(f"  💡 TIP: Configure this in CMS for more control over data source")
-                else:
-                    # Fall back to random data
-                    if setting:
-                        random_option = setting.get('randomOption', 'ai')
-                        source = setting.get('source', 'random')
-                        logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
+                if source == 'database' or not setting:
+                    # Try intelligent database matching first (auto-fallback behavior)
+                    logger.info(f"  🔍 {placeholder}: Database source but no match found, trying intelligent database matching...")
+                    intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
+                    
+                    if intelligent_field and intelligent_value:
+                        data_mapping[placeholder] = intelligent_value
+                        found = True
+                        logger.info(f"  ✅✅✅ AUTO-MATCHED: {placeholder} = '{intelligent_value}' (from vessel field '{intelligent_field}')")
+                        logger.info(f"  💡 TIP: Configure this in CMS for more control over data source")
                     else:
-                        random_option = 'ai'
-                        logger.warning(f"  ⚠⚠⚠ {placeholder}: Not configured in CMS and no intelligent match found, using random data")
+                        # Fall back to random data
+                        logger.info(f"  🔄 Intelligent matching failed, auto-fallback to random data...")
+                        if setting:
+                            random_option = setting.get('randomOption', 'ai')
+                            logger.info(f"  ⚠️  {placeholder}: Using RANDOM data (source: 'database', database lookup failed)")
+                        else:
+                            random_option = 'ai'
+                            logger.info(f"  ⚠️  {placeholder}: Not configured in CMS, defaulting to database then random")
 
-                    seed_imo = None if random_option == 'fixed' else vessel_imo
-                    data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
-                    logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
+                        seed_imo = None if random_option == 'fixed' else vessel_imo
+                        data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
+                        logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
+                else:
+                    # For other sources (custom, csv), try intelligent matching as fallback
+                    logger.info(f"  🔍 {placeholder}: Not found in configured sources, trying intelligent database matching...")
+                    intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
+                    
+                    if intelligent_field and intelligent_value:
+                        data_mapping[placeholder] = intelligent_value
+                        found = True
+                        logger.info(f"  ✅✅✅ AUTO-MATCHED: {placeholder} = '{intelligent_value}' (from vessel field '{intelligent_field}')")
+                        logger.info(f"  💡 TIP: Configure this in CMS for more control over data source")
+                    else:
+                        # Fall back to random data
+                        if setting:
+                            random_option = setting.get('randomOption', 'ai')
+                            source = setting.get('source', 'random')
+                            logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
+                        else:
+                            random_option = 'ai'
+                            logger.warning(f"  ⚠⚠⚠ {placeholder}: Not configured in CMS and no intelligent match found, using random data")
+
+                        seed_imo = None if random_option == 'fixed' else vessel_imo
+                        data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
+                        logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
@@ -5889,26 +5997,28 @@ async def generate_document(request: Request):
         if not template_display_name:
             template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
         
-        # Convert PDF to images and create zip file (users download images, not PDF)
+        # Convert PDF to images and merge back to PDF (high quality merged PDF)
         if pdf_path.endswith('.pdf') and os.path.exists(pdf_path):
             base_filename = f"{template_display_name}_{vessel_imo}"
-            logger.info(f"Converting PDF to images ZIP for download: {base_filename}")
+            logger.info(f"Converting PDF to images and merging back to PDF: {base_filename}")
             logger.info(f"PDF file path: {pdf_path}, exists: {os.path.exists(pdf_path)}")
             
             try:
-                # Convert PDF pages to images and create zip
-                zip_content = convert_pdf_to_images_zip(pdf_path, base_filename)
-                file_content = zip_content
-                media_type = "application/zip"
-                filename = f"{template_display_name}_{vessel_imo}_images.zip"
-                logger.info(f"Successfully created ZIP file with images: {filename} ({len(zip_content)} bytes)")
-            except Exception as zip_error:
-                logger.error(f"Failed to convert PDF to images zip: {zip_error}", exc_info=True)
-                # Raise error instead of falling back to PDF - user should get images only
-                raise HTTPException(
-                    status_code=500, 
-                    detail=f"Failed to convert PDF to images: {str(zip_error)}. Please try again."
-                )
+                # Convert PDF to images and merge back into a single high-quality PDF
+                merged_pdf_content = merge_images_to_pdf(pdf_path)
+                file_content = merged_pdf_content
+                media_type = "application/pdf"
+                filename = f"{template_display_name}_{vessel_imo}.pdf"
+                logger.info(f"Successfully created merged PDF: {filename} ({len(merged_pdf_content)} bytes)")
+            except Exception as merge_error:
+                logger.error(f"Failed to merge PDF images: {merge_error}", exc_info=True)
+                # Fallback to original PDF if merge fails
+                logger.warning("Falling back to original PDF file")
+                with open(pdf_path, 'rb') as f:
+                    file_content = f.read()
+                media_type = "application/pdf"
+                filename = f"{template_display_name}_{vessel_imo}.pdf"
+                logger.info(f"Using original PDF as fallback: {filename} ({len(file_content)} bytes)")
         else:
             # If no PDF, return DOCX
             with open(processed_docx, 'rb') as f:
@@ -5960,7 +6070,7 @@ async def generate_document(request: Request):
                                     'user_id': user_id,
                                     'template_id': template_id,
                                     'vessel_imo': vessel_imo,
-                                    'download_type': 'zip' if pdf_path.endswith('.pdf') else 'docx',
+                                    'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
                                     'file_size': len(file_content)
                                 }
                                 supabase.table('user_document_downloads').insert(download_record).execute()
@@ -5972,7 +6082,7 @@ async def generate_document(request: Request):
                             'user_id': user_id,
                             'template_id': template_id,
                             'vessel_imo': vessel_imo,
-                            'download_type': 'zip' if pdf_path.endswith('.pdf') else 'docx',
+                            'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
                             'file_size': len(file_content)
                         }
                         supabase.table('user_document_downloads').insert(download_record).execute()
