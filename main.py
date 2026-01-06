@@ -1123,15 +1123,21 @@ async def get_database_table_columns(table_name: str, request: Request):
             raise HTTPException(status_code=503, detail="Supabase not available")
         
         # Try to get column information from Supabase
-        # We'll query the table with LIMIT 0 to get column names without data
+        # Query multiple rows to ensure we get ALL columns, even if some are NULL in first row
         try:
-            # Get a sample row to infer column names
-            response = supabase.table(table_name).select('*').limit(1).execute()
+            # Get multiple rows to ensure we capture all columns
+            # Some columns might be NULL in the first row, so we check multiple rows
+            response = supabase.table(table_name).select('*').limit(10).execute()
             
             if response.data and len(response.data) > 0:
-                # Extract column names from the first row
+                # Collect ALL unique column names from ALL rows
+                all_columns = set()
+                for row in response.data:
+                    all_columns.update(row.keys())
+                
+                # Convert to list of column objects
                 columns = []
-                for key in response.data[0].keys():
+                for key in sorted(all_columns):
                     # Create a human-readable label
                     label = key.replace('_', ' ').title()
                     columns.append({
@@ -1140,16 +1146,22 @@ async def get_database_table_columns(table_name: str, request: Request):
                         'type': 'text'  # Default type, could be enhanced with actual type detection
                     })
                 
+                logger.info(f"Found {len(columns)} columns in table '{table_name}': {[c['name'] for c in columns[:10]]}...")
                 return {"success": True, "table": table_name, "columns": columns}
             else:
-                # Table exists but is empty, try to get schema info
-                # For now, return empty list
-                return {"success": True, "table": table_name, "columns": []}
+                # Table exists but is empty, try to get schema info from predefined list
+                logger.warning(f"Table '{table_name}' is empty, using predefined columns if available")
+                predefined_columns = _get_predefined_table_columns(table_name)
+                if predefined_columns:
+                    return {"success": True, "table": table_name, "columns": predefined_columns}
+                else:
+                    return {"success": True, "table": table_name, "columns": []}
         except Exception as table_exc:
             logger.error(f"Error querying table {table_name}: {table_exc}")
             # Fallback to predefined column lists for known tables
             predefined_columns = _get_predefined_table_columns(table_name)
             if predefined_columns:
+                logger.info(f"Using predefined columns for table '{table_name}'")
                 return {"success": True, "table": table_name, "columns": predefined_columns}
             else:
                 raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found or not accessible")
@@ -1200,7 +1212,20 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
             {'name': 'id', 'label': 'ID', 'type': 'integer'},
             {'name': 'name', 'label': 'Company Name', 'type': 'text'},
             {'name': 'country', 'label': 'Country', 'type': 'text'},
+            {'name': 'city', 'label': 'City', 'type': 'text'},
+            {'name': 'address', 'label': 'Address', 'type': 'text'},
             {'name': 'type', 'label': 'Company Type', 'type': 'text'},
+            {'name': 'company_type', 'label': 'Company Type', 'type': 'text'},
+            {'name': 'email', 'label': 'Email', 'type': 'text'},
+            {'name': 'phone', 'label': 'Phone', 'type': 'text'},
+            {'name': 'website', 'label': 'Website', 'type': 'text'},
+            {'name': 'industry', 'label': 'Industry', 'type': 'text'},
+            {'name': 'employees_count', 'label': 'Employees Count', 'type': 'integer'},
+            {'name': 'annual_revenue', 'label': 'Annual Revenue', 'type': 'numeric'},
+            {'name': 'founded_year', 'label': 'Founded Year', 'type': 'integer'},
+            {'name': 'description', 'label': 'Description', 'type': 'text'},
+            {'name': 'created_at', 'label': 'Created At', 'type': 'timestamp'},
+            {'name': 'updated_at', 'label': 'Updated At', 'type': 'timestamp'},
         ],
         'brokers': [
             {'name': 'id', 'label': 'ID', 'type': 'integer'},

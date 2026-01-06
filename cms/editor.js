@@ -149,8 +149,20 @@ class TemplateEditor {
             const settingsData = await this.apiJson(`/placeholder-settings?template_id=${encodeURIComponent(templateId)}`);
             if (settingsData && settingsData.settings) {
                 this.currentSettings = settingsData.settings;
+                // Ensure all placeholders have a default source of 'database' if not set
+                this.placeholders.forEach(ph => {
+                    if (!this.currentSettings[ph]) {
+                        this.currentSettings[ph] = { source: 'database' };
+                    } else if (!this.currentSettings[ph].source) {
+                        this.currentSettings[ph].source = 'database';
+                    }
+                });
             } else {
                 this.currentSettings = {};
+                // Initialize all placeholders with 'database' as default source
+                this.placeholders.forEach(ph => {
+                    this.currentSettings[ph] = { source: 'database' };
+                });
             }
             
             // Display placeholders
@@ -548,7 +560,7 @@ class TemplateEditor {
 
     updateSetting(placeholder, key, value) {
         if (!this.currentSettings[placeholder]) {
-            this.currentSettings[placeholder] = { source: 'random' };
+            this.currentSettings[placeholder] = { source: 'database' };
         }
         this.currentSettings[placeholder][key] = value;
     }
