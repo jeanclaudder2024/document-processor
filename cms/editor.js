@@ -415,7 +415,7 @@ class TemplateEditor {
                     </div>
                     
                     <!-- Database Source -->
-                    <div class="source-option ${setting.source === 'database' ? 'active' : ''}" data-source="database">
+                    <div class="source-option ${setting.source === 'database' || !setting.source || setting.source === '' ? 'active' : ''}" data-source="database">
                         <label class="form-label small">Database Table:</label>
                         <select class="form-select form-select-sm mb-2" id="dbTable_${ph}"
                                 onchange="editor.handleDatabaseTableChange('${ph}', this.value)">
@@ -496,7 +496,12 @@ class TemplateEditor {
 
     async handleSourceChange(placeholder, source) {
         if (!this.currentSettings[placeholder]) {
-            this.currentSettings[placeholder] = {};
+            // Default to 'database' if no setting exists
+            this.currentSettings[placeholder] = { source: 'database' };
+        }
+        // If source is not provided or empty, default to 'database'
+        if (!source || source === '') {
+            source = 'database';
         }
         this.currentSettings[placeholder].source = source;
         

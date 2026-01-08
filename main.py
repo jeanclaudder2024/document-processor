@@ -1127,13 +1127,22 @@ async def get_database_table_columns(table_name: str, request: Request):
         try:
             # Get multiple rows to ensure we capture all columns
             # Some columns might be NULL in the first row, so we check multiple rows
-            response = supabase.table(table_name).select('*').limit(10).execute()
+            # Also try to get schema information if available
+            response = supabase.table(table_name).select('*').limit(50).execute()
+            
+            # Get predefined columns first (as base list)
+            predefined_columns = _get_predefined_table_columns(table_name)
+            predefined_column_names = {col['name'] for col in predefined_columns} if predefined_columns else set()
             
             if response.data and len(response.data) > 0:
                 # Collect ALL unique column names from ALL rows
                 all_columns = set()
                 for row in response.data:
                     all_columns.update(row.keys())
+                
+                # Merge with predefined columns to ensure we have all columns
+                # Even if a column is NULL in all rows, it should still appear if it's in the schema
+                all_columns.update(predefined_column_names)
                 
                 # Convert to list of column objects
                 columns = []
@@ -1146,13 +1155,13 @@ async def get_database_table_columns(table_name: str, request: Request):
                         'type': 'text'  # Default type, could be enhanced with actual type detection
                     })
                 
-                logger.info(f"Found {len(columns)} columns in table '{table_name}': {[c['name'] for c in columns[:10]]}...")
+                logger.info(f"Found {len(columns)} columns in table '{table_name}': {[c['name'] for c in columns[:15]]}...")
                 return {"success": True, "table": table_name, "columns": columns}
             else:
-                # Table exists but is empty, try to get schema info from predefined list
+                # Table exists but is empty, use predefined columns
                 logger.warning(f"Table '{table_name}' is empty, using predefined columns if available")
-                predefined_columns = _get_predefined_table_columns(table_name)
                 if predefined_columns:
+                    logger.info(f"Using {len(predefined_columns)} predefined columns for table '{table_name}'")
                     return {"success": True, "table": table_name, "columns": predefined_columns}
                 else:
                     return {"success": True, "table": table_name, "columns": []}
