@@ -271,7 +271,7 @@ def fetch_template_placeholders(template_id: str,
                 continue
                 
             supabase_settings[placeholder_key] = {
-                'source': row.get('source', 'random'),
+                'source': row.get('source', 'database'),  # Default to database instead of random
                 'customValue': str(row.get('custom_value') or '').strip(),
                 'databaseTable': str(row.get('database_table') or '').strip(),
                 'databaseField': str(row.get('database_field') or '').strip(),
@@ -367,7 +367,7 @@ def upsert_template_placeholders(template_id: str,
             rows.append({
                 'template_id': template_id,
                 'placeholder': placeholder,
-                'source': cfg.get('source', 'random'),
+                'source': cfg.get('source', 'database'),  # Default to database instead of random
                 'custom_value': cfg.get('customValue'),
                 'database_table': cfg.get('databaseTable') or cfg.get('database_table'),
                 'database_field': cfg.get('databaseField') or cfg.get('database_field'),
@@ -2592,8 +2592,8 @@ async def upload_template(
                         {
                             'template_id': template_id,
                             'placeholder': placeholder,
-                            'source': 'random',
-                            'random_option': 'ai'
+                            'source': 'database',  # Default to database instead of random
+                            'random_option': 'ai'  # Keep for if user switches to random later
                         }
                         for placeholder in placeholders
                         if placeholder not in existing_settings
@@ -2642,7 +2642,7 @@ async def upload_template(
         existing_local_settings = fetch_template_placeholders(template_id or docx_filename, docx_filename)
         for placeholder in placeholders:
             default_settings[placeholder] = existing_local_settings.get(placeholder, {
-                'source': 'random',
+                'source': 'database',  # Default to database instead of random
                 'customValue': '',
                 'databaseField': '',
                 'csvId': '',
@@ -2933,7 +2933,7 @@ async def get_placeholder_settings(
             for row in response.data or []:
                 template_id = str(row['template_id'])
                 aggregated.setdefault(template_id, {})[row['placeholder']] = {
-                    'source': row.get('source', 'random'),
+                    'source': row.get('source', 'database'),  # Default to database instead of random
                     'customValue': row.get('custom_value') or '',
                     'databaseTable': row.get('database_table') or '',
                     'databaseField': row.get('database_field') or '',
@@ -2988,7 +2988,7 @@ async def save_placeholder_settings(request: Request):
                 if not placeholder:
                     continue
                 sanitised_settings[placeholder] = {
-                    'source': cfg.get('source', 'random'),
+                    'source': cfg.get('source', 'database'),  # Default to database instead of random
                     'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
                     'databaseTable': str(cfg.get('databaseTable', '')).strip() if cfg.get('databaseTable') else '',
                     'databaseField': str(cfg.get('databaseField', '')).strip() if cfg.get('databaseField') else '',
@@ -4499,7 +4499,7 @@ def validate_placeholder_setting(setting: Dict) -> Tuple[bool, List[str]]:
     if not isinstance(setting, dict):
         return False, ["Setting must be a dictionary"]
     
-    source = setting.get('source', 'random')
+    source = setting.get('source', 'database')  # Default to database instead of random
     valid_sources = ['random', 'database', 'csv', 'custom']
     
     if source not in valid_sources:
@@ -5702,7 +5702,7 @@ async def generate_document(request: Request):
                     logger.warning(f"⚠️  Invalid placeholder setting for '{placeholder}': {', '.join(validation_errors)}")
                     logger.warning(f"   Will use random data as fallback")
                 
-                source = setting.get('source', 'random')
+                source = setting.get('source', 'database')  # Default to database instead of random
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source})")
                 logger.info(f"📋 FULL CMS SETTING for '{placeholder}':")
                 logger.info(f"   source: '{source}'")
@@ -5977,7 +5977,7 @@ async def generate_document(request: Request):
                         # Fall back to random data
                         if setting:
                             random_option = setting.get('randomOption', 'ai')
-                            source = setting.get('source', 'random')
+                            source = setting.get('source', 'database')  # Default to database instead of random
                             logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
                         else:
                             random_option = 'ai'
