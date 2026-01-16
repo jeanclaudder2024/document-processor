@@ -3802,7 +3802,7 @@ async def get_template_plan_info(template_identifier: str):
             # Template has no plan restrictions - available to all active plans
             logger.info(f"Template {template_id} has no plan permissions - available to all plans")
             all_plans_res = supabase.table('subscription_plans').select(
-                'id, plan_name, plan_tier, name'
+                'id, plan_name, plan_tier'
             ).eq('is_active', True).execute()
             
             plans = []
@@ -3827,7 +3827,7 @@ async def get_template_plan_info(template_identifier: str):
         
         # Template has specific plan permissions
         plans_res = supabase.table('subscription_plans').select(
-            'id, plan_name, plan_tier, name'
+            'id, plan_name, plan_tier'
         ).in_('id', plan_ids).eq('is_active', True).execute()
         
         plans = []
