@@ -318,13 +318,35 @@ class TemplateEditor {
 
     async loadPlans() {
         try {
-            const data = await this.apiJson('/plans');
+            // CRITICAL: Use /plans-db endpoint to get plans from database (not JSON file)
+            // This ensures we get the same structure as the CMS (plan_tier as keys)
+            const data = await this.apiJson('/plans-db');
             if (data && data.plans) {
                 this.plans = data.plans;
+                console.log('[loadPlans] ✅ Loaded plans from database:', Object.keys(this.plans).length, 'plans');
+                console.log('[loadPlans] Plan keys (plan_tiers):', Object.keys(this.plans));
                 this.populatePlanCheckboxes();
+            } else {
+                console.warn('[loadPlans] ⚠️ No plans in response, trying /plans fallback');
+                // Fallback to JSON file if database endpoint fails
+                const fallbackData = await this.apiJson('/plans');
+                if (fallbackData && fallbackData.plans) {
+                    this.plans = fallbackData.plans;
+                    this.populatePlanCheckboxes();
+                }
             }
         } catch (error) {
-            console.error('Failed to load plans:', error);
+            console.error('[loadPlans] ❌ Failed to load plans:', error);
+            // Try fallback to JSON file
+            try {
+                const fallbackData = await this.apiJson('/plans');
+                if (fallbackData && fallbackData.plans) {
+                    this.plans = fallbackData.plans;
+                    this.populatePlanCheckboxes();
+                }
+            } catch (fallbackError) {
+                console.error('[loadPlans] ❌ Fallback also failed:', fallbackError);
+            }
         }
     }
 
@@ -610,7 +632,14 @@ class TemplateEditor {
             description,
             fontFamily: fontFamily || null,
             fontSize: fontSizeInput,
-            planIds
+            planIds,
+            planIdsCount: planIds.length,
+            checkedCheckboxes: planCheckboxes.length
+        });
+        
+        // Log each checkbox value for debugging
+        Array.from(planCheckboxes).forEach((cb, idx) => {
+            console.log(`[saveTemplateSettings] 📋 Checkbox ${idx + 1}: value="${cb.value}", checked=${cb.checked}`);
         });
 
         // Validate fontSize if provided
