@@ -2612,24 +2612,58 @@ async def upload_template(
                             
                             # Insert new permissions
                             permission_rows = []
-                            for plan_id in plan_ids_list:
-                                if plan_id:  # Only add non-empty plan IDs
+                            for plan_identifier in plan_ids_list:
+                                if not plan_identifier:
+                                    continue
+                                
+                                # CRITICAL FIX: plan_identifier can be plan_tier (basic, professional) or plan_id (UUID)
+                                # We need to convert plan_tier to plan_id (UUID) to match the database
+                                # Skip broker membership - it uses a different permissions table (broker_template_permissions)
+                                if str(plan_identifier).lower() in ['broker', 'broker-membership']:
+                                    logger.info(f"Skipping broker membership '{plan_identifier}' - it uses broker_template_permissions table")
+                                    continue
+                                
+                                plan_id_uuid = None
+                                try:
+                                    # First, check if plan_identifier is already a UUID
+                                    plan_uuid_test = uuid.UUID(str(plan_identifier))
+                                    plan_id_uuid = str(plan_uuid_test)
+                                    logger.debug(f"[upload-template] plan_identifier {plan_identifier} is a UUID: {plan_id_uuid}")
+                                except (ValueError, TypeError):
+                                    # Not a UUID, try to find by plan_tier
+                                    logger.debug(f"[upload-template] plan_identifier {plan_identifier} is not a UUID, trying to find by plan_tier")
+                                    plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
+                                    if plan_res.data and len(plan_res.data) > 0:
+                                        plan_id_uuid = str(plan_res.data[0]['id'])
+                                        logger.info(f"[upload-template] Found plan_id {plan_id_uuid} for plan_tier {plan_identifier}")
+                                    else:
+                                        logger.warning(f"[upload-template] Could not find plan_id for plan_tier {plan_identifier}")
+                                
+                                if plan_id_uuid:
                                     permission_rows.append({
-                                        'plan_id': str(plan_id),
+                                        'plan_id': plan_id_uuid,
                                         'template_id': str(template_id),
                                         'can_download': True
                                     })
+                                    logger.debug(f"[upload-template] Added permission for plan_id {plan_id_uuid} (from plan_identifier {plan_identifier})")
                             
                             if permission_rows:
+                                logger.info(f"[upload-template] Inserting {len(permission_rows)} plan permissions for template {template_id}")
+                                logger.info(f"[upload-template] Plan permission rows: {[r['plan_id'] for r in permission_rows]}")
                                 permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
                                 if getattr(permissions_response, "error", None):
                                     warnings.append("Failed to set plan permissions")
                                     logger.error(f"Plan permissions insert error: {permissions_response.error}")
+                                    logger.error(f"Failed permission rows: {permission_rows}")
                                 else:
-                                    logger.info(f"Set plan permissions for {len(permission_rows)} plans")
+                                    logger.info(f"[upload-template] ✅ Successfully set plan permissions for {len(permission_rows)} plans")
+                            else:
+                                logger.info(f"[upload-template] No plan permissions to insert (plan_ids_list was empty or could not resolve to UUIDs)")
                         except Exception as perm_exc:
                             warnings.append(f"Failed to set plan permissions: {str(perm_exc)}")
                             logger.error(f"Error setting plan permissions: {perm_exc}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                 else:
                     warnings.append("Supabase metadata sync failed; template served from local storage")
                     logger.warning("Unable to retrieve template metadata after Supabase upsert")

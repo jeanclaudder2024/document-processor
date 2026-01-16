@@ -111,14 +111,21 @@ class DocumentCMS {
             return;
         }
         
-        container.innerHTML = Object.entries(this.allPlans).map(([planId, plan]) => `
-            <div class="form-check">
-                <input type="checkbox" class="form-check-input" id="plan_${planId}" value="${planId}">
-                <label class="form-check-label" for="plan_${planId}">
-                    ${plan.name || planId}
-                </label>
-            </div>
-        `).join('');
+        container.innerHTML = Object.entries(this.allPlans).map(([planId, plan]) => {
+            // CRITICAL FIX: Use plan.id (UUID) instead of planId (plan_tier) as the checkbox value
+            // The backend expects UUIDs when creating plan_template_permissions
+            // For broker membership, the id is "broker-membership" which is handled specially in backend
+            const planUuid = plan.id || planId; // Fallback to planId if id is missing
+            const displayName = plan.name || plan.plan_name || planId;
+            return `
+                <div class="form-check">
+                    <input type="checkbox" class="form-check-input" id="plan_${planUuid}" value="${planUuid}">
+                    <label class="form-check-label" for="plan_${planUuid}">
+                        ${displayName}
+                    </label>
+                </div>
+            `;
+        }).join('');
     }
 
     findTemplateByName(name) {
@@ -339,15 +346,21 @@ class DocumentCMS {
         console.log('[populateMetaPlanCheckboxes] 📋 Available plans:', Object.keys(this.allPlans));
         
         container.innerHTML = Object.entries(this.allPlans).map(([planId, plan]) => {
-            // planId is plan_tier (basic, professional, etc.)
-            // Check if this plan_tier is in currentPlanIds
-            const isChecked = currentPlanIdsSet.has(String(planId)) || currentPlanIdsSet.has(String(plan.plan_tier || planId));
-            console.log('[populateMetaPlanCheckboxes] 📋 Plan:', planId, 'isChecked:', isChecked);
+            // CRITICAL FIX: Use plan.id (UUID) instead of planId (plan_tier) as the checkbox value
+            const planUuid = plan.id || planId; // Fallback to planId if id is missing
+            const displayName = plan.name || plan.plan_name || planId;
+            
+            // Check if this plan is selected - support both UUID and plan_tier matching
+            // Backend might return either UUID or plan_tier, so check both
+            const isChecked = currentPlanIdsSet.has(String(planUuid)) || 
+                            currentPlanIdsSet.has(String(planId)) || 
+                            currentPlanIdsSet.has(String(plan.plan_tier || planId));
+            console.log('[populateMetaPlanCheckboxes] 📋 Plan:', planUuid, 'tier:', planId, 'isChecked:', isChecked);
             return `
                 <div class="form-check">
-                    <input type="checkbox" class="form-check-input meta-plan-checkbox" id="meta_plan_${planId}" value="${planId}" ${isChecked ? 'checked' : ''}>
-                    <label class="form-check-label" for="meta_plan_${planId}">
-                        ${plan.name || plan.plan_name || planId}
+                    <input type="checkbox" class="form-check-input meta-plan-checkbox" id="meta_plan_${planUuid}" value="${planUuid}" ${isChecked ? 'checked' : ''}>
+                    <label class="form-check-label" for="meta_plan_${planUuid}">
+                        ${displayName}
                     </label>
                 </div>
             `;
@@ -845,7 +858,10 @@ class DocumentCMS {
         const planCheckboxes = document.querySelectorAll('#planCheckboxes input[type="checkbox"]:checked');
         const selectedPlanIds = Array.from(planCheckboxes).map(cb => cb.value).filter(v => v);
         if (selectedPlanIds.length > 0) {
+            console.log('[uploadTemplate] Selected plan IDs (UUIDs):', selectedPlanIds);
             formData.append('plan_ids', JSON.stringify(selectedPlanIds));
+        } else {
+            console.log('[uploadTemplate] No plans selected');
         }
 
         // Show loading state
