@@ -2123,6 +2123,41 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
     """Get details for a specific template"""
     try:
         metadata_map = load_template_metadata()
+        
+        # CRITICAL FIX: Handle hash-based IDs (12 hex characters) used by local templates
+        # Hash IDs are generated as: hashlib.md5(file_name.encode()).hexdigest()[:12]
+        is_hash_id = len(template_name) == 12 and re.match(r'^[0-9a-f]+$', template_name, re.IGNORECASE)
+        
+        if is_hash_id:
+            logger.debug(f"[get_template] Template identifier '{template_name}' appears to be a hash ID, looking up file...")
+            # Try to find the template file that matches this hash
+            found_file = None
+            try:
+                for filename in os.listdir(TEMPLATES_DIR):
+                    if not filename.lower().endswith('.docx'):
+                        continue
+                    file_name = ensure_docx_filename(filename)
+                    computed_hash = hashlib.md5(file_name.encode()).hexdigest()[:12]
+                    if computed_hash.lower() == template_name.lower():
+                        found_file = file_name
+                        logger.info(f"[get_template] Found template file '{found_file}' matching hash ID '{template_name}'")
+                        break
+                
+                if not found_file and SUPABASE_ENABLED:
+                    # Also check Supabase templates - but they use UUIDs, not hashes
+                    # So skip this for now
+                    pass
+                    
+            except Exception as hash_lookup_exc:
+                logger.warning(f"[get_template] Error looking up hash ID '{template_name}': {hash_lookup_exc}")
+            
+            if found_file:
+                # Use the found file name instead of the hash
+                template_name = found_file
+            else:
+                # Hash ID not found - try to resolve as regular template name anyway
+                logger.warning(f"[get_template] Hash ID '{template_name}' not found in filesystem, trying as regular template name")
+        
         docx_name = ensure_docx_filename(template_name)
 
         if SUPABASE_ENABLED:
