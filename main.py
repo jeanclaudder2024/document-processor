@@ -1648,7 +1648,6 @@ async def get_templates(request: Request):
                         # Add plan information
                         "plan_name": display_plan_name,
                         "plan_tiers": can_download_plans,
-                        "plan_ids": [str(pid) for pid in plan_ids] if plan_ids else [],  # CRITICAL: Include plan_ids (UUIDs) for checkbox matching
                         "can_download": can_download  # True if has plan permissions or is public
                     }
                     templates.append(template_payload)
@@ -1712,34 +1711,13 @@ async def get_templates(request: Request):
                 continue
 
             file_path = os.path.join(TEMPLATES_DIR, file_name)
-            
-            # Check if file exists before trying to access it
-            if not os.path.exists(file_path):
-                logger.warning(f"[templates] Template file not found in filesystem (exists in DB only): {file_path}")
-                # Skip this template - it exists in database but not in filesystem
-                # This can happen if file was deleted or moved but DB record wasn't updated
-                continue
-            
             try:
                 file_size = os.path.getsize(file_path)
             except OSError:
                 file_size = 0
-                logger.warning(f"[templates] Could not get file size for {file_path}, using 0")
-            
-            try:
-                created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
-            except OSError:
-                created_at = datetime.utcnow().isoformat()
-                logger.warning(f"[templates] Could not get creation time for {file_path}, using current time")
-            
-            # Extract placeholders safely
-            placeholders = []
-            try:
-                placeholders = extract_placeholders_from_docx(file_path)
-            except Exception as ph_exc:
-                logger.warning(f"[templates] Could not extract placeholders from {file_path}: {ph_exc}")
-                placeholders = []  # Use empty list if extraction fails
-            
+            created_at = datetime.fromtimestamp(
+                os.path.getctime(file_path)).isoformat()
+            placeholders = extract_placeholders_from_docx(file_path)
             metadata_entry = metadata_map.get(file_name, {})
 
             template_id = hashlib.md5(file_name.encode()).hexdigest()[:12]
@@ -2123,41 +2101,6 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
     """Get details for a specific template"""
     try:
         metadata_map = load_template_metadata()
-        
-        # CRITICAL FIX: Handle hash-based IDs (12 hex characters) used by local templates
-        # Hash IDs are generated as: hashlib.md5(file_name.encode()).hexdigest()[:12]
-        is_hash_id = len(template_name) == 12 and re.match(r'^[0-9a-f]+$', template_name, re.IGNORECASE)
-        
-        if is_hash_id:
-            logger.debug(f"[get_template] Template identifier '{template_name}' appears to be a hash ID, looking up file...")
-            # Try to find the template file that matches this hash
-            found_file = None
-            try:
-                for filename in os.listdir(TEMPLATES_DIR):
-                    if not filename.lower().endswith('.docx'):
-                        continue
-                    file_name = ensure_docx_filename(filename)
-                    computed_hash = hashlib.md5(file_name.encode()).hexdigest()[:12]
-                    if computed_hash.lower() == template_name.lower():
-                        found_file = file_name
-                        logger.info(f"[get_template] Found template file '{found_file}' matching hash ID '{template_name}'")
-                        break
-                
-                if not found_file and SUPABASE_ENABLED:
-                    # Also check Supabase templates - but they use UUIDs, not hashes
-                    # So skip this for now
-                    pass
-                    
-            except Exception as hash_lookup_exc:
-                logger.warning(f"[get_template] Error looking up hash ID '{template_name}': {hash_lookup_exc}")
-            
-            if found_file:
-                # Use the found file name instead of the hash
-                template_name = found_file
-            else:
-                # Hash ID not found - try to resolve as regular template name anyway
-                logger.warning(f"[get_template] Hash ID '{template_name}' not found in filesystem, trying as regular template name")
-        
         docx_name = ensure_docx_filename(template_name)
 
         if SUPABASE_ENABLED:
@@ -2470,8 +2413,6 @@ async def update_template_metadata(
                 logger.warning(f"Could not convert plan_ids to plan_tiers: {e}")
                 plan_tiers = plan_ids
         
-        # Return both plan_ids (UUIDs) and plan_tiers for frontend compatibility
-        # Frontend checkboxes now use UUIDs, but plan_tiers are useful for display
         return {
             "success": True,
             "template_id": str(template_record['id']) if template_record else template_id,
@@ -2483,8 +2424,7 @@ async def update_template_metadata(
                 "font_size": font_size,
                 "requires_broker_membership": requires_broker_membership if 'requires_broker_membership' in payload else None
             },
-            "plan_ids": plan_ids if plan_ids else [],  # Return UUIDs for checkbox matching
-            "plan_tiers": plan_tiers if plan_tiers else []  # Also return plan_tiers for display/reference
+            "plan_ids": plan_tiers if plan_tiers else plan_ids  # Return plan_tiers for easier use in frontend
         }
     except HTTPException:
         raise
@@ -2672,58 +2612,24 @@ async def upload_template(
                             
                             # Insert new permissions
                             permission_rows = []
-                            for plan_identifier in plan_ids_list:
-                                if not plan_identifier:
-                                    continue
-                                
-                                # CRITICAL FIX: plan_identifier can be plan_tier (basic, professional) or plan_id (UUID)
-                                # We need to convert plan_tier to plan_id (UUID) to match the database
-                                # Skip broker membership - it uses a different permissions table (broker_template_permissions)
-                                if str(plan_identifier).lower() in ['broker', 'broker-membership']:
-                                    logger.info(f"Skipping broker membership '{plan_identifier}' - it uses broker_template_permissions table")
-                                    continue
-                                
-                                plan_id_uuid = None
-                                try:
-                                    # First, check if plan_identifier is already a UUID
-                                    plan_uuid_test = uuid.UUID(str(plan_identifier))
-                                    plan_id_uuid = str(plan_uuid_test)
-                                    logger.debug(f"[upload-template] plan_identifier {plan_identifier} is a UUID: {plan_id_uuid}")
-                                except (ValueError, TypeError):
-                                    # Not a UUID, try to find by plan_tier
-                                    logger.debug(f"[upload-template] plan_identifier {plan_identifier} is not a UUID, trying to find by plan_tier")
-                                    plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
-                                    if plan_res.data and len(plan_res.data) > 0:
-                                        plan_id_uuid = str(plan_res.data[0]['id'])
-                                        logger.info(f"[upload-template] Found plan_id {plan_id_uuid} for plan_tier {plan_identifier}")
-                                    else:
-                                        logger.warning(f"[upload-template] Could not find plan_id for plan_tier {plan_identifier}")
-                                
-                                if plan_id_uuid:
+                            for plan_id in plan_ids_list:
+                                if plan_id:  # Only add non-empty plan IDs
                                     permission_rows.append({
-                                        'plan_id': plan_id_uuid,
+                                        'plan_id': str(plan_id),
                                         'template_id': str(template_id),
                                         'can_download': True
                                     })
-                                    logger.debug(f"[upload-template] Added permission for plan_id {plan_id_uuid} (from plan_identifier {plan_identifier})")
                             
                             if permission_rows:
-                                logger.info(f"[upload-template] Inserting {len(permission_rows)} plan permissions for template {template_id}")
-                                logger.info(f"[upload-template] Plan permission rows: {[r['plan_id'] for r in permission_rows]}")
                                 permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
                                 if getattr(permissions_response, "error", None):
                                     warnings.append("Failed to set plan permissions")
                                     logger.error(f"Plan permissions insert error: {permissions_response.error}")
-                                    logger.error(f"Failed permission rows: {permission_rows}")
                                 else:
-                                    logger.info(f"[upload-template] ✅ Successfully set plan permissions for {len(permission_rows)} plans")
-                            else:
-                                logger.info(f"[upload-template] No plan permissions to insert (plan_ids_list was empty or could not resolve to UUIDs)")
+                                    logger.info(f"Set plan permissions for {len(permission_rows)} plans")
                         except Exception as perm_exc:
                             warnings.append(f"Failed to set plan permissions: {str(perm_exc)}")
                             logger.error(f"Error setting plan permissions: {perm_exc}")
-                            import traceback
-                            logger.error(traceback.format_exc())
                 else:
                     warnings.append("Supabase metadata sync failed; template served from local storage")
                     logger.warning("Unable to retrieve template metadata after Supabase upsert")
@@ -3011,11 +2917,23 @@ async def get_placeholder_settings(
                 template_record = resolve_template_record(template_name)
             if not template_record:
                 raise HTTPException(status_code=404, detail="Template not found")
-            settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
+            
+            # CRITICAL: Convert template_id to string before passing to fetch_template_placeholders
+            # template_record['id'] might be a UUID object, but fetch_template_placeholders expects a string
+            template_id_str = str(template_record['id'])
+            logger.debug(f"Fetching placeholder settings for template_id: {template_id_str}, file_name: {template_record.get('file_name')}")
+            
+            try:
+                settings = fetch_template_placeholders(template_id_str, template_record.get('file_name'))
+            except Exception as fetch_exc:
+                logger.error(f"Error fetching placeholder settings for template {template_id_str}: {fetch_exc}", exc_info=True)
+                # Return empty settings instead of failing completely
+                settings = {}
+            
             return {
                 "template": template_record.get('file_name') or template_name,
                 "settings": settings,
-                "template_id": str(template_record['id'])
+                "template_id": template_id_str
             }
 
         if SUPABASE_ENABLED and not template_name:
