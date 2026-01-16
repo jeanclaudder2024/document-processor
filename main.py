@@ -1712,13 +1712,34 @@ async def get_templates(request: Request):
                 continue
 
             file_path = os.path.join(TEMPLATES_DIR, file_name)
+            
+            # Check if file exists before trying to access it
+            if not os.path.exists(file_path):
+                logger.warning(f"[templates] Template file not found in filesystem (exists in DB only): {file_path}")
+                # Skip this template - it exists in database but not in filesystem
+                # This can happen if file was deleted or moved but DB record wasn't updated
+                continue
+            
             try:
                 file_size = os.path.getsize(file_path)
             except OSError:
                 file_size = 0
-            created_at = datetime.fromtimestamp(
-                os.path.getctime(file_path)).isoformat()
-            placeholders = extract_placeholders_from_docx(file_path)
+                logger.warning(f"[templates] Could not get file size for {file_path}, using 0")
+            
+            try:
+                created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
+            except OSError:
+                created_at = datetime.utcnow().isoformat()
+                logger.warning(f"[templates] Could not get creation time for {file_path}, using current time")
+            
+            # Extract placeholders safely
+            placeholders = []
+            try:
+                placeholders = extract_placeholders_from_docx(file_path)
+            except Exception as ph_exc:
+                logger.warning(f"[templates] Could not extract placeholders from {file_path}: {ph_exc}")
+                placeholders = []  # Use empty list if extraction fails
+            
             metadata_entry = metadata_map.get(file_name, {})
 
             template_id = hashlib.md5(file_name.encode()).hexdigest()[:12]
