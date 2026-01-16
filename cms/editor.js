@@ -338,14 +338,23 @@ class TemplateEditor {
         try {
             // Get plan assignments for this template
             const data = await this.apiJson(`/templates/${encodeURIComponent(this.currentTemplateId)}/plan-info`);
-            if (data && data.plans) {
-                const assignedPlanIds = data.plans.map(p => p.plan_id || p.id);
+            console.log('[loadTemplatePlans] 📋 Plan info response:', data);
+            
+            if (data && data.plans && Array.isArray(data.plans)) {
+                // CRITICAL: Use plan_tier, not plan_id, because checkbox values are plan_tier (basic, professional, etc.)
+                const assignedPlanIds = data.plans
+                    .map(p => p.plan_tier || p.plan_id || p.id)
+                    .filter(t => t); // Remove null/undefined values
+                console.log('[loadTemplatePlans] ✅ Assigned plan IDs (plan_tiers):', assignedPlanIds);
                 this.populatePlanCheckboxes(assignedPlanIds);
             } else {
+                console.log('[loadTemplatePlans] ⚠️ No plans in response or empty array, clearing checkboxes');
                 this.populatePlanCheckboxes([]);
             }
         } catch (error) {
-            console.error('Failed to load template plan assignments:', error);
+            console.error('[loadTemplatePlans] ❌ Failed to load template plan assignments:', error);
+            console.error('[loadTemplatePlans] ❌ Error details:', error.message);
+            // Show user-friendly error but don't break the page
             this.populatePlanCheckboxes([]);
         }
     }
@@ -586,33 +595,69 @@ class TemplateEditor {
             return;
         }
 
-        const displayName = document.getElementById('templateDisplayName').value;
-        const description = document.getElementById('templateDescription').value;
-        const fontFamily = document.getElementById('templateFontFamily').value;
-        const fontSize = document.getElementById('templateFontSize').value;
+        const displayName = document.getElementById('templateDisplayName')?.value || '';
+        const description = document.getElementById('templateDescription')?.value || '';
+        const fontFamily = document.getElementById('templateFontFamily')?.value || '';
+        const fontSizeInput = document.getElementById('templateFontSize')?.value;
         
-        // Get selected plan IDs
+        // Get selected plan IDs (plan_tiers like "basic", "professional", etc.)
         const planCheckboxes = document.querySelectorAll('#planCheckboxes input[type="checkbox"]:checked');
-        const planIds = Array.from(planCheckboxes).map(cb => cb.value);
+        const planIds = Array.from(planCheckboxes).map(cb => cb.value).filter(v => v);
+        
+        console.log('[saveTemplateSettings] 💾 Saving template settings:', {
+            templateId: this.currentTemplateId,
+            displayName,
+            description,
+            fontFamily: fontFamily || null,
+            fontSize: fontSizeInput,
+            planIds
+        });
+
+        // Validate fontSize if provided
+        let fontSize = null;
+        if (fontSizeInput && fontSizeInput.trim()) {
+            const parsed = parseInt(fontSizeInput.trim(), 10);
+            if (!isNaN(parsed) && parsed > 0) {
+                fontSize = parsed;
+            } else {
+                alert('Font size must be a positive number');
+                return;
+            }
+        }
 
         try {
+            const payload = {
+                display_name: displayName,
+                description: description,
+                font_family: fontFamily || null,
+                font_size: fontSize,
+                plan_ids: planIds // Array of plan_tiers (basic, professional, etc.)
+            };
+            
+            console.log('[saveTemplateSettings] 📤 Sending payload:', JSON.stringify(payload, null, 2));
+            
             const data = await this.apiJson(`/templates/${encodeURIComponent(this.currentTemplateId)}/metadata`, {
                 method: 'POST',
-                body: JSON.stringify({
-                    display_name: displayName,
-                    description: description,
-                    font_family: fontFamily || null,
-                    font_size: fontSize ? parseInt(fontSize) : null,
-                    plan_ids: planIds
-                })
+                body: JSON.stringify(payload)
             });
+
+            console.log('[saveTemplateSettings] 📥 Response:', data);
 
             if (data && data.success) {
                 alert('Template settings saved successfully!');
                 document.getElementById('templateTitle').textContent = displayName || 'Untitled Template';
+                
+                // Reload template plans to refresh checkboxes with saved data
+                await this.loadTemplatePlans();
+            } else {
+                const errorMsg = data?.detail || data?.error || 'Unknown error';
+                console.error('[saveTemplateSettings] ❌ Save failed:', data);
+                alert(`Failed to save template settings: ${errorMsg}`);
             }
         } catch (error) {
-            alert(`Failed to save template settings: ${error.message}`);
+            console.error('[saveTemplateSettings] ❌ Error:', error);
+            const errorMsg = error.message || 'Failed to save template settings';
+            alert(`Failed to save template settings: ${errorMsg}`);
         }
     }
 
