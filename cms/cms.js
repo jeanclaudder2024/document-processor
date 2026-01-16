@@ -316,30 +316,38 @@ class DocumentCMS {
             return;
         }
         
-        // CRITICAL: Fetch plan_ids from backend for this template
-        // planId is plan_tier (basic, professional, etc.) but we need plan_id (UUID)
-        // First, try to get plan_ids from template object
-        let currentPlanIds = template.plan_ids || template.plan_ids_list || [];
+        // CRITICAL: Always fetch plan_ids from backend for this template
+        // This ensures we always have the latest UUIDs from the database
+        // The plan-info endpoint is the source of truth for template-plan associations
+        let currentPlanIds = [];
         
-        // If not available, try to fetch from backend
-        if (!currentPlanIds || currentPlanIds.length === 0) {
-            // Try to get plan info for this template from backend
-            const templateName = template.name || template.file_name || '';
-            if (templateName) {
-                console.log('[populateMetaPlanCheckboxes] 🔄 Fetching plan info for template:', templateName);
-                try {
-                    // Fetch plan info for this template
-                    const planInfo = await this.apiJson(`/templates/${encodeURIComponent(templateName)}/plan-info`);
-                    if (planInfo && planInfo.success && planInfo.plans) {
-                        // CRITICAL FIX: Get plan_id (UUID) instead of plan_tier, since checkboxes now use UUIDs
-                        // Try plan_id first (UUID), fallback to plan_tier for backward compatibility
-                        currentPlanIds = planInfo.plans.map(p => p.plan_id || p.plan_tier).filter(t => t);
-                        console.log('[populateMetaPlanCheckboxes] ✅ Got plan_ids from backend:', currentPlanIds);
-                    }
-                } catch (e) {
-                    console.warn('[populateMetaPlanCheckboxes] ⚠️ Could not fetch plan info:', e);
+        // Get template identifier - try multiple fields for compatibility
+        const templateName = template.name || template.file_name || template.file_with_extension || '';
+        if (templateName) {
+            // Remove .docx extension if present for the API call
+            const templateIdentifier = templateName.replace(/\.docx$/i, '');
+            console.log('[populateMetaPlanCheckboxes] 🔄 Fetching plan info for template:', templateIdentifier);
+            try {
+                // Fetch plan info for this template from backend
+                const planInfo = await this.apiJson(`/templates/${encodeURIComponent(templateIdentifier)}/plan-info`);
+                if (planInfo && planInfo.success && planInfo.plans) {
+                    // CRITICAL FIX: Get plan_id (UUID) instead of plan_tier, since checkboxes now use UUIDs
+                    // Try plan_id first (UUID), fallback to plan_tier for backward compatibility
+                    currentPlanIds = planInfo.plans.map(p => p.plan_id || p.plan_tier).filter(t => t);
+                    console.log('[populateMetaPlanCheckboxes] ✅ Got plan_ids (UUIDs) from backend:', currentPlanIds);
+                } else {
+                    console.warn('[populateMetaPlanCheckboxes] ⚠️ Plan info response missing plans:', planInfo);
                 }
+            } catch (e) {
+                console.error('[populateMetaPlanCheckboxes] ❌ Error fetching plan info:', e);
+                // Fallback: try to use plan_ids from template object if available
+                currentPlanIds = template.plan_ids || template.plan_ids_list || [];
+                console.log('[populateMetaPlanCheckboxes] ⚠️ Using fallback plan_ids from template object:', currentPlanIds);
             }
+        } else {
+            console.warn('[populateMetaPlanCheckboxes] ⚠️ No template name found, cannot fetch plan info');
+            // Fallback: try to use plan_ids from template object
+            currentPlanIds = template.plan_ids || template.plan_ids_list || [];
         }
         
         // Normalize currentPlanIds to strings for comparison

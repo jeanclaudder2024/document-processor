@@ -1648,6 +1648,7 @@ async def get_templates(request: Request):
                         # Add plan information
                         "plan_name": display_plan_name,
                         "plan_tiers": can_download_plans,
+                        "plan_ids": [str(pid) for pid in plan_ids] if plan_ids else [],  # CRITICAL: Include plan_ids (UUIDs) for checkbox matching
                         "can_download": can_download  # True if has plan permissions or is public
                     }
                     templates.append(template_payload)
