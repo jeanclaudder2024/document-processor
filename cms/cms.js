@@ -331,9 +331,10 @@ class DocumentCMS {
                     // Fetch plan info for this template
                     const planInfo = await this.apiJson(`/templates/${encodeURIComponent(templateName)}/plan-info`);
                     if (planInfo && planInfo.success && planInfo.plans) {
-                        // Get plan_tiers from plans
-                        currentPlanIds = planInfo.plans.map(p => p.plan_tier).filter(t => t);
-                        console.log('[populateMetaPlanCheckboxes] ✅ Got plan_tiers from backend:', currentPlanIds);
+                        // CRITICAL FIX: Get plan_id (UUID) instead of plan_tier, since checkboxes now use UUIDs
+                        // Try plan_id first (UUID), fallback to plan_tier for backward compatibility
+                        currentPlanIds = planInfo.plans.map(p => p.plan_id || p.plan_tier).filter(t => t);
+                        console.log('[populateMetaPlanCheckboxes] ✅ Got plan_ids from backend:', currentPlanIds);
                     }
                 } catch (e) {
                     console.warn('[populateMetaPlanCheckboxes] ⚠️ Could not fetch plan info:', e);
@@ -341,8 +342,9 @@ class DocumentCMS {
             }
         }
         
+        // Normalize currentPlanIds to strings for comparison
         const currentPlanIdsSet = new Set(Array.isArray(currentPlanIds) ? currentPlanIds.map(id => String(id)) : []);
-        console.log('[populateMetaPlanCheckboxes] 📋 Current plan IDs:', Array.from(currentPlanIdsSet));
+        console.log('[populateMetaPlanCheckboxes] 📋 Current plan IDs (from template/backend):', Array.from(currentPlanIdsSet));
         console.log('[populateMetaPlanCheckboxes] 📋 Available plans:', Object.keys(this.allPlans));
         
         container.innerHTML = Object.entries(this.allPlans).map(([planId, plan]) => {
@@ -350,12 +352,17 @@ class DocumentCMS {
             const planUuid = plan.id || planId; // Fallback to planId if id is missing
             const displayName = plan.name || plan.plan_name || planId;
             
-            // Check if this plan is selected - support both UUID and plan_tier matching
-            // Backend might return either UUID or plan_tier, so check both
-            const isChecked = currentPlanIdsSet.has(String(planUuid)) || 
-                            currentPlanIdsSet.has(String(planId)) || 
-                            currentPlanIdsSet.has(String(plan.plan_tier || planId));
-            console.log('[populateMetaPlanCheckboxes] 📋 Plan:', planUuid, 'tier:', planId, 'isChecked:', isChecked);
+            // Check if this plan is selected - prioritize UUID matching since checkboxes use UUIDs
+            // Backend should now return UUIDs via plan_id, but we check both for backward compatibility
+            const planUuidStr = String(planUuid);
+            const planIdStr = String(planId);
+            const planTierStr = String(plan.plan_tier || planId);
+            
+            const isChecked = currentPlanIdsSet.has(planUuidStr) || 
+                            currentPlanIdsSet.has(planIdStr) || 
+                            currentPlanIdsSet.has(planTierStr);
+                            
+            console.log('[populateMetaPlanCheckboxes] 📋 Plan:', planUuid, 'tier:', planId, 'isChecked:', isChecked, '(matched against:', Array.from(currentPlanIdsSet), ')');
             return `
                 <div class="form-check">
                     <input type="checkbox" class="form-check-input meta-plan-checkbox" id="meta_plan_${planUuid}" value="${planUuid}" ${isChecked ? 'checked' : ''}>
@@ -418,9 +425,16 @@ class DocumentCMS {
                 if (template) {
                     template.metadata = template.metadata || {};
                     Object.assign(template.metadata, data.metadata || {});
-                    // Store plan_ids in template object for future reference
-                    if (data.plan_ids) {
-                        template.plan_ids = data.plan_ids;
+                    // CRITICAL: Store plan_ids (UUIDs) in template object for future reference
+                    // Backend now returns both plan_ids (UUIDs) and plan_tiers
+                    // Use plan_ids for checkbox matching since we now use UUIDs
+                    if (data.plan_ids && Array.isArray(data.plan_ids)) {
+                        template.plan_ids = data.plan_ids.map(id => String(id)); // Ensure all are strings
+                        console.log('[saveTemplateMetadata] 💾 Stored plan_ids (UUIDs) in template:', template.plan_ids);
+                    } else if (data.plan_tiers && Array.isArray(data.plan_tiers)) {
+                        // Fallback: if only plan_tiers returned, store them (will be converted later)
+                        template.plan_ids = data.plan_tiers.map(id => String(id));
+                        console.log('[saveTemplateMetadata] 💾 Stored plan_tiers as fallback:', template.plan_ids);
                     }
                     if (data.metadata?.display_name) {
                         template.title = data.metadata.display_name;

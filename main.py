@@ -2413,6 +2413,8 @@ async def update_template_metadata(
                 logger.warning(f"Could not convert plan_ids to plan_tiers: {e}")
                 plan_tiers = plan_ids
         
+        # Return both plan_ids (UUIDs) and plan_tiers for frontend compatibility
+        # Frontend checkboxes now use UUIDs, but plan_tiers are useful for display
         return {
             "success": True,
             "template_id": str(template_record['id']) if template_record else template_id,
@@ -2424,7 +2426,8 @@ async def update_template_metadata(
                 "font_size": font_size,
                 "requires_broker_membership": requires_broker_membership if 'requires_broker_membership' in payload else None
             },
-            "plan_ids": plan_tiers if plan_tiers else plan_ids  # Return plan_tiers for easier use in frontend
+            "plan_ids": plan_ids if plan_ids else [],  # Return UUIDs for checkbox matching
+            "plan_tiers": plan_tiers if plan_tiers else []  # Also return plan_tiers for display/reference
         }
     except HTTPException:
         raise
