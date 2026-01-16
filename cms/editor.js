@@ -671,13 +671,25 @@ class TemplateEditor {
             });
 
             console.log('[saveTemplateSettings] 📥 Response:', data);
+            console.log('[saveTemplateSettings] 📥 Response plan_ids:', data?.plan_ids);
 
             if (data && data.success) {
                 alert('Template settings saved successfully!');
                 document.getElementById('templateTitle').textContent = displayName || 'Untitled Template';
                 
-                // Reload template plans to refresh checkboxes with saved data
-                await this.loadTemplatePlans();
+                // CRITICAL: Update checkboxes immediately with saved plan_ids from response
+                // This ensures checkboxes reflect what was actually saved
+                const savedPlanIds = data.plan_ids || planIds; // Use response plan_ids, fallback to what we sent
+                console.log('[saveTemplateSettings] ✅ Updating checkboxes with saved plan_ids:', savedPlanIds);
+                
+                // Update checkboxes immediately
+                this.populatePlanCheckboxes(savedPlanIds);
+                
+                // Then reload from backend after a short delay to ensure database is updated
+                setTimeout(async () => {
+                    console.log('[saveTemplateSettings] 🔄 Reloading template plans from backend...');
+                    await this.loadTemplatePlans();
+                }, 500);
             } else {
                 const errorMsg = data?.detail || data?.error || 'Unknown error';
                 console.error('[saveTemplateSettings] ❌ Save failed:', data);
