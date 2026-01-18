@@ -645,8 +645,15 @@ class TemplateEditor {
         });
         
         // Log each checkbox value for debugging
+        console.log('[saveTemplateSettings] 📋 All checkboxes in container:');
+        const allCheckboxes = document.querySelectorAll('#planCheckboxes input[type="checkbox"]');
+        allCheckboxes.forEach((cb, idx) => {
+            console.log(`[saveTemplateSettings] 📋 Checkbox ${idx + 1}: value="${cb.value}", checked=${cb.checked}, id="${cb.id}"`);
+        });
+        
+        console.log('[saveTemplateSettings] 📋 Checked checkboxes:');
         Array.from(planCheckboxes).forEach((cb, idx) => {
-            console.log(`[saveTemplateSettings] 📋 Checkbox ${idx + 1}: value="${cb.value}", checked=${cb.checked}`);
+            console.log(`[saveTemplateSettings] ✅ Checkbox ${idx + 1}: value="${cb.value}", checked=${cb.checked}`);
         });
 
         // Validate fontSize if provided
