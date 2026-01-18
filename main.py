@@ -2466,6 +2466,63 @@ async def update_template_metadata(
         logger.error(f"Error updating template metadata: {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
 
+@app.get("/templates/{template_id}/debug-permissions")
+async def debug_template_permissions(template_id: str):
+    """DEBUG ENDPOINT: Check what permissions are saved for a template"""
+    try:
+        if not supabase:
+            return {"error": "Supabase not enabled"}
+        
+        # Try to resolve template_id
+        template_uuid = None
+        try:
+            template_uuid = str(uuid.UUID(str(template_id)))
+        except (ValueError, TypeError):
+            # Try by file_name
+            template_res = supabase.table('document_templates').select('id').eq('file_name', template_id).limit(1).execute()
+            if template_res.data:
+                template_uuid = str(template_res.data[0]['id'])
+        
+        if not template_uuid:
+            return {"error": "Template not found", "template_id": template_id}
+        
+        # Get all permissions for this template
+        perms = supabase.table('plan_template_permissions').select('*').eq('template_id', template_uuid).execute()
+        
+        if not perms.data:
+            return {
+                "template_id": template_uuid,
+                "permissions_count": 0,
+                "permissions": [],
+                "message": "No permissions found (template available to all plans)"
+            }
+        
+        # Get plan details for each permission
+        plan_details = []
+        for perm in perms.data:
+            plan_id = perm.get('plan_id')
+            plan_res = supabase.table('subscription_plans').select('plan_tier, plan_name').eq('id', plan_id).limit(1).execute()
+            plan_info = plan_res.data[0] if plan_res.data else {}
+            
+            plan_details.append({
+                "permission_id": perm.get('id'),
+                "plan_id": plan_id,
+                "plan_tier": plan_info.get('plan_tier'),
+                "plan_name": plan_info.get('plan_name'),
+                "can_download": perm.get('can_download'),
+                "created_at": perm.get('created_at')
+            })
+        
+        return {
+            "template_id": template_uuid,
+            "permissions_count": len(plan_details),
+            "permissions": plan_details,
+            "message": f"Found {len(plan_details)} permissions"
+        }
+    except Exception as e:
+        logger.error(f"Error in debug endpoint: {e}")
+        return {"error": str(e)}
+
 @app.post("/upload-template")
 async def upload_template(
     file: UploadFile = File(...),

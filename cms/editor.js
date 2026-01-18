@@ -695,6 +695,15 @@ class TemplateEditor {
                 // Reloading might fetch stale data or cause race conditions
                 this.populatePlanCheckboxes(savedPlanIds);
                 
+                // DEBUG: Check what's actually in the database
+                console.log('[saveTemplateSettings] 🔍 Checking database with debug endpoint...');
+                try {
+                    const debugRes = await this.apiJson(`/templates/${encodeURIComponent(this.currentTemplateId)}/debug-permissions`);
+                    console.log('[saveTemplateSettings] 🔍 Database has:', debugRes);
+                } catch (debugErr) {
+                    console.error('[saveTemplateSettings] 🔍 Debug check failed:', debugErr);
+                }
+                
                 // Optionally reload from backend after a longer delay (optional, for sync verification)
                 // Only reload if you want to verify the database has the data, but the checkboxes are already updated
                 // setTimeout(async () => {
