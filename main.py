@@ -2335,12 +2335,25 @@ async def update_template_metadata(
                                 except (ValueError, TypeError):
                                     # Not a UUID, try to find by plan_tier
                                     logger.debug(f"plan_identifier {plan_identifier} is not a UUID, trying to find by plan_tier")
+                                    
+                                    # First try exact match
                                     plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
                                     if plan_res.data and len(plan_res.data) > 0:
                                         plan_id_uuid = str(plan_res.data[0]['id'])
                                         logger.info(f"Found plan_id {plan_id_uuid} for plan_tier {plan_identifier}")
                                     else:
-                                        logger.warning(f"Could not find plan_id for plan_tier {plan_identifier}")
+                                        # Try case-insensitive match
+                                        logger.debug(f"Exact plan_tier match failed for {plan_identifier}, trying case-insensitive")
+                                        all_plans = supabase.table('subscription_plans').select('id, plan_tier').eq('is_active', True).execute()
+                                        if all_plans.data:
+                                            for plan in all_plans.data:
+                                                if plan.get('plan_tier', '').lower() == str(plan_identifier).lower():
+                                                    plan_id_uuid = str(plan['id'])
+                                                    logger.info(f"Found plan_id {plan_id_uuid} for plan_tier {plan_identifier} (case-insensitive match)")
+                                                    break
+                                        
+                                        if not plan_id_uuid:
+                                            logger.warning(f"Could not find plan_id for plan_tier {plan_identifier} (tried exact and case-insensitive)")
                                 
                                 if plan_id_uuid:
                                     permission_rows.append({
