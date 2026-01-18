@@ -679,17 +679,21 @@ class TemplateEditor {
                 
                 // CRITICAL: Update checkboxes immediately with saved plan_ids from response
                 // This ensures checkboxes reflect what was actually saved
+                // The response contains the actual plan_ids that were saved, so we trust that
                 const savedPlanIds = data.plan_ids || planIds; // Use response plan_ids, fallback to what we sent
                 console.log('[saveTemplateSettings] ✅ Updating checkboxes with saved plan_ids:', savedPlanIds);
                 
-                // Update checkboxes immediately
+                // Update checkboxes immediately with saved data from response
+                // Don't reload from backend immediately - the response already contains the saved data
+                // Reloading might fetch stale data or cause race conditions
                 this.populatePlanCheckboxes(savedPlanIds);
                 
-                // Then reload from backend after a short delay to ensure database is updated
-                setTimeout(async () => {
-                    console.log('[saveTemplateSettings] 🔄 Reloading template plans from backend...');
-                    await this.loadTemplatePlans();
-                }, 500);
+                // Optionally reload from backend after a longer delay (optional, for sync verification)
+                // Only reload if you want to verify the database has the data, but the checkboxes are already updated
+                // setTimeout(async () => {
+                //     console.log('[saveTemplateSettings] 🔄 Verifying template plans from backend...');
+                //     await this.loadTemplatePlans();
+                // }, 2000);
             } else {
                 const errorMsg = data?.detail || data?.error || 'Unknown error';
                 console.error('[saveTemplateSettings] ❌ Save failed:', data);
