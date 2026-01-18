@@ -2233,15 +2233,6 @@ async def update_template_metadata(
         if not isinstance(plan_ids, list):
             plan_ids = []
         
-        logger.info(f"[metadata] ========== RECEIVED PLAN IDS ==========")
-        logger.info(f"[metadata] Raw plan_ids: {plan_ids}")
-        logger.info(f"[metadata] plan_ids type: {type(plan_ids)}")
-        logger.info(f"[metadata] plan_ids length: {len(plan_ids)}")
-        logger.info(f"[metadata] plan_ids content:")
-        for i, p_id in enumerate(plan_ids):
-            logger.info(f"[metadata]   [{i}] = '{p_id}' (type: {type(p_id).__name__})")
-        logger.info(f"[metadata] =========================================")
-        
         requires_broker_membership = payload.get('requires_broker_membership', False)
         if not isinstance(requires_broker_membership, bool):
             requires_broker_membership = bool(requires_broker_membership)
@@ -2322,29 +2313,17 @@ async def update_template_metadata(
                         logger.info(f"Updating plan permissions for template {template_id_uuid} with plan_ids: {plan_ids}")
                         
                         # Delete existing permissions
-                        try:
-                            delete_res = supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
-                            logger.info(f"Deleted existing permissions for template {template_id_uuid}")
-                            if hasattr(delete_res, 'error') and delete_res.error:
-                                logger.error(f"Delete error: {delete_res.error}")
-                        except Exception as delete_err:
-                            logger.error(f"Exception during delete: {delete_err}")
-                            import traceback
-                            logger.error(traceback.format_exc())
+                        supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
+                        logger.info(f"Deleted existing permissions for template {template_id_uuid}")
                         
                         # Insert new permissions
                         if plan_ids:
                             # CRITICAL: plan_ids can be plan_tier (basic, professional) or plan_id (UUID)
                             # We need to convert plan_tier to plan_id (UUID)
-                            logger.info(f"[permission-convert] Starting to convert {len(plan_ids)} plan identifiers: {plan_ids}")
                             permission_rows = []
-                            failed_plans = []
-                            for idx, plan_identifier in enumerate(plan_ids):
+                            for plan_identifier in plan_ids:
                                 if not plan_identifier:
-                                    logger.warning(f"[permission-convert] Plan {idx}: EMPTY/NULL, skipping")
                                     continue
-                                
-                                logger.info(f"[permission-convert] Plan {idx}/{len(plan_ids)}: Processing '{plan_identifier}' (type: {type(plan_identifier)})")
                                 
                                 # Try to get plan_id from plan_tier
                                 plan_id_uuid = None
@@ -2352,31 +2331,16 @@ async def update_template_metadata(
                                     # First, check if plan_identifier is already a UUID
                                     plan_uuid_test = uuid.UUID(str(plan_identifier))
                                     plan_id_uuid = str(plan_uuid_test)
-                                    logger.debug(f"[permission-convert] Plan {idx}: '{plan_identifier}' is a UUID: {plan_id_uuid}")
+                                    logger.debug(f"plan_identifier {plan_identifier} is a UUID: {plan_id_uuid}")
                                 except (ValueError, TypeError):
                                     # Not a UUID, try to find by plan_tier
-                                    logger.debug(f"[permission-convert] Plan {idx}: '{plan_identifier}' is not a UUID, trying to find by plan_tier")
-                                    
-                                    # First try exact match
-                                    plan_res = supabase.table('subscription_plans').select('id, plan_tier').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
+                                    logger.debug(f"plan_identifier {plan_identifier} is not a UUID, trying to find by plan_tier")
+                                    plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
                                     if plan_res.data and len(plan_res.data) > 0:
                                         plan_id_uuid = str(plan_res.data[0]['id'])
-                                        logger.info(f"[permission-convert] Plan {idx}: ✅ Found UUID {plan_id_uuid} for plan_tier '{plan_identifier}' (exact match)")
+                                        logger.info(f"Found plan_id {plan_id_uuid} for plan_tier {plan_identifier}")
                                     else:
-                                        # Try case-insensitive match
-                                        logger.debug(f"[permission-convert] Plan {idx}: Exact match failed for '{plan_identifier}', trying case-insensitive")
-                                        all_plans = supabase.table('subscription_plans').select('id, plan_tier').eq('is_active', True).execute()
-                                        logger.debug(f"[permission-convert] Plan {idx}: Available plans: {[(p.get('plan_tier'), p.get('id')) for p in (all_plans.data or [])]}")
-                                        if all_plans.data:
-                                            for plan in all_plans.data:
-                                                if plan.get('plan_tier', '').lower() == str(plan_identifier).lower():
-                                                    plan_id_uuid = str(plan['id'])
-                                                    logger.info(f"[permission-convert] Plan {idx}: ✅ Found UUID {plan_id_uuid} for plan_tier '{plan_identifier}' (case-insensitive match)")
-                                                    break
-                                        
-                                        if not plan_id_uuid:
-                                            logger.warning(f"[permission-convert] Plan {idx}: ❌ Could not find plan_id for plan_tier '{plan_identifier}' (tried exact and case-insensitive)")
-                                            failed_plans.append(plan_identifier)
+                                        logger.warning(f"Could not find plan_id for plan_tier {plan_identifier}")
                                 
                                 if plan_id_uuid:
                                     permission_rows.append({
@@ -2384,67 +2348,20 @@ async def update_template_metadata(
                                         'template_id': str(template_id_uuid),
                                         'can_download': True
                                     })
-                                    logger.info(f"[permission-convert] Plan {idx}: ✅ Added to permission_rows with UUID {plan_id_uuid}")
-                                else:
-                                    logger.warning(f"[permission-convert] Plan {idx}: ❌ SKIPPED - no UUID found")
-                            
-                            if failed_plans:
-                                logger.warning(f"[permission-convert] ⚠️ Failed to convert {len(failed_plans)} plans: {failed_plans}")
-                            
-                            logger.info(f"[permission-convert] Summary: {len(permission_rows)} rows ready to insert out of {len(plan_ids)} requested")
-                            logger.info(f"[permission-convert] Permission rows: {permission_rows}")
+                                    logger.debug(f"Added permission for plan_id {plan_id_uuid} (from plan_identifier {plan_identifier})")
                             
                             if permission_rows:
                                 logger.info(f"Inserting {len(permission_rows)} plan permissions for template {template_id_uuid}")
-                                logger.info(f"Permission rows to insert: {permission_rows}")
-                                try:
-                                    # Insert ALL rows at once (batch insert)
-                                    permissions_response = supabase.table('plan_template_permissions').insert(permission_rows, count='exact').execute()
-                                    logger.info(f"Insert response type: {type(permissions_response)}")
-                                    logger.info(f"Insert response status code: {getattr(permissions_response, 'status_code', 'N/A')}")
-                                    
-                                    # Check if insert was successful
-                                    if hasattr(permissions_response, 'data') and permissions_response.data:
-                                        inserted_count = len(permissions_response.data)
-                                        logger.info(f"✅ Successfully inserted {inserted_count} plan permissions")
-                                        for i, perm in enumerate(permissions_response.data):
-                                            logger.info(f"  [{i}] ID: {perm.get('id')}, plan_id: {perm.get('plan_id')}, template_id: {perm.get('template_id')}")
-                                    elif hasattr(permissions_response, 'error') and permissions_response.error:
-                                        logger.error(f"❌ Insert error: {permissions_response.error}")
-                                        # Try to insert one by one to see which one fails
-                                        logger.info(f"Attempting to insert {len(permission_rows)} rows individually to diagnose...")
-                                        for i, row in enumerate(permission_rows):
-                                            try:
-                                                single_response = supabase.table('plan_template_permissions').insert([row]).execute()
-                                                if hasattr(single_response, 'data') and single_response.data:
-                                                    logger.info(f"  Row {i}: ✅ Inserted successfully")
-                                                elif hasattr(single_response, 'error'):
-                                                    logger.error(f"  Row {i}: ❌ Error - {single_response.error}")
-                                                else:
-                                                    logger.warning(f"  Row {i}: Unexpected response")
-                                            except Exception as single_err:
-                                                logger.error(f"  Row {i}: Exception - {single_err}")
-                                    else:
-                                        logger.warning(f"Insert returned unexpected response: {permissions_response}")
-                                    
-                                    # Verify ALL rows were inserted
-                                    logger.info(f"Verifying insert...")
-                                    verify_res = supabase.table('plan_template_permissions').select('id, plan_id').eq('template_id', template_id_uuid).execute()
-                                    if verify_res.data:
-                                        logger.info(f"✅ Verification: Database now has {len(verify_res.data)} permissions")
-                                        logger.info(f"   Plan IDs in database: {[p['plan_id'] for p in verify_res.data]}")
-                                    else:
-                                        logger.error(f"❌ Verification FAILED: Database has 0 permissions! Insert failed!")
-                                        
-                                except Exception as insert_error:
-                                    logger.error(f"Exception during insert: {insert_error}")
-                                    import traceback
-                                    logger.error(traceback.format_exc())
-                            else:
-                                if failed_plans:
-                                    logger.error(f"❌ Could not insert ANY permissions - all {len(plan_ids)} plan lookups failed: {failed_plans}")
+                                logger.info(f"Plan permission rows: {[r['plan_id'] for r in permission_rows]}")
+                                permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
+                                if getattr(permissions_response, "error", None):
+                                    logger.error(f"Plan permissions insert error: {permissions_response.error}")
+                                    logger.error(f"Failed permission rows: {permission_rows}")
                                 else:
-                                    logger.info(f"No plan permissions to insert for template {template_id_uuid} (plan_ids was empty or could not resolve to UUIDs)")
+                                    logger.info(f"✅ Successfully updated plan permissions for {len(permission_rows)} plans (template: {template_id_uuid})")
+                                    logger.info(f"Inserted permissions: {[r['plan_id'] for r in permission_rows]}")
+                            else:
+                                logger.info(f"No plan permissions to insert for template {template_id_uuid} (plan_ids was empty or could not resolve to UUIDs)")
                                 # IMPORTANT: If no plan_ids provided, template has no plan restrictions (available to all plans)
                                 # This is OK - the template will be available to all plans
                                 logger.info(f"Template {template_id_uuid} will be available to all plans (no specific plan permissions set)")
@@ -2476,34 +2393,25 @@ async def update_template_metadata(
             update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
 
         # Get plan_tiers for plan_ids (for response)
-        # Query the actual saved permissions from database to return accurate data
         plan_tiers = []
-        if template_record:
+        if plan_ids and template_record:
             try:
-                # Query what was actually saved in the database
-                saved_perms = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id_uuid).execute()
-                if saved_perms.data:
-                    logger.info(f"Found {len(saved_perms.data)} saved permissions for template {template_id_uuid}")
-                    # Get the plan_tiers for the saved plan_ids
-                    for perm in saved_perms.data:
-                        plan_id_uuid = perm['plan_id']
-                        try:
-                            plan_res = supabase.table('subscription_plans').select('plan_tier').eq('id', str(plan_id_uuid)).limit(1).execute()
-                            if plan_res.data and len(plan_res.data) > 0:
-                                plan_tier = plan_res.data[0]['plan_tier']
-                                plan_tiers.append(plan_tier)
-                                logger.info(f"Converted plan_id {plan_id_uuid} to plan_tier {plan_tier}")
-                            else:
-                                logger.warning(f"Could not find plan_tier for plan_id {plan_id_uuid}")
-                        except Exception as conv_e:
-                            logger.error(f"Error converting plan_id {plan_id_uuid}: {conv_e}")
-                else:
-                    logger.info(f"No saved permissions found for template {template_id_uuid} (template available to all plans)")
+                # Convert plan_id (UUID) to plan_tier for response
+                for plan_id in plan_ids:
+                    try:
+                        # Try to find plan by UUID
+                        plan_res = supabase.table('subscription_plans').select('plan_tier').eq('id', str(plan_id)).limit(1).execute()
+                        if plan_res.data and len(plan_res.data) > 0:
+                            plan_tiers.append(plan_res.data[0]['plan_tier'])
+                        else:
+                            # If not found by UUID, maybe it's already a plan_tier
+                            plan_tiers.append(str(plan_id))
+                    except Exception:
+                        # If error, just use plan_id as-is (might be plan_tier)
+                        plan_tiers.append(str(plan_id))
             except Exception as e:
-                logger.warning(f"Could not query saved permissions: {e}")
-                # Fallback: use the plan_tiers from the original request if we have them
-                if plan_ids:
-                    plan_tiers = [str(p) for p in plan_ids]
+                logger.warning(f"Could not convert plan_ids to plan_tiers: {e}")
+                plan_tiers = plan_ids
         
         return {
             "success": True,
@@ -2523,97 +2431,6 @@ async def update_template_metadata(
     except Exception as exc:
         logger.error(f"Error updating template metadata: {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
-
-@app.get("/debug/all-plans")
-async def debug_all_plans():
-    """DEBUG ENDPOINT: Show all plans in the database"""
-    try:
-        if not supabase:
-            return {"error": "Supabase not enabled"}
-        
-        # Get all plans (active and inactive)
-        plans_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name, is_active').execute()
-        
-        if not plans_res.data:
-            return {
-                "total": 0,
-                "plans": [],
-                "message": "No plans found in database"
-            }
-        
-        return {
-            "total": len(plans_res.data),
-            "plans": [
-                {
-                    "id": p.get('id'),
-                    "plan_tier": p.get('plan_tier'),
-                    "plan_name": p.get('plan_name'),
-                    "is_active": p.get('is_active')
-                }
-                for p in plans_res.data
-            ],
-            "message": f"Found {len(plans_res.data)} plans"
-        }
-    except Exception as e:
-        logger.error(f"Error in debug all-plans endpoint: {e}")
-        return {"error": str(e)}
-
-@app.get("/templates/{template_id}/debug-permissions")
-async def debug_template_permissions(template_id: str):
-    """DEBUG ENDPOINT: Check what permissions are saved for a template"""
-    try:
-        if not supabase:
-            return {"error": "Supabase not enabled"}
-        
-        # Try to resolve template_id
-        template_uuid = None
-        try:
-            template_uuid = str(uuid.UUID(str(template_id)))
-        except (ValueError, TypeError):
-            # Try by file_name
-            template_res = supabase.table('document_templates').select('id').eq('file_name', template_id).limit(1).execute()
-            if template_res.data:
-                template_uuid = str(template_res.data[0]['id'])
-        
-        if not template_uuid:
-            return {"error": "Template not found", "template_id": template_id}
-        
-        # Get all permissions for this template
-        perms = supabase.table('plan_template_permissions').select('*').eq('template_id', template_uuid).execute()
-        
-        if not perms.data:
-            return {
-                "template_id": template_uuid,
-                "permissions_count": 0,
-                "permissions": [],
-                "message": "No permissions found (template available to all plans)"
-            }
-        
-        # Get plan details for each permission
-        plan_details = []
-        for perm in perms.data:
-            plan_id = perm.get('plan_id')
-            plan_res = supabase.table('subscription_plans').select('plan_tier, plan_name').eq('id', plan_id).limit(1).execute()
-            plan_info = plan_res.data[0] if plan_res.data else {}
-            
-            plan_details.append({
-                "permission_id": perm.get('id'),
-                "plan_id": plan_id,
-                "plan_tier": plan_info.get('plan_tier'),
-                "plan_name": plan_info.get('plan_name'),
-                "can_download": perm.get('can_download'),
-                "created_at": perm.get('created_at')
-            })
-        
-        return {
-            "template_id": template_uuid,
-            "permissions_count": len(plan_details),
-            "permissions": plan_details,
-            "message": f"Found {len(plan_details)} permissions"
-        }
-    except Exception as e:
-        logger.error(f"Error in debug endpoint: {e}")
-        return {"error": str(e)}
 
 @app.post("/upload-template")
 async def upload_template(
@@ -4105,44 +3922,15 @@ async def get_user_downloadable_templates(request: Request):
                 raise Exception(f"Database function error: {templates_res.error}")
         except Exception as rpc_error:
             logger.error(f"Error calling get_user_downloadable_templates RPC: {rpc_error}")
-            # Fallback: return empty list or try alternative query
-            logger.warning("Falling back to direct template query")
-            try:
-                # Fallback: get all active templates and mark as downloadable
-                templates_res_data = []
-                fallback_templates = supabase.table('document_templates').select('id, title, description, file_name, placeholders').eq('is_active', True).execute()
-                if fallback_templates.data:
-                    # Get deleted templates for filtering
-                    deleted_templates_fallback = get_deleted_templates()
-                    normalized_deleted = {ensure_docx_filename(name) for name in deleted_templates_fallback} if deleted_templates_fallback else set()
-                    
-                    for t in fallback_templates.data:
-                        file_name = t.get('file_name', '')
-                        docx_file_name = ensure_docx_filename(file_name) if file_name else ''
-                        
-                        # Skip deleted templates
-                        if normalized_deleted and docx_file_name:
-                            if docx_file_name in normalized_deleted or docx_file_name.lower() in {name.lower() for name in normalized_deleted}:
-                                logger.debug(f"Skipping deleted template in fallback: {docx_file_name}")
-                                continue
-                        
-                        templates_res_data.append({
-                            'template_id': t['id'],
-                            'template_name': t.get('title') or t.get('file_name', ''),
-                            'can_download': True,  # Default to true for fallback
-                            'max_downloads': 10,
-                            'current_downloads': 0,
-                            'remaining_downloads': 10
-                        })
-                templates_res = type('obj', (object,), {'data': templates_res_data})()
-            except Exception as fallback_error:
-                logger.error(f"Fallback query also failed: {fallback_error}")
-                return {
-                    "success": True,
-                    "templates": [],
-                    "source": "error_fallback",
-                    "error": str(fallback_error)
-                }
+            # SECURITY: If RPC fails, return empty list (deny all access for safety)
+            # Don't return all templates as fallback - that would be a security breach
+            logger.warning("RPC failed - returning empty template list for security")
+            return {
+                "success": True,
+                "templates": [],
+                "source": "rpc_error_safe_fallback",
+                "error": f"Could not fetch templates: {str(rpc_error)}"
+            }
         
         if templates_res.data:
             # Enhance with template details

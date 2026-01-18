@@ -325,7 +325,6 @@ class TemplateEditor {
                 this.plans = data.plans;
                 console.log('[loadPlans] ✅ Loaded plans from database:', Object.keys(this.plans).length, 'plans');
                 console.log('[loadPlans] Plan keys (plan_tiers):', Object.keys(this.plans));
-                console.log('[loadPlans] Full plans object:', JSON.stringify(this.plans, null, 2));
                 this.populatePlanCheckboxes();
             } else {
                 console.warn('[loadPlans] ⚠️ No plans in response, trying /plans fallback');
@@ -391,14 +390,8 @@ class TemplateEditor {
             return;
         }
         
-        // Normalize assignedPlanIds to lowercase for case-insensitive comparison
-        const normalizedAssignedIds = assignedPlanIds.map(id => String(id).toLowerCase());
-        
         container.innerHTML = Object.entries(this.plans).map(([planId, plan]) => {
-            // Check if this plan is assigned (case-insensitive)
-            const isChecked = normalizedAssignedIds.includes(String(planId).toLowerCase());
-            console.log(`[populatePlanCheckboxes] Plan ${planId}: assigned=${isChecked}, normalizedId=${String(planId).toLowerCase()}, assignedIds=${normalizedAssignedIds}`);
-            
+            const isChecked = assignedPlanIds.includes(planId) || assignedPlanIds.includes(String(planId));
             return `
             <div class="form-check">
                 <input type="checkbox" class="form-check-input" id="plan_${planId}" value="${planId}" ${isChecked ? 'checked' : ''}>
@@ -645,15 +638,8 @@ class TemplateEditor {
         });
         
         // Log each checkbox value for debugging
-        console.log('[saveTemplateSettings] 📋 All checkboxes in container:');
-        const allCheckboxes = document.querySelectorAll('#planCheckboxes input[type="checkbox"]');
-        allCheckboxes.forEach((cb, idx) => {
-            console.log(`[saveTemplateSettings] 📋 Checkbox ${idx + 1}: value="${cb.value}", checked=${cb.checked}, id="${cb.id}"`);
-        });
-        
-        console.log('[saveTemplateSettings] 📋 Checked checkboxes:');
         Array.from(planCheckboxes).forEach((cb, idx) => {
-            console.log(`[saveTemplateSettings] ✅ Checkbox ${idx + 1}: value="${cb.value}", checked=${cb.checked}`);
+            console.log(`[saveTemplateSettings] 📋 Checkbox ${idx + 1}: value="${cb.value}", checked=${cb.checked}`);
         });
 
         // Validate fontSize if provided
@@ -686,7 +672,6 @@ class TemplateEditor {
 
             console.log('[saveTemplateSettings] 📥 Response:', data);
             console.log('[saveTemplateSettings] 📥 Response plan_ids:', data?.plan_ids);
-            console.log('[saveTemplateSettings] 📥 Full response data:', JSON.stringify(data, null, 2));
 
             if (data && data.success) {
                 alert('Template settings saved successfully!');
@@ -702,15 +687,6 @@ class TemplateEditor {
                 // Don't reload from backend immediately - the response already contains the saved data
                 // Reloading might fetch stale data or cause race conditions
                 this.populatePlanCheckboxes(savedPlanIds);
-                
-                // DEBUG: Check what's actually in the database
-                console.log('[saveTemplateSettings] 🔍 Checking database with debug endpoint...');
-                try {
-                    const debugRes = await this.apiJson(`/templates/${encodeURIComponent(this.currentTemplateId)}/debug-permissions`);
-                    console.log('[saveTemplateSettings] 🔍 Database has:', debugRes);
-                } catch (debugErr) {
-                    console.error('[saveTemplateSettings] 🔍 Debug check failed:', debugErr);
-                }
                 
                 // Optionally reload from backend after a longer delay (optional, for sync verification)
                 // Only reload if you want to verify the database has the data, but the checkboxes are already updated
