@@ -2324,6 +2324,7 @@ async def update_template_metadata(
                             # CRITICAL: plan_ids can be plan_tier (basic, professional) or plan_id (UUID)
                             # We need to convert plan_tier to plan_id (UUID)
                             permission_rows = []
+                            failed_plans = []
                             for plan_identifier in plan_ids:
                                 if not plan_identifier:
                                     continue
@@ -2340,23 +2341,25 @@ async def update_template_metadata(
                                     logger.debug(f"plan_identifier {plan_identifier} is not a UUID, trying to find by plan_tier")
                                     
                                     # First try exact match
-                                    plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
+                                    plan_res = supabase.table('subscription_plans').select('id, plan_tier').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
                                     if plan_res.data and len(plan_res.data) > 0:
                                         plan_id_uuid = str(plan_res.data[0]['id'])
-                                        logger.info(f"Found plan_id {plan_id_uuid} for plan_tier {plan_identifier}")
+                                        logger.info(f"✅ Found plan_id {plan_id_uuid} for plan_tier {plan_identifier} (exact match)")
                                     else:
                                         # Try case-insensitive match
                                         logger.debug(f"Exact plan_tier match failed for {plan_identifier}, trying case-insensitive")
                                         all_plans = supabase.table('subscription_plans').select('id, plan_tier').eq('is_active', True).execute()
+                                        logger.debug(f"Available plans in database: {[(p.get('plan_tier'), p.get('id')) for p in (all_plans.data or [])]}")
                                         if all_plans.data:
                                             for plan in all_plans.data:
                                                 if plan.get('plan_tier', '').lower() == str(plan_identifier).lower():
                                                     plan_id_uuid = str(plan['id'])
-                                                    logger.info(f"Found plan_id {plan_id_uuid} for plan_tier {plan_identifier} (case-insensitive match)")
+                                                    logger.info(f"✅ Found plan_id {plan_id_uuid} for plan_tier {plan_identifier} (case-insensitive match)")
                                                     break
                                         
                                         if not plan_id_uuid:
-                                            logger.warning(f"Could not find plan_id for plan_tier {plan_identifier} (tried exact and case-insensitive)")
+                                            logger.warning(f"❌ Could not find plan_id for plan_tier '{plan_identifier}' (tried exact and case-insensitive)")
+                                            failed_plans.append(plan_identifier)
                                 
                                 if plan_id_uuid:
                                     permission_rows.append({
@@ -2365,6 +2368,9 @@ async def update_template_metadata(
                                         'can_download': True
                                     })
                                     logger.debug(f"Added permission for plan_id {plan_id_uuid} (from plan_identifier {plan_identifier})")
+                            
+                            if failed_plans:
+                                logger.warning(f"⚠️ Failed to find {len(failed_plans)} plans: {failed_plans}")
                             
                             if permission_rows:
                                 logger.info(f"Inserting {len(permission_rows)} plan permissions for template {template_id_uuid}")
@@ -2386,7 +2392,10 @@ async def update_template_metadata(
                                     import traceback
                                     logger.error(traceback.format_exc())
                             else:
-                                logger.info(f"No plan permissions to insert for template {template_id_uuid} (plan_ids was empty or could not resolve to UUIDs)")
+                                if failed_plans:
+                                    logger.error(f"❌ Could not insert ANY permissions - all {len(plan_ids)} plan lookups failed: {failed_plans}")
+                                else:
+                                    logger.info(f"No plan permissions to insert for template {template_id_uuid} (plan_ids was empty or could not resolve to UUIDs)")
                                 # IMPORTANT: If no plan_ids provided, template has no plan restrictions (available to all plans)
                                 # This is OK - the template will be available to all plans
                                 logger.info(f"Template {template_id_uuid} will be available to all plans (no specific plan permissions set)")
