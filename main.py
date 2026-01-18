@@ -2475,6 +2475,40 @@ async def update_template_metadata(
         logger.error(f"Error updating template metadata: {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
 
+@app.get("/debug/all-plans")
+async def debug_all_plans():
+    """DEBUG ENDPOINT: Show all plans in the database"""
+    try:
+        if not supabase:
+            return {"error": "Supabase not enabled"}
+        
+        # Get all plans (active and inactive)
+        plans_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name, is_active').execute()
+        
+        if not plans_res.data:
+            return {
+                "total": 0,
+                "plans": [],
+                "message": "No plans found in database"
+            }
+        
+        return {
+            "total": len(plans_res.data),
+            "plans": [
+                {
+                    "id": p.get('id'),
+                    "plan_tier": p.get('plan_tier'),
+                    "plan_name": p.get('plan_name'),
+                    "is_active": p.get('is_active')
+                }
+                for p in plans_res.data
+            ],
+            "message": f"Found {len(plans_res.data)} plans"
+        }
+    except Exception as e:
+        logger.error(f"Error in debug all-plans endpoint: {e}")
+        return {"error": str(e)}
+
 @app.get("/templates/{template_id}/debug-permissions")
 async def debug_template_permissions(template_id: str):
     """DEBUG ENDPOINT: Check what permissions are saved for a template"""

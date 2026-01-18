@@ -325,6 +325,7 @@ class TemplateEditor {
                 this.plans = data.plans;
                 console.log('[loadPlans] ✅ Loaded plans from database:', Object.keys(this.plans).length, 'plans');
                 console.log('[loadPlans] Plan keys (plan_tiers):', Object.keys(this.plans));
+                console.log('[loadPlans] Full plans object:', JSON.stringify(this.plans, null, 2));
                 this.populatePlanCheckboxes();
             } else {
                 console.warn('[loadPlans] ⚠️ No plans in response, trying /plans fallback');
