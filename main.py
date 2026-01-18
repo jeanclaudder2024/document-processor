@@ -2330,11 +2330,15 @@ async def update_template_metadata(
                         if plan_ids:
                             # CRITICAL: plan_ids can be plan_tier (basic, professional) or plan_id (UUID)
                             # We need to convert plan_tier to plan_id (UUID)
+                            logger.info(f"[permission-convert] Starting to convert {len(plan_ids)} plan identifiers: {plan_ids}")
                             permission_rows = []
                             failed_plans = []
-                            for plan_identifier in plan_ids:
+                            for idx, plan_identifier in enumerate(plan_ids):
                                 if not plan_identifier:
+                                    logger.warning(f"[permission-convert] Plan {idx}: EMPTY/NULL, skipping")
                                     continue
+                                
+                                logger.info(f"[permission-convert] Plan {idx}/{len(plan_ids)}: Processing '{plan_identifier}' (type: {type(plan_identifier)})")
                                 
                                 # Try to get plan_id from plan_tier
                                 plan_id_uuid = None
@@ -2342,30 +2346,30 @@ async def update_template_metadata(
                                     # First, check if plan_identifier is already a UUID
                                     plan_uuid_test = uuid.UUID(str(plan_identifier))
                                     plan_id_uuid = str(plan_uuid_test)
-                                    logger.debug(f"plan_identifier {plan_identifier} is a UUID: {plan_id_uuid}")
+                                    logger.debug(f"[permission-convert] Plan {idx}: '{plan_identifier}' is a UUID: {plan_id_uuid}")
                                 except (ValueError, TypeError):
                                     # Not a UUID, try to find by plan_tier
-                                    logger.debug(f"plan_identifier {plan_identifier} is not a UUID, trying to find by plan_tier")
+                                    logger.debug(f"[permission-convert] Plan {idx}: '{plan_identifier}' is not a UUID, trying to find by plan_tier")
                                     
                                     # First try exact match
                                     plan_res = supabase.table('subscription_plans').select('id, plan_tier').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
                                     if plan_res.data and len(plan_res.data) > 0:
                                         plan_id_uuid = str(plan_res.data[0]['id'])
-                                        logger.info(f"✅ Found plan_id {plan_id_uuid} for plan_tier {plan_identifier} (exact match)")
+                                        logger.info(f"[permission-convert] Plan {idx}: ✅ Found UUID {plan_id_uuid} for plan_tier '{plan_identifier}' (exact match)")
                                     else:
                                         # Try case-insensitive match
-                                        logger.debug(f"Exact plan_tier match failed for {plan_identifier}, trying case-insensitive")
+                                        logger.debug(f"[permission-convert] Plan {idx}: Exact match failed for '{plan_identifier}', trying case-insensitive")
                                         all_plans = supabase.table('subscription_plans').select('id, plan_tier').eq('is_active', True).execute()
-                                        logger.debug(f"Available plans in database: {[(p.get('plan_tier'), p.get('id')) for p in (all_plans.data or [])]}")
+                                        logger.debug(f"[permission-convert] Plan {idx}: Available plans: {[(p.get('plan_tier'), p.get('id')) for p in (all_plans.data or [])]}")
                                         if all_plans.data:
                                             for plan in all_plans.data:
                                                 if plan.get('plan_tier', '').lower() == str(plan_identifier).lower():
                                                     plan_id_uuid = str(plan['id'])
-                                                    logger.info(f"✅ Found plan_id {plan_id_uuid} for plan_tier {plan_identifier} (case-insensitive match)")
+                                                    logger.info(f"[permission-convert] Plan {idx}: ✅ Found UUID {plan_id_uuid} for plan_tier '{plan_identifier}' (case-insensitive match)")
                                                     break
                                         
                                         if not plan_id_uuid:
-                                            logger.warning(f"❌ Could not find plan_id for plan_tier '{plan_identifier}' (tried exact and case-insensitive)")
+                                            logger.warning(f"[permission-convert] Plan {idx}: ❌ Could not find plan_id for plan_tier '{plan_identifier}' (tried exact and case-insensitive)")
                                             failed_plans.append(plan_identifier)
                                 
                                 if plan_id_uuid:
@@ -2374,10 +2378,15 @@ async def update_template_metadata(
                                         'template_id': str(template_id_uuid),
                                         'can_download': True
                                     })
-                                    logger.debug(f"Added permission for plan_id {plan_id_uuid} (from plan_identifier {plan_identifier})")
+                                    logger.info(f"[permission-convert] Plan {idx}: ✅ Added to permission_rows with UUID {plan_id_uuid}")
+                                else:
+                                    logger.warning(f"[permission-convert] Plan {idx}: ❌ SKIPPED - no UUID found")
                             
                             if failed_plans:
-                                logger.warning(f"⚠️ Failed to find {len(failed_plans)} plans: {failed_plans}")
+                                logger.warning(f"[permission-convert] ⚠️ Failed to convert {len(failed_plans)} plans: {failed_plans}")
+                            
+                            logger.info(f"[permission-convert] Summary: {len(permission_rows)} rows ready to insert out of {len(plan_ids)} requested")
+                            logger.info(f"[permission-convert] Permission rows: {permission_rows}")
                             
                             if permission_rows:
                                 logger.info(f"Inserting {len(permission_rows)} plan permissions for template {template_id_uuid}")
