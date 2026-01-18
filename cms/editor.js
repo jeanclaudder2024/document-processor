@@ -390,8 +390,14 @@ class TemplateEditor {
             return;
         }
         
+        // Normalize assignedPlanIds to lowercase for case-insensitive comparison
+        const normalizedAssignedIds = assignedPlanIds.map(id => String(id).toLowerCase());
+        
         container.innerHTML = Object.entries(this.plans).map(([planId, plan]) => {
-            const isChecked = assignedPlanIds.includes(planId) || assignedPlanIds.includes(String(planId));
+            // Check if this plan is assigned (case-insensitive)
+            const isChecked = normalizedAssignedIds.includes(String(planId).toLowerCase());
+            console.log(`[populatePlanCheckboxes] Plan ${planId}: assigned=${isChecked}, normalizedId=${String(planId).toLowerCase()}, assignedIds=${normalizedAssignedIds}`);
+            
             return `
             <div class="form-check">
                 <input type="checkbox" class="form-check-input" id="plan_${planId}" value="${planId}" ${isChecked ? 'checked' : ''}>
@@ -672,6 +678,7 @@ class TemplateEditor {
 
             console.log('[saveTemplateSettings] 📥 Response:', data);
             console.log('[saveTemplateSettings] 📥 Response plan_ids:', data?.plan_ids);
+            console.log('[saveTemplateSettings] 📥 Full response data:', JSON.stringify(data, null, 2));
 
             if (data && data.success) {
                 alert('Template settings saved successfully!');

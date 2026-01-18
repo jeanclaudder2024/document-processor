@@ -2406,25 +2406,34 @@ async def update_template_metadata(
             update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
 
         # Get plan_tiers for plan_ids (for response)
+        # Query the actual saved permissions from database to return accurate data
         plan_tiers = []
-        if plan_ids and template_record:
+        if template_record:
             try:
-                # Convert plan_id (UUID) to plan_tier for response
-                for plan_id in plan_ids:
-                    try:
-                        # Try to find plan by UUID
-                        plan_res = supabase.table('subscription_plans').select('plan_tier').eq('id', str(plan_id)).limit(1).execute()
-                        if plan_res.data and len(plan_res.data) > 0:
-                            plan_tiers.append(plan_res.data[0]['plan_tier'])
-                        else:
-                            # If not found by UUID, maybe it's already a plan_tier
-                            plan_tiers.append(str(plan_id))
-                    except Exception:
-                        # If error, just use plan_id as-is (might be plan_tier)
-                        plan_tiers.append(str(plan_id))
+                # Query what was actually saved in the database
+                saved_perms = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id_uuid).execute()
+                if saved_perms.data:
+                    logger.info(f"Found {len(saved_perms.data)} saved permissions for template {template_id_uuid}")
+                    # Get the plan_tiers for the saved plan_ids
+                    for perm in saved_perms.data:
+                        plan_id_uuid = perm['plan_id']
+                        try:
+                            plan_res = supabase.table('subscription_plans').select('plan_tier').eq('id', str(plan_id_uuid)).limit(1).execute()
+                            if plan_res.data and len(plan_res.data) > 0:
+                                plan_tier = plan_res.data[0]['plan_tier']
+                                plan_tiers.append(plan_tier)
+                                logger.info(f"Converted plan_id {plan_id_uuid} to plan_tier {plan_tier}")
+                            else:
+                                logger.warning(f"Could not find plan_tier for plan_id {plan_id_uuid}")
+                        except Exception as conv_e:
+                            logger.error(f"Error converting plan_id {plan_id_uuid}: {conv_e}")
+                else:
+                    logger.info(f"No saved permissions found for template {template_id_uuid} (template available to all plans)")
             except Exception as e:
-                logger.warning(f"Could not convert plan_ids to plan_tiers: {e}")
-                plan_tiers = plan_ids
+                logger.warning(f"Could not query saved permissions: {e}")
+                # Fallback: use the plan_tiers from the original request if we have them
+                if plan_ids:
+                    plan_tiers = [str(p) for p in plan_ids]
         
         return {
             "success": True,
