@@ -2233,8 +2233,14 @@ async def update_template_metadata(
         if not isinstance(plan_ids, list):
             plan_ids = []
         
-        logger.info(f"[metadata] Received plan_ids from request: {plan_ids}")
-        logger.info(f"[metadata] plan_ids type: {type(plan_ids)}, length: {len(plan_ids)}")
+        logger.info(f"[metadata] ========== RECEIVED PLAN IDS ==========")
+        logger.info(f"[metadata] Raw plan_ids: {plan_ids}")
+        logger.info(f"[metadata] plan_ids type: {type(plan_ids)}")
+        logger.info(f"[metadata] plan_ids length: {len(plan_ids)}")
+        logger.info(f"[metadata] plan_ids content:")
+        for i, p_id in enumerate(plan_ids):
+            logger.info(f"[metadata]   [{i}] = '{p_id}' (type: {type(p_id).__name__})")
+        logger.info(f"[metadata] =========================================")
         
         requires_broker_membership = payload.get('requires_broker_membership', False)
         if not isinstance(requires_broker_membership, bool):
