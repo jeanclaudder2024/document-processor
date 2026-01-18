@@ -2233,6 +2233,9 @@ async def update_template_metadata(
         if not isinstance(plan_ids, list):
             plan_ids = []
         
+        logger.info(f"[metadata] Received plan_ids from request: {plan_ids}")
+        logger.info(f"[metadata] plan_ids type: {type(plan_ids)}, length: {len(plan_ids)}")
+        
         requires_broker_membership = payload.get('requires_broker_membership', False)
         if not isinstance(requires_broker_membership, bool):
             requires_broker_membership = bool(requires_broker_membership)
@@ -2366,13 +2369,22 @@ async def update_template_metadata(
                             if permission_rows:
                                 logger.info(f"Inserting {len(permission_rows)} plan permissions for template {template_id_uuid}")
                                 logger.info(f"Plan permission rows: {[r['plan_id'] for r in permission_rows]}")
-                                permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
-                                if getattr(permissions_response, "error", None):
-                                    logger.error(f"Plan permissions insert error: {permissions_response.error}")
+                                try:
+                                    permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
+                                    logger.info(f"Insert response: {permissions_response}")
+                                    if hasattr(permissions_response, 'data') and permissions_response.data:
+                                        logger.info(f"✅ Successfully inserted {len(permissions_response.data)} plan permissions (template: {template_id_uuid})")
+                                        logger.info(f"Inserted permission IDs: {[p.get('id') for p in permissions_response.data]}")
+                                    elif getattr(permissions_response, "error", None):
+                                        logger.error(f"Plan permissions insert error: {permissions_response.error}")
+                                        logger.error(f"Failed permission rows: {permission_rows}")
+                                    else:
+                                        logger.warning(f"Insert returned unexpected response structure: {permissions_response}")
+                                except Exception as insert_error:
+                                    logger.error(f"Exception during permission insert: {insert_error}")
                                     logger.error(f"Failed permission rows: {permission_rows}")
-                                else:
-                                    logger.info(f"✅ Successfully updated plan permissions for {len(permission_rows)} plans (template: {template_id_uuid})")
-                                    logger.info(f"Inserted permissions: {[r['plan_id'] for r in permission_rows]}")
+                                    import traceback
+                                    logger.error(traceback.format_exc())
                             else:
                                 logger.info(f"No plan permissions to insert for template {template_id_uuid} (plan_ids was empty or could not resolve to UUIDs)")
                                 # IMPORTANT: If no plan_ids provided, template has no plan restrictions (available to all plans)
