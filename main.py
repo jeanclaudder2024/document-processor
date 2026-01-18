@@ -2396,34 +2396,48 @@ async def update_template_metadata(
                             
                             if permission_rows:
                                 logger.info(f"Inserting {len(permission_rows)} plan permissions for template {template_id_uuid}")
-                                logger.info(f"Plan permission rows: {[r['plan_id'] for r in permission_rows]}")
+                                logger.info(f"Permission rows to insert: {permission_rows}")
                                 try:
-                                    permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
+                                    # Insert ALL rows at once (batch insert)
+                                    permissions_response = supabase.table('plan_template_permissions').insert(permission_rows, count='exact').execute()
                                     logger.info(f"Insert response type: {type(permissions_response)}")
-                                    logger.info(f"Insert response: {permissions_response}")
+                                    logger.info(f"Insert response status code: {getattr(permissions_response, 'status_code', 'N/A')}")
                                     
+                                    # Check if insert was successful
                                     if hasattr(permissions_response, 'data') and permissions_response.data:
-                                        logger.info(f"✅ Successfully inserted {len(permissions_response.data)} plan permissions (template: {template_id_uuid})")
-                                        logger.info(f"Inserted permission IDs: {[p.get('id') for p in permissions_response.data]}")
+                                        inserted_count = len(permissions_response.data)
+                                        logger.info(f"✅ Successfully inserted {inserted_count} plan permissions")
+                                        for i, perm in enumerate(permissions_response.data):
+                                            logger.info(f"  [{i}] ID: {perm.get('id')}, plan_id: {perm.get('plan_id')}, template_id: {perm.get('template_id')}")
                                     elif hasattr(permissions_response, 'error') and permissions_response.error:
-                                        logger.error(f"❌ Plan permissions insert error: {permissions_response.error}")
-                                        logger.error(f"Failed permission rows: {permission_rows}")
+                                        logger.error(f"❌ Insert error: {permissions_response.error}")
+                                        # Try to insert one by one to see which one fails
+                                        logger.info(f"Attempting to insert {len(permission_rows)} rows individually to diagnose...")
+                                        for i, row in enumerate(permission_rows):
+                                            try:
+                                                single_response = supabase.table('plan_template_permissions').insert([row]).execute()
+                                                if hasattr(single_response, 'data') and single_response.data:
+                                                    logger.info(f"  Row {i}: ✅ Inserted successfully")
+                                                elif hasattr(single_response, 'error'):
+                                                    logger.error(f"  Row {i}: ❌ Error - {single_response.error}")
+                                                else:
+                                                    logger.warning(f"  Row {i}: Unexpected response")
+                                            except Exception as single_err:
+                                                logger.error(f"  Row {i}: Exception - {single_err}")
                                     else:
-                                        logger.warning(f"Insert returned unexpected response structure: {permissions_response}")
-                                        logger.warning(f"Response attributes: {dir(permissions_response)}")
+                                        logger.warning(f"Insert returned unexpected response: {permissions_response}")
                                     
-                                    # CRITICAL: Verify insert by querying what was actually inserted
-                                    logger.info(f"Verifying insert by querying database...")
-                                    verify_res = supabase.table('plan_template_permissions').select('id, plan_id, template_id, can_download').eq('template_id', template_id_uuid).execute()
+                                    # Verify ALL rows were inserted
+                                    logger.info(f"Verifying insert...")
+                                    verify_res = supabase.table('plan_template_permissions').select('id, plan_id').eq('template_id', template_id_uuid).execute()
                                     if verify_res.data:
-                                        logger.info(f"✅ Verified: Database now has {len(verify_res.data)} permissions for template {template_id_uuid}")
-                                        logger.info(f"Saved plan_ids: {[p['plan_id'] for p in verify_res.data]}")
+                                        logger.info(f"✅ Verification: Database now has {len(verify_res.data)} permissions")
+                                        logger.info(f"   Plan IDs in database: {[p['plan_id'] for p in verify_res.data]}")
                                     else:
-                                        logger.error(f"❌ VERIFICATION FAILED: Database has NO permissions for template {template_id_uuid} (insert failed silently!)")
+                                        logger.error(f"❌ Verification FAILED: Database has 0 permissions! Insert failed!")
                                         
                                 except Exception as insert_error:
-                                    logger.error(f"Exception during permission insert: {insert_error}")
-                                    logger.error(f"Failed permission rows: {permission_rows}")
+                                    logger.error(f"Exception during insert: {insert_error}")
                                     import traceback
                                     logger.error(traceback.format_exc())
                             else:
