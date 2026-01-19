@@ -1714,9 +1714,34 @@ async def update_template_metadata(
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="font_size must be an integer")
         
-        plan_ids = payload.get('plan_ids', [])  # Array of plan IDs
+        plan_ids = payload.get('plan_ids', [])  # Array of plan IDs or plan_tiers
         if not isinstance(plan_ids, list):
             plan_ids = []
+        
+        # Convert plan_tiers to plan_ids (UUIDs) if needed
+        # The CMS may send plan_tier values (basic, professional, etc.) instead of UUIDs
+        resolved_plan_ids = []
+        if plan_ids and SUPABASE_ENABLED:
+            for plan_identifier in plan_ids:
+                if not plan_identifier:
+                    continue
+                try:
+                    # Try to parse as UUID first
+                    plan_uuid = uuid.UUID(str(plan_identifier))
+                    resolved_plan_ids.append(str(plan_uuid))
+                except (ValueError, TypeError):
+                    # Not a UUID, treat as plan_tier and look up plan_id
+                    try:
+                        plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
+                        if plan_res.data and len(plan_res.data) > 0:
+                            resolved_plan_ids.append(str(plan_res.data[0]['id']))
+                            logger.debug(f"Converted plan_tier '{plan_identifier}' to plan_id: {plan_res.data[0]['id']}")
+                        else:
+                            logger.warning(f"Could not find plan with plan_tier: {plan_identifier}")
+                    except Exception as e:
+                        logger.warning(f"Error looking up plan for '{plan_identifier}': {e}")
+
+        plan_ids = resolved_plan_ids  # Use resolved UUIDs
 
         # Update Supabase metadata when available
         template_record = None
@@ -1773,7 +1798,8 @@ async def update_template_metadata(
                                     permission_rows.append({
                                         'plan_id': str(plan_id),
                                         'template_id': str(template_id_uuid),
-                                        'can_download': True
+                                        'can_download': True,
+                                        'max_downloads_per_template': None  # Per-template limit (NULL = unlimited, use plan default)
                                     })
                             
                             if permission_rows:
@@ -1984,7 +2010,8 @@ async def upload_template(
                                     permission_rows.append({
                                         'plan_id': str(plan_id),
                                         'template_id': str(template_id),
-                                        'can_download': True
+                                        'can_download': True,
+                                        'max_downloads_per_template': None  # Per-template limit (NULL = unlimited, use plan default)
                                     })
                             
                             if permission_rows:
@@ -2508,7 +2535,8 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     supabase.table('plan_template_permissions').insert({
                                         'plan_id': db_plan_id,
                                         'template_id': template['id'],
-                                        'can_download': True
+                                        'can_download': True,
+                                        'max_downloads_per_template': None  # Per-template limit (NULL = unlimited, use plan default)
                                     }).execute()
                                 logger.info(f"Set all templates permission for plan {plan_id}")
                             elif isinstance(allowed, list):
@@ -2695,9 +2723,9 @@ async def get_template_plan_info(template_identifier: str):
         if not template_id:
             raise HTTPException(status_code=404, detail="Template not found")
         
-        # Get all plans that can download this template
+        # Get all plans that can download this template (include max_downloads_per_template)
         permissions_res = supabase.table('plan_template_permissions').select(
-            'plan_id, can_download'
+            'plan_id, can_download, max_downloads_per_template'
         ).eq('template_id', template_id).eq('can_download', True).execute()
         
         plan_ids = [p['plan_id'] for p in (permissions_res.data or [])]
