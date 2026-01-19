@@ -18,10 +18,21 @@ import openai
 
 logger = logging.getLogger(__name__)
 
-# Initialize Supabase
+# Initialize Supabase (with error handling to prevent app crash)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+supabase: Client = None
+
+try:
+    if SUPABASE_URL and SUPABASE_KEY:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Email service: Successfully connected to Supabase")
+    else:
+        logger.warning("Email service: SUPABASE_URL or SUPABASE_KEY not set, Supabase disabled")
+except Exception as e:
+    logger.error(f"Email service: Failed to connect to Supabase: {e}")
+    logger.warning("Email service: Continuing without Supabase (some features may be disabled)")
+    supabase = None
 
 # OpenAI for AI replies
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
