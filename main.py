@@ -478,7 +478,7 @@ def mark_template_as_deleted(template_name: str) -> None:
     """Mark a template as deleted in the deleted templates file"""
     if not template_name:
         return
-        
+    
     try:
         # Ensure file exists
         if not os.path.exists(DELETED_TEMPLATES_PATH):
@@ -1448,6 +1448,59 @@ async def options_templates(request: Request):
     headers=_cors_preflight_headers(
         request,
          "GET, POST, OPTIONS"))
+
+
+# ============================================================================
+# HEALTH CHECK ENDPOINTS - For diagnostics
+# ============================================================================
+
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint"""
+    return {
+        "status": "ok",
+        "service": "Document Processing API",
+        "version": "2.0.0",
+        "timestamp": datetime.utcnow().isoformat(),
+        "supabase": "connected" if SUPABASE_ENABLED else "disconnected"
+    }
+
+
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """Detailed health check with component status"""
+    status = {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "components": {
+            "api": "running",
+            "supabase": "checking...",
+            "templates_dir": "checking...",
+        }
+    }
+    
+    # Check Supabase
+    if SUPABASE_ENABLED:
+        try:
+            # Simple test query
+            result = supabase.table('document_templates').select('id').limit(1).execute()
+            status["components"]["supabase"] = "connected"
+        except Exception as e:
+            status["components"]["supabase"] = f"error: {str(e)[:100]}"
+            status["status"] = "degraded"
+    else:
+        status["components"]["supabase"] = "disabled"
+        status["status"] = "degraded"
+    
+    # Check templates directory
+    try:
+        templates_count = len([f for f in os.listdir(TEMPLATES_DIR) if f.endswith('.docx')])
+        status["components"]["templates_dir"] = f"{templates_count} templates"
+    except Exception as e:
+        status["components"]["templates_dir"] = f"error: {str(e)[:100]}"
+        status["status"] = "degraded"
+    
+    return status
 
 
 @app.get("/templates")
