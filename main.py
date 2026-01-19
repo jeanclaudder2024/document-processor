@@ -6,39 +6,20 @@ Handles Word document processing with vessel data from Supabase
 import os
 import json
 import hashlib
-import hmac
-import secrets
 import uuid
 import tempfile
 import logging
 import csv
-import asyncio
-import aiohttp
-import zipfile
-import io
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
-from urllib.parse import quote
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body, Header
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from docx import Document
 import re
-try:
-    import fitz  # PyMuPDF
-    FITZ_AVAILABLE = True
-except ImportError:
-    FITZ_AVAILABLE = False
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    logger.warning("OpenAI library not installed. AI-powered random data generation will be disabled.")
 
 # ============================================================================
 # CONFIGURATION
@@ -127,40 +108,14 @@ SUPABASE_KEY = os.getenv(
     "SUPABASE_KEY",
      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
 
-# CRITICAL: Use service_role key for backend operations to bypass RLS
-# Service role key has full access and bypasses Row-Level Security policies
-SUPABASE_SERVICE_ROLE_KEY = os.getenv(
-    "SUPABASE_SERVICE_ROLE_KEY",
-    SUPABASE_KEY  # Fallback to regular key if service role key not set
-)
-
 try:
-    # Use service_role key for backend operations (bypasses RLS)
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-    logger.info("Successfully connected to Supabase (using service_role key for backend operations)")
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.info("Successfully connected to Supabase")
 except Exception as e:
     logger.error(f"Failed to connect to Supabase: {e}")
     supabase = None
 
 SUPABASE_ENABLED = supabase is not None
-
-# OpenAI Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_ENABLED = OPENAI_AVAILABLE and bool(OPENAI_API_KEY)
-openai_client = None
-
-if OPENAI_ENABLED:
-    try:
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        logger.info("OpenAI client initialized successfully")
-    except Exception as e:
-        logger.warning(f"Failed to initialize OpenAI client: {e}")
-        OPENAI_ENABLED = False
-else:
-    if not OPENAI_AVAILABLE:
-        logger.info("OpenAI library not available")
-    elif not OPENAI_API_KEY:
-        logger.info("OPENAI_API_KEY not set in environment variables")
 
 
 def encode_bytea(data: bytes) -> str:
@@ -271,14 +226,14 @@ def fetch_template_placeholders(template_id: str,
                 continue
                 
             supabase_settings[placeholder_key] = {
-                'source': row.get('source', 'database'),  # Default to database instead of random
+                'source': row.get('source', 'random'),
                 'customValue': str(row.get('custom_value') or '').strip(),
                 'databaseTable': str(row.get('database_table') or '').strip(),
                 'databaseField': str(row.get('database_field') or '').strip(),
                 'csvId': str(row.get('csv_id') or '').strip(),
                 'csvField': str(row.get('csv_field') or '').strip(),
                 'csvRow': int(row['csv_row']) if row.get('csv_row') is not None else 0,
-                'randomOption': row.get('random_option', 'ai') or 'ai'
+                'randomOption': row.get('random_option', 'auto') or 'auto'
             }
             logger.debug(f"Loaded placeholder setting from Supabase for '{placeholder_key}': source={supabase_settings[placeholder_key]['source']}")
         
@@ -367,14 +322,14 @@ def upsert_template_placeholders(template_id: str,
             rows.append({
                 'template_id': template_id,
                 'placeholder': placeholder,
-                'source': cfg.get('source', 'database'),  # Default to database instead of random
+                'source': cfg.get('source', 'random'),
                 'custom_value': cfg.get('customValue'),
                 'database_table': cfg.get('databaseTable') or cfg.get('database_table'),
                 'database_field': cfg.get('databaseField') or cfg.get('database_field'),
                 'csv_id': cfg.get('csvId') or cfg.get('csv_id'),
                 'csv_field': cfg.get('csvField') or cfg.get('csv_field'),
                 'csv_row': cfg.get('csvRow') or cfg.get('csv_row', 0),
-                'random_option': cfg.get('randomOption') or cfg.get('random_option', 'ai')
+                'random_option': cfg.get('randomOption') or cfg.get('random_option', 'auto')
             })
 
         try:
@@ -478,7 +433,7 @@ def mark_template_as_deleted(template_name: str) -> None:
     """Mark a template as deleted in the deleted templates file"""
     if not template_name:
         return
-    
+        
     try:
         # Ensure file exists
         if not os.path.exists(DELETED_TEMPLATES_PATH):
@@ -737,53 +692,6 @@ def ensure_docx_filename(value: str) -> str:
 # STEP 2: AUTHENTICATION (Simple login with HttpOnly cookies)
 # ============================================================================
 
-def get_user_id_from_username(username: str) -> Optional[str]:
-    """Get user_id from username/email"""
-    if not SUPABASE_ENABLED or not username:
-        return None
-    
-    try:
-        # Try to get user_id from auth.users by email
-        user_res = supabase.table('auth.users').select('id').eq('email', username).limit(1).execute()
-        if user_res.data:
-            return str(user_res.data[0]['id'])
-        
-        # Try subscribers table by email
-        subscriber_res = supabase.table('subscribers').select('user_id').eq('email', username).limit(1).execute()
-        if subscriber_res.data and subscriber_res.data[0].get('user_id'):
-            return str(subscriber_res.data[0]['user_id'])
-        
-        return None
-    except Exception as e:
-        logger.error(f"Error getting user_id from username: {e}")
-        return None
-
-def get_user_plan_id(user_id: str) -> Optional[str]:
-    """Get the user's current subscription plan ID"""
-    if not SUPABASE_ENABLED or not user_id:
-        return None
-    
-    try:
-        # Get user's subscription tier
-        subscriber_res = supabase.table('subscribers').select('subscription_tier, subscription_plan').eq('user_id', user_id).limit(1).execute()
-        if not subscriber_res.data:
-            return None
-        
-        subscriber = subscriber_res.data[0]
-        plan_tier = subscriber.get('subscription_tier') or subscriber.get('subscription_plan')
-        if not plan_tier:
-            return None
-        
-        # Get plan ID from tier
-        plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', plan_tier).eq('is_active', True).limit(1).execute()
-        if plan_res.data:
-            return str(plan_res.data[0]['id'])
-        
-        return None
-    except Exception as e:
-        logger.error(f"Error getting user plan ID: {e}")
-        return None
-
 def get_current_user(request: Request):
     """Dependency to check if user is authenticated"""
     token = request.cookies.get('session')
@@ -900,75 +808,11 @@ async def root():
     return {"message": "Document Processing API v2.0", "status": "running"}
 
 
-@app.get("/debug-plan-permissions")
-async def debug_plan_permissions(plan_tier: str = None):
-    """Debug endpoint to check plan permissions in database"""
-    if not SUPABASE_ENABLED or not supabase:
-        return {"error": "Supabase not enabled"}
-    
-    try:
-        result = {
-            "plans": {},
-            "templates": {},
-            "permissions": {}
-        }
-        
-        # Get all plans
-        plans_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('is_active', True).execute()
-        if plans_res.data:
-            for plan in plans_res.data:
-                plan_id = plan['id']
-                tier = plan.get('plan_tier', 'unknown')
-                
-                if plan_tier and tier != plan_tier:
-                    continue
-                
-                result["plans"][tier] = {
-                    "plan_id": str(plan_id),
-                    "plan_tier": tier,
-                    "plan_name": plan.get('plan_name', '')
-                }
-                
-                # Get permissions for this plan
-                perms_res = supabase.table('plan_template_permissions').select(
-                    'template_id, can_download, max_downloads_per_template'
-                ).eq('plan_id', plan_id).execute()
-                
-                result["permissions"][tier] = {
-                    "plan_id": str(plan_id),
-                    "count": len(perms_res.data) if perms_res.data else 0,
-                    "permissions": perms_res.data if perms_res.data else []
-                }
-        
-        # Get all templates
-        templates_res = supabase.table('document_templates').select('id, file_name, is_active').execute()
-        if templates_res.data:
-            for template in templates_res.data:
-                template_id = str(template['id'])
-                result["templates"][template_id] = {
-                    "file_name": template.get('file_name', ''),
-                    "is_active": template.get('is_active', True)
-                }
-        
-        return {
-            "success": True,
-            "data": result,
-            "summary": {
-                "total_plans": len(result["plans"]),
-                "total_templates": len(result["templates"]),
-                "plans_with_permissions": sum(1 for p in result["permissions"].values() if p["count"] > 0)
-            }
-        }
-    except Exception as e:
-        logger.error(f"Debug endpoint error: {e}", exc_info=True)
-        return {"error": str(e), "traceback": str(e.__traceback__)}
-
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "supabase": "connected" if supabase else "disconnected",
-        "openai": "enabled" if OPENAI_ENABLED else "disabled",
         "templates_dir": TEMPLATES_DIR,
         "storage_dir": STORAGE_DIR
     }
@@ -1123,30 +967,15 @@ async def get_database_table_columns(table_name: str, request: Request):
             raise HTTPException(status_code=503, detail="Supabase not available")
         
         # Try to get column information from Supabase
-        # Query multiple rows to ensure we get ALL columns, even if some are NULL in first row
+        # We'll query the table with LIMIT 0 to get column names without data
         try:
-            # Get multiple rows to ensure we capture all columns
-            # Some columns might be NULL in the first row, so we check multiple rows
-            # Also try to get schema information if available
-            response = supabase.table(table_name).select('*').limit(50).execute()
-            
-            # Get predefined columns first (as base list)
-            predefined_columns = _get_predefined_table_columns(table_name)
-            predefined_column_names = {col['name'] for col in predefined_columns} if predefined_columns else set()
+            # Get a sample row to infer column names
+            response = supabase.table(table_name).select('*').limit(1).execute()
             
             if response.data and len(response.data) > 0:
-                # Collect ALL unique column names from ALL rows
-                all_columns = set()
-                for row in response.data:
-                    all_columns.update(row.keys())
-                
-                # Merge with predefined columns to ensure we have all columns
-                # Even if a column is NULL in all rows, it should still appear if it's in the schema
-                all_columns.update(predefined_column_names)
-                
-                # Convert to list of column objects
+                # Extract column names from the first row
                 columns = []
-                for key in sorted(all_columns):
+                for key in response.data[0].keys():
                     # Create a human-readable label
                     label = key.replace('_', ' ').title()
                     columns.append({
@@ -1155,22 +984,16 @@ async def get_database_table_columns(table_name: str, request: Request):
                         'type': 'text'  # Default type, could be enhanced with actual type detection
                     })
                 
-                logger.info(f"Found {len(columns)} columns in table '{table_name}': {[c['name'] for c in columns[:15]]}...")
                 return {"success": True, "table": table_name, "columns": columns}
             else:
-                # Table exists but is empty, use predefined columns
-                logger.warning(f"Table '{table_name}' is empty, using predefined columns if available")
-                if predefined_columns:
-                    logger.info(f"Using {len(predefined_columns)} predefined columns for table '{table_name}'")
-                    return {"success": True, "table": table_name, "columns": predefined_columns}
-                else:
-                    return {"success": True, "table": table_name, "columns": []}
+                # Table exists but is empty, try to get schema info
+                # For now, return empty list
+                return {"success": True, "table": table_name, "columns": []}
         except Exception as table_exc:
             logger.error(f"Error querying table {table_name}: {table_exc}")
             # Fallback to predefined column lists for known tables
             predefined_columns = _get_predefined_table_columns(table_name)
             if predefined_columns:
-                logger.info(f"Using predefined columns for table '{table_name}'")
                 return {"success": True, "table": table_name, "columns": predefined_columns}
             else:
                 raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found or not accessible")
@@ -1221,20 +1044,7 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
             {'name': 'id', 'label': 'ID', 'type': 'integer'},
             {'name': 'name', 'label': 'Company Name', 'type': 'text'},
             {'name': 'country', 'label': 'Country', 'type': 'text'},
-            {'name': 'city', 'label': 'City', 'type': 'text'},
-            {'name': 'address', 'label': 'Address', 'type': 'text'},
             {'name': 'type', 'label': 'Company Type', 'type': 'text'},
-            {'name': 'company_type', 'label': 'Company Type', 'type': 'text'},
-            {'name': 'email', 'label': 'Email', 'type': 'text'},
-            {'name': 'phone', 'label': 'Phone', 'type': 'text'},
-            {'name': 'website', 'label': 'Website', 'type': 'text'},
-            {'name': 'industry', 'label': 'Industry', 'type': 'text'},
-            {'name': 'employees_count', 'label': 'Employees Count', 'type': 'integer'},
-            {'name': 'annual_revenue', 'label': 'Annual Revenue', 'type': 'numeric'},
-            {'name': 'founded_year', 'label': 'Founded Year', 'type': 'integer'},
-            {'name': 'description', 'label': 'Description', 'type': 'text'},
-            {'name': 'created_at', 'label': 'Created At', 'type': 'timestamp'},
-            {'name': 'updated_at', 'label': 'Updated At', 'type': 'timestamp'},
         ],
         'brokers': [
             {'name': 'id', 'label': 'ID', 'type': 'integer'},
@@ -1450,59 +1260,6 @@ async def options_templates(request: Request):
          "GET, POST, OPTIONS"))
 
 
-# ============================================================================
-# HEALTH CHECK ENDPOINTS - For diagnostics
-# ============================================================================
-
-@app.get("/health")
-async def health_check():
-    """Simple health check endpoint"""
-    return {
-        "status": "ok",
-        "service": "Document Processing API",
-        "version": "2.0.0",
-        "timestamp": datetime.utcnow().isoformat(),
-        "supabase": "connected" if SUPABASE_ENABLED else "disconnected"
-    }
-
-
-@app.get("/health/detailed")
-async def detailed_health_check():
-    """Detailed health check with component status"""
-    status = {
-        "status": "ok",
-        "timestamp": datetime.utcnow().isoformat(),
-        "components": {
-            "api": "running",
-            "supabase": "checking...",
-            "templates_dir": "checking...",
-        }
-    }
-    
-    # Check Supabase
-    if SUPABASE_ENABLED:
-        try:
-            # Simple test query
-            result = supabase.table('document_templates').select('id').limit(1).execute()
-            status["components"]["supabase"] = "connected"
-        except Exception as e:
-            status["components"]["supabase"] = f"error: {str(e)[:100]}"
-            status["status"] = "degraded"
-    else:
-        status["components"]["supabase"] = "disabled"
-        status["status"] = "degraded"
-    
-    # Check templates directory
-    try:
-        templates_count = len([f for f in os.listdir(TEMPLATES_DIR) if f.endswith('.docx')])
-        status["components"]["templates_dir"] = f"{templates_count} templates"
-    except Exception as e:
-        status["components"]["templates_dir"] = f"error: {str(e)[:100]}"
-        status["status"] = "degraded"
-    
-    return status
-
-
 @app.get("/templates")
 async def get_templates(request: Request):
     """List all available templates with placeholders"""
@@ -1604,80 +1361,6 @@ async def get_templates(request: Request):
                     font_family = record.get('font_family') or metadata_entry.get('font_family')
                     font_size = record.get('font_size') or metadata_entry.get('font_size')
                     
-                    # Get plan permissions for this template
-                    plan_names = []
-                    can_download_plans = []
-                    display_plan_name = None
-                    can_download = True  # Default to public
-                    
-                    try:
-                        # Get all plans that have permission for this template
-                        perms_res = supabase.table('plan_template_permissions').select(
-                            'plan_id, can_download, max_downloads_per_template'
-                        ).eq('template_id', template_id).eq('can_download', True).execute()
-                        
-                        logger.info(f"[templates] Template {template_id} ({file_name}) - Query returned {len(perms_res.data) if perms_res.data else 0} permissions")
-                        
-                        if perms_res.data and len(perms_res.data) > 0:
-                            plan_ids = [p['plan_id'] for p in perms_res.data]
-                            logger.info(f"[templates] Template {template_id} ({file_name}) - Found plan_ids: {plan_ids}")
-                            
-                            if plan_ids:
-                                # Get plan names - CRITICAL: Filter by is_active=True
-                                plans_info = supabase.table('subscription_plans').select(
-                                    'id, plan_name, plan_tier'
-                                ).in_('id', plan_ids).eq('is_active', True).execute()
-                                
-                                logger.info(f"[templates] Template {template_id} ({file_name}) - Found {len(plans_info.data) if plans_info.data else 0} active plans")
-                                
-                                if plans_info.data and len(plans_info.data) > 0:
-                                    plan_names = [p['plan_name'] for p in plans_info.data]
-                                    can_download_plans = [p['plan_tier'] for p in plans_info.data]
-                                    can_download = True
-                                    
-                                    logger.info(f"[templates] Template {template_id} ({file_name}) - Plan names: {plan_names}")
-                                    
-                                    # Determine plan_name for display
-                                    # Check if template has permissions for ALL active plans
-                                    all_plans_res = supabase.table('subscription_plans').select('id').eq('is_active', True).execute()
-                                    all_plan_ids = set(p['id'] for p in (all_plans_res.data or []))
-                                    plan_ids_set = set(plan_ids)
-                                    
-                                    logger.info(f"[templates] Template {template_id} ({file_name}) - All plan IDs: {all_plan_ids}, Template plan IDs: {plan_ids_set}")
-                                    
-                                    # Only show "All Plans" if template has permissions for EVERY active plan (exact match)
-                                    if plan_ids_set == all_plan_ids and len(plan_ids_set) > 0 and len(all_plan_ids) > 0:
-                                        display_plan_name = "All Plans"
-                                        logger.info(f"[templates] Template {template_id} ({file_name}) has permissions for all {len(all_plan_ids)} plans - showing 'All Plans'")
-                                    elif len(plan_names) > 0:
-                                        # Show specific plan names (what user configured in CMS)
-                                        if len(plan_names) <= 2:
-                                            display_plan_name = ", ".join(plan_names)
-                                        else:
-                                            display_plan_name = ", ".join(plan_names[:2]) + f" +{len(plan_names)-2} more"
-                                        logger.info(f"[templates] Template {template_id} ({file_name}) has permissions for {len(plan_names)} specific plans: {plan_names}")
-                                    else:
-                                        display_plan_name = None
-                                        logger.warning(f"[templates] Template {template_id} ({file_name}) - plan_names is empty but plans_info.data exists")
-                                else:
-                                    # No plan info found - permissions exist but plans not found
-                                    logger.warning(f"[templates] Template {template_id} ({file_name}) - Permissions exist but no plan info found for plan_ids: {plan_ids}")
-                                    display_plan_name = None
-                                    can_download = False
-                            else:
-                                logger.warning(f"[templates] Template {template_id} ({file_name}) - Permissions exist but plan_ids is empty")
-                                display_plan_name = None
-                                can_download = False
-                        else:
-                            # No permissions found - template is public/available to all
-                            display_plan_name = None
-                            can_download = True
-                            logger.debug(f"[templates] Template {template_id} ({file_name}) has no plan permissions - available to all (public)")
-                    except Exception as perm_exc:
-                        logger.error(f"[templates] Error fetching plan permissions for template {template_id} ({file_name}): {perm_exc}", exc_info=True)
-                        display_plan_name = None
-                        can_download = True  # Default to public on error
-                    
                     template_payload = {
                         "id": str(template_id),
                         "name": file_name,
@@ -1697,11 +1380,7 @@ async def get_templates(request: Request):
                         "created_at": created_at,
                         "placeholders": placeholders,
                         "placeholder_count": len(placeholders),
-                        "is_active": record.get('is_active', True),
-                        # Add plan information
-                        "plan_name": display_plan_name,
-                        "plan_tiers": can_download_plans,
-                        "can_download": can_download  # True if has plan permissions or is public
+                        "is_active": record.get('is_active', True)
                     }
                     templates.append(template_payload)
                     templates_by_key[file_name] = template_payload
@@ -1774,41 +1453,6 @@ async def get_templates(request: Request):
             metadata_entry = metadata_map.get(file_name, {})
 
             template_id = hashlib.md5(file_name.encode()).hexdigest()[:12]
-            # For local templates, check if they exist in database for plan permissions
-            plan_names = []
-            can_download_plans = []
-            display_plan_name = None
-            can_download = True  # Default to public for local templates
-            
-            try:
-                if SUPABASE_ENABLED:
-                    # Try to find template in database by file_name
-                    db_template_res = supabase.table('document_templates').select('id').eq('file_name', file_name).limit(1).execute()
-                    if db_template_res.data:
-                        db_template_id = db_template_res.data[0]['id']
-                        # Get plan permissions
-                        perms_res = supabase.table('plan_template_permissions').select(
-                            'plan_id, can_download'
-                        ).eq('template_id', db_template_id).eq('can_download', True).execute()
-                        
-                        if perms_res.data and len(perms_res.data) > 0:
-                            plan_ids = [p['plan_id'] for p in perms_res.data]
-                            if plan_ids:
-                                plans_info = supabase.table('subscription_plans').select('id, plan_name, plan_tier').in_('id', plan_ids).eq('is_active', True).execute()
-                                if plans_info.data and len(plans_info.data) > 0:
-                                    plan_names = [p['plan_name'] for p in plans_info.data]
-                                    can_download_plans = [p['plan_tier'] for p in plans_info.data]
-                                    can_download = True
-                                    
-                                    # Determine display name
-                                    if len(plan_names) <= 2:
-                                        display_plan_name = ", ".join(plan_names)
-                                    else:
-                                        display_plan_name = ", ".join(plan_names[:2]) + f" +{len(plan_names)-2} more"
-            except Exception as e:
-                logger.debug(f"Could not get plan info for local template {file_name}: {e}")
-                pass  # If we can't get plan info, template is still available (public)
-            
             template_payload = {
                 "id": template_id,
                 "name": file_name,
@@ -1826,11 +1470,7 @@ async def get_templates(request: Request):
                 "created_at": created_at,
                 "placeholders": placeholders,
                 "placeholder_count": len(placeholders),
-                "is_active": True,
-                # Add plan information
-                "plan_name": display_plan_name,
-                "plan_tiers": can_download_plans,
-                "can_download": can_download  # True if has plan permissions or is public
+                "is_active": True
             }
             templates.append(template_payload)
             templates_by_key[file_name] = template_payload
@@ -1851,174 +1491,68 @@ async def get_plans_db():
             return {"success": True, "plans": plans, "source": "json"}
 
         try:
-            # CRITICAL: Always use database, never fallback to plans.json when Supabase is enabled
-            # Get plans from database - include ALL active plans (NOTE: broker is a membership, not a plan)
+            # Get plans from database
             plans_res = supabase.table('subscription_plans').select(
-                '*').eq('is_active', True).order('sort_order', desc=False).execute()
-            
-            plan_count = len(plans_res.data) if plans_res.data else 0
-            logger.info(f"[plans-db] Loading {plan_count} plans from database (NOT using plans.json cache)")
-            plan_tiers = [p.get('plan_tier', 'unknown') for p in (plans_res.data or [])]
-            logger.info(f"Fetched {plan_count} active plans from database")
-            logger.info(f"Plan tiers found: {plan_tiers}")
+                '*').eq('is_active', True).order('sort_order').execute()
 
             if not plans_res.data:
-                # CRITICAL: Don't fallback to JSON - return empty plans
-                # This ensures we always use database, not stale cache
-                logger.warning(f"[plans-db] No plans found in database, returning empty plans (not using JSON fallback)")
+                # Fallback to JSON if no database plans
+                plans = read_json_file(PLANS_PATH, {})
                 return {
-                    "success": True,
-                    "plans": {},
-                    "source": "database_empty"
-                }
+    "success": True,
+    "plans": plans,
+     "source": "json_fallback"}
 
             # Get all templates (may not exist yet, so handle gracefully)
-            # CRITICAL: Query ALL templates (including inactive) to ensure we can map all template_ids from permissions
             template_map = {}
-            all_template_ids = set()
-            all_active_template_ids = set()
             try:
                 templates_res = supabase.table('document_templates').select(
-                    'id, file_name, title, is_active').execute()
-                if templates_res.data:
-                    # Include ALL templates in map (active and inactive) to ensure we can map all permissions
-                    template_map = {t['id']: t for t in templates_res.data}
-                    all_template_ids = set(t['id'] for t in templates_res.data)
-                    all_active_template_ids = set(t['id'] for t in templates_res.data if t.get('is_active', True))
-                    logger.info(f"Fetched {len(template_map)} templates from database ({len(all_active_template_ids)} active)")
+                    'id, file_name, title').eq('is_active', True).execute()
+                template_map = {t['id']: t for t in (templates_res.data or [])}
             except Exception as e:
                 logger.warning(f"Could not fetch templates from database: {e}")
 
             # Get permissions for each plan
-            # NOTE: Filter out 'broker' as it's a membership, not a subscription plan
             plans_dict = {}
             for plan in plans_res.data:
                 plan_tier = plan['plan_tier']
-                
-                # Skip broker - it's a membership, not a subscription plan
-                if plan_tier and plan_tier.lower() == 'broker':
-                    logger.info(f"Skipping broker plan (broker is a membership, not a subscription plan)")
-                    continue
 
                 # Get permissions for this plan (may not exist yet)
                 allowed_templates = []
-                template_limits = {}  # Store per-template download limits
                 try:
-                    # CRITICAL: Log the plan_id we're querying with
-                    plan_db_id = plan['id']
-                    logger.info(f"[plans-db] 🔍 Querying permissions for plan {plan_tier} (ID: {plan_db_id})")
-                    
-                    # CRITICAL: Fetch both can_download AND max_downloads_per_template
                     permissions_res = supabase.table('plan_template_permissions').select(
-                        'template_id, can_download, max_downloads_per_template').eq('plan_id', plan_db_id).execute()
+                        'template_id, can_download').eq('plan_id', plan['id']).execute()
 
-                    logger.info(f"[plans-db] 📊 Query result: {len(permissions_res.data) if permissions_res.data else 0} permission records found")
-                    
                     if permissions_res.data:
-                        logger.info(f"[plans-db] Plan {plan_tier} found {len(permissions_res.data)} permission records")
-                        # Get all template IDs that this plan has permissions for
-                        plan_template_ids = set()
-                        skipped_permissions = []
                         for perm in permissions_res.data:
-                            can_download_value = perm.get('can_download')
-                            template_id = perm.get('template_id')
-                            
-                            logger.debug(f"[plans-db] Permission record: template_id={template_id}, can_download={can_download_value}")
-                            
-                            if can_download_value:  # True or truthy value
-                                if template_id:
-                                    plan_template_ids.add(template_id)
-                                    
-                                    # Store per-template download limit
-                                    if perm.get('max_downloads_per_template') is not None:
-                                        template_limits[str(template_id)] = perm['max_downloads_per_template']
-                                    
-                                    # Add template file_name to allowed_templates list
-                                    template_info = template_map.get(template_id)
-                                    if template_info:
-                                        file_name = template_info.get('file_name', '')
-                                        if file_name and file_name not in allowed_templates:
-                                            allowed_templates.append(file_name)
-                                            logger.debug(f"[plans-db] ✅ Added template '{file_name}' (ID: {template_id}) to allowed_templates")
-                                        elif not file_name:
-                                            logger.warning(f"[plans-db] ⚠️ Template ID {template_id} has no file_name in template_info")
-                                    else:
-                                        skipped_permissions.append(template_id)
-                                        logger.warning(f"[plans-db] ⚠️ Template ID {template_id} not found in template_map (permission exists but template missing from map)")
-                                else:
-                                    logger.warning(f"[plans-db] ⚠️ Permission record has no template_id: {perm}")
-                            else:
-                                logger.debug(f"[plans-db] Skipping permission with can_download=False or None for template_id={template_id}")
-                        
-                        if skipped_permissions:
-                            logger.warning(f"[plans-db] ⚠️ Plan {plan_tier} has {len(skipped_permissions)} permissions for templates not in template_map: {skipped_permissions[:3]}...")
-                        logger.info(f"[plans-db] Plan {plan_tier} mapped {len(allowed_templates)} templates from {len(plan_template_ids)} permission template IDs")
-                        
-                        # CRITICAL: Check if plan has permissions for ALL available templates
-                        # Only treat as "*" if plan has permissions for EVERY active template
-                        total_templates_count = len(all_active_template_ids) if all_active_template_ids else len(all_template_ids)
-                        plan_permissions_count = len(plan_template_ids)
-                        
-                        logger.info(f"[plans-db] Plan {plan_tier} (ID: {plan['id']}): {plan_permissions_count} permissions out of {total_templates_count} total active templates")
-                        logger.info(f"[plans-db] Plan {plan_tier} template IDs: {list(plan_template_ids)[:3]}...")
-                        logger.info(f"[plans-db] All active template IDs: {list(all_active_template_ids)[:3]}...")
-                        logger.info(f"[plans-db] Plan {plan_tier} allowed templates: {allowed_templates[:3]}... ({len(allowed_templates)} total)")
-                        
-                        # If plan has permissions for ALL templates (exact match), treat as "*"
-                        # CRITICAL: Must be EXACT match - plan_template_ids must equal all_active_template_ids
-                        # AND there must be at least 1 template in the database
-                        if total_templates_count > 0 and plan_permissions_count > 0:
-                            # Check if plan has permissions for every single active template (exact set match)
-                            # Use set comparison to ensure exact match
-                            if plan_template_ids == all_active_template_ids and len(plan_template_ids) == len(all_active_template_ids) and len(all_active_template_ids) > 0:
-                                logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for ALL {total_templates_count} templates (exact match) - treating as '*'")
-                                allowed_templates = ['*']
-                            else:
-                                # Plan has some permissions but not all - show specific templates
-                                logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for {plan_permissions_count} templates (not all {total_templates_count}) - showing specific templates")
-                                logger.info(f"[plans-db] Plan template IDs set: {sorted(list(plan_template_ids))[:3]}...")
-                                logger.info(f"[plans-db] All template IDs set: {sorted(list(all_template_ids))[:3]}...")
-                                logger.info(f"[plans-db] Sets equal? {plan_template_ids == all_template_ids}")
-                                # allowed_templates already contains the specific template names
-                                # Make sure we don't accidentally return '*' if we have specific templates
-                                if allowed_templates and allowed_templates != ['*']:
-                                    logger.info(f"[plans-db] Returning specific templates: {allowed_templates[:3]}...")
-                        elif plan_permissions_count > 0:
-                            logger.info(f"[plans-db] ✅ Plan {plan_tier} has permissions for {plan_permissions_count} specific templates: {allowed_templates[:3]}...")
-                        else:
-                            logger.info(f"[plans-db] ⚠️ Plan {plan_tier} has NO template permissions - returning empty array")
+                            if perm['can_download']:
+                                template_id = perm['template_id']
+                                template_info = template_map.get(template_id)
+                                if template_info:
+                                    allowed_templates.append(
+                                        template_info.get('file_name', ''))
                 except Exception as e:
                     logger.warning(
                         f"Could not fetch permissions for plan {plan_tier}: {e}")
-                    # CRITICAL: Don't default to '*' - return empty array
-                    # This allows CMS to show "No templates selected" instead of "All templates"
-                    allowed_templates = []
-                    logger.info(f"[plans-db] Plan {plan_tier} - exception occurred, returning empty array (not '*')")
+                    # Default to all templates if permissions table doesn't
+                    # exist
+                    allowed_templates = ['*']
 
-                # CRITICAL: If no permissions set, return empty array (not '*')
-                # This allows the CMS to show "No templates selected" instead of "All templates"
-                # Only default to '*' if permissions table doesn't exist (legacy fallback)
+                # If no permissions set, default to all templates
                 if not allowed_templates:
-                    # If we got here and allowed_templates is empty, it means:
-                    # 1. No permissions were found in plan_template_permissions table
-                    # 2. This could mean the plan has no specific template permissions
-                    # Don't default to '*' - return empty array so CMS can show "No templates selected"
-                    allowed_templates = []
-                    logger.info(f"Plan {plan_tier} has NO template permissions - returning empty array (not '*')")
+                    allowed_templates = ['*']
 
-                # Normalize template names (ensure .docx extension)
+                # Normalize template names (remove .docx if present)
                 normalized_templates = []
                 if allowed_templates:
                     for t in allowed_templates:
                         if t == '*':
                             normalized_templates.append('*')
-                        elif isinstance(t, str) and t:
+                        elif isinstance(t, str):
                             normalized_templates.append(
                                 ensure_docx_filename(t))
                         else:
                             normalized_templates.append(str(t))
-                
-                logger.debug(f"Plan {plan_tier} can_download: {normalized_templates[:5]}... ({len(normalized_templates)} total)")
 
                 plans_dict[plan_tier] = {
                     "id": str(plan['id']),
@@ -2028,124 +1562,23 @@ async def get_plans_db():
                     "monthly_price": float(plan.get('monthly_price', 0)),
                     "annual_price": float(plan.get('annual_price', 0)),
                     "max_downloads_per_month": plan.get('max_downloads_per_month', 10),
-                    "can_download": normalized_templates if normalized_templates else [],  # CRITICAL: Return empty array, not ['*'] - allows CMS to show "No templates selected"
-                    "template_limits": template_limits,  # Include per-template download limits
+                    "can_download": normalized_templates if normalized_templates else ['*'],
                     "features": list(plan.get('features', [])) if isinstance(plan.get('features'), (list, tuple)) else (plan.get('features', []) if plan.get('features') else []),
                     "is_active": plan.get('is_active', True)
                 }
             
-            # Get broker membership template permissions
-            broker_membership_dict = {}
-            try:
-                # Get all active broker memberships (for CMS display, we show broker membership as a single entity)
-                # We'll create a single "broker" entry that represents broker membership
-                broker_permissions_res = supabase.table('broker_template_permissions').select(
-                    'broker_membership_id, template_id, can_download, max_downloads_per_template'
-                ).execute()
-                
-                if broker_permissions_res.data:
-                    # Group permissions by template to show which templates broker membership can access
-                    broker_template_ids = set()
-                    broker_allowed_templates = []
-                    for perm in broker_permissions_res.data:
-                        if perm.get('can_download'):
-                            template_id = perm['template_id']
-                            broker_template_ids.add(template_id)
-                            
-                            # Add template file_name to allowed_templates list
-                            template_info = template_map.get(template_id)
-                            if template_info:
-                                file_name = template_info.get('file_name', '')
-                                if file_name and file_name not in broker_allowed_templates:
-                                    broker_allowed_templates.append(file_name)
-                    
-                    # Check if broker has permissions for ALL templates
-                    total_templates_count = len(all_template_ids)
-                    broker_permissions_count = len(broker_template_ids)
-                    
-                    if total_templates_count > 0 and broker_permissions_count >= total_templates_count:
-                        if broker_template_ids == all_template_ids:
-                            logger.info(f"Broker membership has permissions for ALL {total_templates_count} templates - treating as '*'")
-                            broker_allowed_templates = ['*']
-                    
-                    # Normalize template names
-                    normalized_broker_templates = []
-                    if broker_allowed_templates:
-                        for t in broker_allowed_templates:
-                            if t == '*':
-                                normalized_broker_templates.append('*')
-                            elif isinstance(t, str) and t:
-                                normalized_broker_templates.append(ensure_docx_filename(t))
-                            else:
-                                normalized_broker_templates.append(str(t))
-                    
-                    # Create broker membership entry (single entry for all broker memberships)
-                    broker_membership_dict['broker'] = {
-                        "id": "broker-membership",
-                        "name": "Broker Membership",
-                        "plan_tier": "broker",
-                        "description": "Lifetime broker membership with access to selected templates",
-                        "monthly_price": 0.0,
-                        "annual_price": 0.0,
-                        "max_downloads_per_month": None,  # Per-template limits are set individually
-                        "can_download": normalized_broker_templates if normalized_broker_templates else ['*'],
-                        "template_limits": broker_template_limits,  # Include per-template download limits
-                        "features": ["Lifetime access", "Broker verification", "Deal management"],
-                        "is_active": True,
-                        "is_membership": True  # Flag to distinguish from subscription plans
-                    }
-                    logger.info(f"Added broker membership with {len(normalized_broker_templates)} template permissions")
-                else:
-                    # No broker permissions set yet - default to all templates
-                    broker_membership_dict['broker'] = {
-                        "id": "broker-membership",
-                        "name": "Broker Membership",
-                        "plan_tier": "broker",
-                        "description": "Lifetime broker membership with access to selected templates",
-                        "monthly_price": 0.0,
-                        "annual_price": 0.0,
-                        "max_downloads_per_month": None,
-                        "can_download": ['*'],
-                        "features": ["Lifetime access", "Broker verification", "Deal management"],
-                        "is_active": True,
-                        "is_membership": True
-                    }
-            except Exception as broker_error:
-                logger.warning(f"Could not fetch broker membership permissions: {broker_error}")
-                # Still add broker membership entry with default values
-                broker_membership_dict['broker'] = {
-                    "id": "broker-membership",
-                    "name": "Broker Membership",
-                    "plan_tier": "broker",
-                    "description": "Lifetime broker membership with access to selected templates",
-                    "monthly_price": 0.0,
-                    "annual_price": 0.0,
-                    "max_downloads_per_month": None,
-                    "can_download": ['*'],
-                    "features": ["Lifetime access", "Broker verification", "Deal management"],
-                    "is_active": True,
-                    "is_membership": True
-                }
-            
-            # Merge plans and broker membership
-            all_plans = {**plans_dict, **broker_membership_dict}
-            
-            return {"success": True, "plans": all_plans, "source": "database"}
+            return {"success": True, "plans": plans_dict, "source": "database"}
         except Exception as db_error:
             logger.warning(f"Database query failed, falling back to JSON: {db_error}")
-            # Fallback to JSON - filter out broker plan
+            # Fallback to JSON
             plans = read_json_file(PLANS_PATH, {})
-            # Remove broker from plans (it's a membership, not a subscription plan)
-            filtered_plans = {k: v for k, v in plans.items() if k.lower() != 'broker' and (not v.get('plan_tier') or v.get('plan_tier', '').lower() != 'broker')}
-            return {"success": True, "plans": filtered_plans, "source": "json_fallback"}
+            return {"success": True, "plans": plans, "source": "json_fallback"}
     except Exception as e:
         logger.error(f"Error getting plans: {e}")
-        # Final fallback - filter out broker plan
+        # Final fallback
         try:
             plans = read_json_file(PLANS_PATH, {})
-            # Remove broker from plans (it's a membership, not a subscription plan)
-            filtered_plans = {k: v for k, v in plans.items() if k.lower() != 'broker' and (not v.get('plan_tier') or v.get('plan_tier', '').lower() != 'broker')}
-            return {"success": True, "plans": filtered_plans, "source": "json_error_fallback"}
+            return {"success": True, "plans": plans, "source": "json_error_fallback"}
         except Exception as final_exc:
             raise HTTPException(status_code=500, detail=str(final_exc))
 
@@ -2264,7 +1697,6 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
 
 @app.post("/templates/{template_id}/metadata")
 async def update_template_metadata(
-    request: Request,
     template_id: str,
     payload: Dict = Body(...),
     current_user: str = Depends(get_current_user)
@@ -2285,29 +1717,6 @@ async def update_template_metadata(
         plan_ids = payload.get('plan_ids', [])  # Array of plan IDs
         if not isinstance(plan_ids, list):
             plan_ids = []
-        
-        requires_broker_membership = payload.get('requires_broker_membership', False)
-        if not isinstance(requires_broker_membership, bool):
-            requires_broker_membership = bool(requires_broker_membership)
-        
-        # AUTO-CONNECT: If no plan_ids provided, auto-connect to user's current plan
-        if not plan_ids and SUPABASE_ENABLED:
-            try:
-                # Get user_id from request headers, payload, or current_user
-                user_id = payload.get('user_id')
-                if request:
-                    user_id = user_id or request.headers.get('x-user-id')
-                if not user_id and current_user:
-                    # Try to get user_id from username/email
-                    user_id = get_user_id_from_username(current_user)
-                
-                if user_id:
-                    user_plan_id = get_user_plan_id(str(user_id))
-                    if user_plan_id:
-                        plan_ids = [user_plan_id]
-                        logger.info(f"Auto-connected template to user's plan: {user_plan_id} (user: {current_user})")
-            except Exception as auto_plan_exc:
-                logger.warning(f"Could not auto-connect to user plan: {auto_plan_exc}")
 
         # Update Supabase metadata when available
         template_record = None
@@ -2338,16 +1747,6 @@ async def update_template_metadata(
                     update_data['font_size'] = font_size
                     logger.info(f"Updating Supabase font_size for template {template_id_uuid} to: {font_size}")
                 
-                # Update requires_broker_membership if provided
-                if 'requires_broker_membership' in payload:
-                    # Try to update in database if column exists
-                    try:
-                        supabase.table('document_templates').update({'requires_broker_membership': requires_broker_membership}).eq('id', template_id_uuid).execute()
-                        logger.info(f"Updated requires_broker_membership for template {template_id_uuid} to: {requires_broker_membership}")
-                    except Exception as broker_exc:
-                        # Column might not exist yet, store in metadata instead
-                        logger.warning(f"Could not update requires_broker_membership in database (column may not exist): {broker_exc}")
-                
                 if update_data:
                     try:
                         result = supabase.table('document_templates').update(update_data).eq('id', template_id_uuid).execute()
@@ -2363,72 +1762,28 @@ async def update_template_metadata(
                 # Update plan assignments
                 if plan_ids is not None:
                     try:
-                        logger.info(f"Updating plan permissions for template {template_id_uuid} with plan_ids: {plan_ids}")
-                        
                         # Delete existing permissions
                         supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
-                        logger.info(f"Deleted existing permissions for template {template_id_uuid}")
                         
                         # Insert new permissions
                         if plan_ids:
-                            # CRITICAL: plan_ids can be plan_tier (basic, professional) or plan_id (UUID)
-                            # We need to convert plan_tier to plan_id (UUID)
                             permission_rows = []
-                            for plan_identifier in plan_ids:
-                                if not plan_identifier:
-                                    continue
-                                
-                                # Try to get plan_id from plan_tier
-                                plan_id_uuid = None
-                                try:
-                                    # First, check if plan_identifier is already a UUID
-                                    plan_uuid_test = uuid.UUID(str(plan_identifier))
-                                    plan_id_uuid = str(plan_uuid_test)
-                                    logger.debug(f"plan_identifier {plan_identifier} is a UUID: {plan_id_uuid}")
-                                except (ValueError, TypeError):
-                                    # Not a UUID, try to find by plan_tier
-                                    logger.debug(f"plan_identifier {plan_identifier} is not a UUID, trying to find by plan_tier")
-                                    plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
-                                    if plan_res.data and len(plan_res.data) > 0:
-                                        plan_id_uuid = str(plan_res.data[0]['id'])
-                                        logger.info(f"Found plan_id {plan_id_uuid} for plan_tier {plan_identifier}")
-                                    else:
-                                        logger.warning(f"Could not find plan_id for plan_tier {plan_identifier}")
-                                
-                                if plan_id_uuid:
+                            for plan_id in plan_ids:
+                                if plan_id:  # Only add non-empty plan IDs
                                     permission_rows.append({
-                                        'plan_id': plan_id_uuid,
+                                        'plan_id': str(plan_id),
                                         'template_id': str(template_id_uuid),
                                         'can_download': True
                                     })
-                                    logger.debug(f"Added permission for plan_id {plan_id_uuid} (from plan_identifier {plan_identifier})")
                             
                             if permission_rows:
-                                logger.info(f"Inserting {len(permission_rows)} plan permissions for template {template_id_uuid}")
-                                logger.info(f"Plan permission rows: {[r['plan_id'] for r in permission_rows]}")
                                 permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
                                 if getattr(permissions_response, "error", None):
                                     logger.error(f"Plan permissions insert error: {permissions_response.error}")
-                                    logger.error(f"Failed permission rows: {permission_rows}")
                                 else:
-                                    logger.info(f"✅ Successfully updated plan permissions for {len(permission_rows)} plans (template: {template_id_uuid})")
-                                    logger.info(f"Inserted permissions: {[r['plan_id'] for r in permission_rows]}")
-                            else:
-                                logger.info(f"No plan permissions to insert for template {template_id_uuid} (plan_ids was empty or could not resolve to UUIDs)")
-                                # IMPORTANT: If no plan_ids provided, template has no plan restrictions (available to all plans)
-                                # This is OK - the template will be available to all plans
-                                logger.info(f"Template {template_id_uuid} will be available to all plans (no specific plan permissions set)")
-                                
-                                # CRITICAL: Delete existing permissions to ensure template is available to all
-                                try:
-                                    delete_result = supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
-                                    logger.info(f"Deleted existing permissions for template {template_id_uuid} (making it available to all plans)")
-                                except Exception as del_exc:
-                                    logger.warning(f"Could not delete existing permissions: {del_exc}")
+                                    logger.info(f"Updated plan permissions for {len(permission_rows)} plans")
                     except Exception as perm_exc:
                         logger.error(f"Error updating plan permissions: {perm_exc}")
-                        import traceback
-                        logger.error(traceback.format_exc())
             else:
                 raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
 
@@ -2440,32 +1795,10 @@ async def update_template_metadata(
                 "description": description or None,
                 "font_family": font_family,
                 "font_size": font_size,
-                "requires_broker_membership": requires_broker_membership if 'requires_broker_membership' in payload else None,
                 "updated_at": datetime.utcnow().isoformat()
             }
             update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
 
-        # Get plan_tiers for plan_ids (for response)
-        plan_tiers = []
-        if plan_ids and template_record:
-            try:
-                # Convert plan_id (UUID) to plan_tier for response
-                for plan_id in plan_ids:
-                    try:
-                        # Try to find plan by UUID
-                        plan_res = supabase.table('subscription_plans').select('plan_tier').eq('id', str(plan_id)).limit(1).execute()
-                        if plan_res.data and len(plan_res.data) > 0:
-                            plan_tiers.append(plan_res.data[0]['plan_tier'])
-                        else:
-                            # If not found by UUID, maybe it's already a plan_tier
-                            plan_tiers.append(str(plan_id))
-                    except Exception:
-                        # If error, just use plan_id as-is (might be plan_tier)
-                        plan_tiers.append(str(plan_id))
-            except Exception as e:
-                logger.warning(f"Could not convert plan_ids to plan_tiers: {e}")
-                plan_tiers = plan_ids
-        
         return {
             "success": True,
             "template_id": str(template_record['id']) if template_record else template_id,
@@ -2474,10 +1807,9 @@ async def update_template_metadata(
                 "display_name": display_name or None,
                 "description": description or None,
                 "font_family": font_family,
-                "font_size": font_size,
-                "requires_broker_membership": requires_broker_membership if 'requires_broker_membership' in payload else None
+                "font_size": font_size
             },
-            "plan_ids": plan_tiers if plan_tiers else plan_ids  # Return plan_tiers for easier use in frontend
+            "plan_ids": plan_ids
         }
     except HTTPException:
         raise
@@ -2493,7 +1825,6 @@ async def upload_template(
     font_family: Optional[str] = Form(None),
     font_size: Optional[str] = Form(None),
     plan_ids: Optional[str] = Form(None),  # JSON array string of plan IDs
-    request: Request = None,
     current_user: str = Depends(get_current_user)
 ):
     """Upload a new template"""
@@ -2575,23 +1906,6 @@ async def upload_template(
             except (json.JSONDecodeError, TypeError):
                 warnings.append("Invalid plan_ids format; ignoring")
                 plan_ids_list = []
-        
-        # AUTO-CONNECT: If no plan_ids provided, auto-connect to user's current plan
-        if not plan_ids_list and SUPABASE_ENABLED:
-            try:
-                # Get user_id from request headers or current_user
-                user_id = request.headers.get('x-user-id')
-                if not user_id and current_user:
-                    # Try to get user_id from username/email
-                    user_id = get_user_id_from_username(current_user)
-                
-                if user_id:
-                    user_plan_id = get_user_plan_id(str(user_id))
-                    if user_plan_id:
-                        plan_ids_list = [user_plan_id]
-                        logger.info(f"Auto-connected uploaded template to user's plan: {user_plan_id} (user: {current_user})")
-            except Exception as auto_plan_exc:
-                logger.warning(f"Could not auto-connect uploaded template to user plan: {auto_plan_exc}")
 
         if SUPABASE_ENABLED:
             try:
@@ -2645,8 +1959,8 @@ async def upload_template(
                         {
                             'template_id': template_id,
                             'placeholder': placeholder,
-                            'source': 'database',  # Default to database instead of random
-                            'random_option': 'ai'  # Keep for if user switches to random later
+                            'source': 'random',
+                            'random_option': 'auto'
                         }
                         for placeholder in placeholders
                         if placeholder not in existing_settings
@@ -2695,13 +2009,13 @@ async def upload_template(
         existing_local_settings = fetch_template_placeholders(template_id or docx_filename, docx_filename)
         for placeholder in placeholders:
             default_settings[placeholder] = existing_local_settings.get(placeholder, {
-                'source': 'database',  # Default to database instead of random
+                'source': 'random',
                 'customValue': '',
                 'databaseField': '',
                 'csvId': '',
                 'csvField': '',
                 'csvRow': 0,
-                'randomOption': 'ai'
+                'randomOption': 'auto'
             })
 
         upsert_template_placeholders(template_id or docx_filename, default_settings, docx_filename)
@@ -2970,23 +2284,11 @@ async def get_placeholder_settings(
                 template_record = resolve_template_record(template_name)
             if not template_record:
                 raise HTTPException(status_code=404, detail="Template not found")
-            
-            # CRITICAL: Convert template_id to string before passing to fetch_template_placeholders
-            # template_record['id'] might be a UUID object, but fetch_template_placeholders expects a string
-            template_id_str = str(template_record['id'])
-            logger.debug(f"Fetching placeholder settings for template_id: {template_id_str}, file_name: {template_record.get('file_name')}")
-            
-            try:
-                settings = fetch_template_placeholders(template_id_str, template_record.get('file_name'))
-            except Exception as fetch_exc:
-                logger.error(f"Error fetching placeholder settings for template {template_id_str}: {fetch_exc}", exc_info=True)
-                # Return empty settings instead of failing completely
-                settings = {}
-            
+            settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
             return {
                 "template": template_record.get('file_name') or template_name,
                 "settings": settings,
-                "template_id": template_id_str
+                "template_id": str(template_record['id'])
             }
 
         if SUPABASE_ENABLED and not template_name:
@@ -2998,14 +2300,14 @@ async def get_placeholder_settings(
             for row in response.data or []:
                 template_id = str(row['template_id'])
                 aggregated.setdefault(template_id, {})[row['placeholder']] = {
-                    'source': row.get('source', 'database'),  # Default to database instead of random
+                    'source': row.get('source', 'random'),
                     'customValue': row.get('custom_value') or '',
                     'databaseTable': row.get('database_table') or '',
                     'databaseField': row.get('database_field') or '',
                     'csvId': row.get('csv_id') or '',
                     'csvField': row.get('csv_field') or '',
                     'csvRow': row['csv_row'] if row.get('csv_row') is not None else 0,
-                    'randomOption': row.get('random_option', 'ai') or 'ai'
+                    'randomOption': row.get('random_option', 'auto') or 'auto'
                 }
             return {"settings": aggregated}
 
@@ -3053,14 +2355,14 @@ async def save_placeholder_settings(request: Request):
                 if not placeholder:
                     continue
                 sanitised_settings[placeholder] = {
-                    'source': cfg.get('source', 'database'),  # Default to database instead of random
+                    'source': cfg.get('source', 'random'),
                     'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
                     'databaseTable': str(cfg.get('databaseTable', '')).strip() if cfg.get('databaseTable') else '',
                     'databaseField': str(cfg.get('databaseField', '')).strip() if cfg.get('databaseField') else '',
                     'csvId': str(cfg.get('csvId', '')).strip() if cfg.get('csvId') else '',
                     'csvField': str(cfg.get('csvField', '')).strip() if cfg.get('csvField') else '',
                     'csvRow': int(cfg.get('csvRow', 0)) if cfg.get('csvRow') is not None else 0,
-                    'randomOption': cfg.get('randomOption', 'ai') or 'ai'
+                    'randomOption': cfg.get('randomOption', 'auto') or 'auto'
                 }
                 logger.debug(f"Sanitized setting for '{placeholder}': source={sanitised_settings[placeholder]['source']}, databaseTable={sanitised_settings[placeholder]['databaseTable']}, databaseField={sanitised_settings[placeholder]['databaseField']}, csvId={sanitised_settings[placeholder]['csvId']}")
 
@@ -3171,236 +2473,56 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
         if not plan_id or not plan_data:
             raise HTTPException(status_code=400, detail="plan_id and plan_data are required")
         
-        # CRITICAL: Track if database update was successful
-        database_update_success = False
-        db_plan_id = None
-        
         # If Supabase is available, update in database
         if supabase:
             try:
-                logger.info(f"[update-plan] 🔍 Searching for plan: '{plan_id}'")
-                
-                # First, try to find by plan_tier (case-sensitive, most common case)
-                plan_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('plan_tier', str(plan_id)).limit(1).execute()
-                if plan_res.data and len(plan_res.data) > 0:
+                # Get plan by tier
+                plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', plan_id).limit(1).execute()
+                if plan_res.data:
                     db_plan_id = plan_res.data[0]['id']
-                    found_plan_tier = plan_res.data[0].get('plan_tier')
-                    logger.info(f"[update-plan] ✅ Found plan '{plan_id}' by plan_tier, UUID: {db_plan_id}, Name: {plan_res.data[0].get('plan_name')}, Tier: {found_plan_tier}")
-                else:
-                    # Try case-insensitive search by fetching all plans and comparing
-                    logger.debug(f"[update-plan] ⚠️ Exact match not found for plan_tier='{plan_id}', trying case-insensitive search...")
-                    all_plans_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('is_active', True).execute()
-                    if all_plans_res.data:
-                        for p in all_plans_res.data:
-                            if p.get('plan_tier', '').lower() == str(plan_id).lower():
-                                db_plan_id = p['id']
-                                logger.info(f"[update-plan] ✅ Found plan '{plan_id}' by case-insensitive plan_tier, UUID: {db_plan_id}, Name: {p.get('plan_name')}, Tier: {p.get('plan_tier')}")
-                                break
-                    
-                    # If still not found, try by UUID if plan_id might be a UUID
-                    if not db_plan_id:
-                        try:
-                            plan_uuid_test = uuid.UUID(str(plan_id))
-                            plan_res = supabase.table('subscription_plans').select('id, plan_tier, plan_name').eq('id', str(plan_uuid_test)).limit(1).execute()
-                            if plan_res.data and len(plan_res.data) > 0:
-                                db_plan_id = plan_res.data[0]['id']
-                                logger.info(f"[update-plan] ✅ Found plan '{plan_id}' by UUID: {db_plan_id}, Name: {plan_res.data[0].get('plan_name')}")
-                        except (ValueError, TypeError):
-                            logger.debug(f"[update-plan] plan_id '{plan_id}' is not a UUID")
-                
-                if not db_plan_id:
-                    logger.error(f"[update-plan] ❌ Plan '{plan_id}' not found in database (tried plan_tier exact, case-insensitive, and UUID)")
-                    # List available plans for debugging
-                    try:
-                        all_plans_debug = supabase.table('subscription_plans').select('plan_tier, plan_name, id').eq('is_active', True).execute()
-                        if all_plans_debug.data:
-                            available_tiers = [p.get('plan_tier') for p in all_plans_debug.data]
-                            logger.error(f"[update-plan] 📋 Available plan_tiers in database: {available_tiers}")
-                    except Exception as debug_exc:
-                        logger.warning(f"[update-plan] Could not list available plans: {debug_exc}")
-                    # Don't raise 404 here - try JSON fallback first
-                    database_update_success = False
-                else:
-                    logger.info(f"[update-plan] ✅ Found plan '{plan_id}', proceeding with update...")
                     
                     # Update max_downloads_per_month
                     update_data = {}
                     if 'max_downloads_per_month' in plan_data:
-                        max_downloads = plan_data['max_downloads_per_month']
-                        update_data['max_downloads_per_month'] = max_downloads
-                        logger.info(f"Updating max_downloads_per_month for plan {plan_id} to: {max_downloads}")
+                        update_data['max_downloads_per_month'] = plan_data['max_downloads_per_month']
                     
                     if update_data:
-                        result = supabase.table('subscription_plans').update(update_data).eq('id', db_plan_id).execute()
-                        if result.data:
-                            logger.info(f"✅ Successfully updated plan {plan_id}: {update_data}")
-                        else:
-                            logger.warning(f"⚠️ Plan update returned no data for plan {plan_id}")
+                        supabase.table('subscription_plans').update(update_data).eq('id', db_plan_id).execute()
                     
                     # Update template permissions if provided
                     # Check both 'allowed_templates' and 'can_download' for compatibility
                     allowed = plan_data.get('allowed_templates') or plan_data.get('can_download')
                     
-                    logger.info(f"[update-plan] 📥 Received 'allowed' value: {allowed}")
-                    logger.info(f"[update-plan] 📥 Type of 'allowed': {type(allowed)}")
-                    if isinstance(allowed, dict):
-                        logger.info(f"[update-plan] 📥 Dict keys: {list(allowed.keys())}")
-                        logger.info(f"[update-plan] 📥 Dict values: {allowed}")
-                    
-                    # Get per-template limits if provided
-                    template_limits = plan_data.get('template_limits', {})  # {template_id: max_downloads, ...}
-                    
-                    # CRITICAL: Handle new format with template_ids and template_names
-                    template_ids_from_request = None
-                    if isinstance(allowed, dict):
-                        # New format: {template_ids: [...], template_names: [...]}
-                        template_ids_from_request = allowed.get('template_ids', [])
-                        template_names_from_request = allowed.get('template_names', [])
-                        # Filter out empty strings and None values from template_ids
-                        template_ids_from_request = [tid for tid in template_ids_from_request if tid and str(tid).strip()]
-                        template_names_from_request = [tname for tname in template_names_from_request if tname and str(tname).strip()]
-                        
-                        if template_ids_from_request:
-                            logger.info(f"[update-plan] Using template IDs format: {len(template_ids_from_request)} IDs")
-                            allowed = template_ids_from_request  # Use IDs for matching
-                        elif template_names_from_request:
-                            logger.info(f"[update-plan] Using template names format: {len(template_names_from_request)} names")
-                            allowed = template_names_from_request  # Fallback to names
-                        else:
-                            logger.error(f"[update-plan] ❌ Both template_ids and template_names are empty or invalid!")
-                            logger.error(f"[update-plan] ❌ Original allowed value: {allowed}")
-                            logger.error(f"[update-plan] ❌ This means NO templates were selected in frontend!")
-                            allowed = []  # Explicitly set to empty list
-                    
-                    logger.info(f"[update-plan] 📊 Final 'allowed' value after processing: {allowed}")
-                    logger.info(f"[update-plan] 📊 Will process permissions: {bool(allowed)}")
-                    
                     if allowed:
-                        # Get all templates (including inactive for matching, but we'll only insert active ones)
-                        # CRITICAL: Query ALL templates first to ensure we can match template IDs even if they're inactive
-                        templates_res_all = supabase.table('document_templates').select('id, file_name, is_active').execute()
-                        # Filter to active templates for insertion
-                        templates_res = type('obj', (object,), {'data': [t for t in (templates_res_all.data or []) if t.get('is_active', True)]})()
-                        
-                        logger.info(f"[update-plan] 📊 Found {len(templates_res_all.data) if templates_res_all.data else 0} total templates ({len(templates_res.data) if templates_res.data else 0} active)")
+                        # Get all templates
+                        templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
                         
                         if templates_res.data:
-                            # CRITICAL: Delete existing permissions FIRST to clear old data
-                            delete_result = supabase.table('plan_template_permissions').delete().eq('plan_id', db_plan_id).execute()
-                            deleted_count = len(delete_result.data) if delete_result.data else 0
-                            logger.info(f"[update-plan] Deleted {deleted_count} existing permissions for plan {plan_id}")
+                            # Delete existing permissions
+                            supabase.table('plan_template_permissions').delete().eq('plan_id', db_plan_id).execute()
                             
                             # Create new permissions
                             if allowed == '*' or allowed == ['*'] or (isinstance(allowed, list) and '*' in allowed):
                                 # Allow all templates
                                 for template in templates_res.data:
-                                    template_id = template['id']
-                                    max_downloads = template_limits.get(str(template_id)) if isinstance(template_limits, dict) else None
-                                    # Convert to int if it's a string
-                                    if max_downloads is not None:
-                                        try:
-                                            max_downloads = int(max_downloads) if max_downloads != '' else None
-                                        except (ValueError, TypeError):
-                                            max_downloads = None
-                                    
-                                    permission_data = {
+                                    supabase.table('plan_template_permissions').insert({
                                         'plan_id': db_plan_id,
-                                        'template_id': template_id,
+                                        'template_id': template['id'],
                                         'can_download': True
-                                    }
-                                    if max_downloads is not None:
-                                        permission_data['max_downloads_per_template'] = max_downloads
-                                    
-                                    supabase.table('plan_template_permissions').insert(permission_data).execute()
+                                    }).execute()
                                 logger.info(f"Set all templates permission for plan {plan_id}")
-                            elif isinstance(allowed, list) and len(allowed) > 0:
-                                # Check if this is a list of template IDs (UUIDs) or template names
-                                is_uuid_list = all(isinstance(item, str) and len(item) == 36 and '-' in item for item in allowed[:3])
-                                
-                                if is_uuid_list or template_ids_from_request:
-                                    # This is a list of template IDs - direct matching
-                                    logger.info(f"[update-plan] Processing {len(allowed)} template IDs")
-                                    logger.info(f"[update-plan] 📋 Template IDs from request: {template_ids_from_request}")
-                                    logger.info(f"[update-plan] 📋 Template IDs in allowed list: {allowed[:5]}...")
-                                    inserted_count = 0
-                                    for template_id_str in allowed:
-                                        try:
-                                            # CRITICAL: Find template by ID - don't filter by is_active when matching by exact ID
-                                            # We match by exact UUID, so we should find it regardless of active status
-                                            template_res = supabase.table('document_templates').select('id, file_name, is_active').eq('id', template_id_str).limit(1).execute()
-                                            
-                                            if template_res.data and len(template_res.data) > 0:
-                                                template = template_res.data[0]
-                                                template_id = template['id']
-                                                
-                                                # Check if template is active - warn but still allow (for backward compatibility)
-                                                if not template.get('is_active', True):
-                                                    logger.warning(f"[update-plan] ⚠️ Template ID {template_id_str} ({template.get('file_name', 'unknown')}) is inactive, but creating permission anyway")
-                                                
-                                                # Get per-template limit if provided
-                                                max_downloads = None
-                                                if isinstance(template_limits, dict):
-                                                    max_downloads = template_limits.get(str(template_id)) or template_limits.get(template_id)
-                                                    if max_downloads is not None:
-                                                        try:
-                                                            max_downloads = int(max_downloads) if max_downloads != '' else None
-                                                        except (ValueError, TypeError):
-                                                            max_downloads = None
-                                                
-                                                permission_data = {
-                                                    'plan_id': db_plan_id,
-                                                    'template_id': template_id,
-                                                    'can_download': True
-                                                }
-                                                if max_downloads is not None:
-                                                    permission_data['max_downloads_per_template'] = max_downloads
-                                                
-                                                insert_result = supabase.table('plan_template_permissions').insert(permission_data).execute()
-                                                inserted_count += 1
-                                                logger.info(f"[update-plan] ✅ Added permission for template ID {template_id} ({template.get('file_name', 'unknown')}) to plan_id {db_plan_id}")
-                                                logger.info(f"[update-plan] 📋 Insert result: {len(insert_result.data) if insert_result.data else 0} records inserted")
-                                            else:
-                                                logger.error(f"[update-plan] ❌ Template ID {template_id_str} NOT FOUND in database!")
-                                                logger.error(f"[update-plan] ❌ This means the template_id sent from frontend doesn't exist in document_templates table")
-                                                logger.error(f"[update-plan] ❌ Check if template was deleted or ID is incorrect")
-                                        except Exception as id_exc:
-                                            logger.warning(f"[update-plan] Failed to process template ID {template_id_str}: {id_exc}")
-                                    
-                                    logger.info(f"[update-plan] ✅ Set {inserted_count} template permissions using IDs")
-                                else:
-                                    # This is a list of template names - use name matching
-                                    logger.info(f"[update-plan] Processing {len(allowed)} template names")
+                            elif isinstance(allowed, list):
                                 # Normalize template names from can_download list (may have .docx or not)
-                                # Store both normalized keys AND original names for flexible matching
                                 template_names_normalized = set()
-                                template_names_original = {}  # Map normalized -> original for logging
-                                
                                 for t in allowed:
                                     if t != '*':
-                                        # Store original
-                                        original = t.strip()
-                                        
                                         # Ensure .docx extension for comparison
-                                        normalized = ensure_docx_filename(original)
-                                        
-                                        # Add multiple normalization strategies
-                                        key1 = normalise_template_key(normalized)  # With .docx
-                                        key2 = normalise_template_key(original.replace('.docx', '').replace('.DOCX', ''))  # Without extension
-                                        
-                                        template_names_normalized.add(key1)
-                                        template_names_normalized.add(key2)
-                                        
-                                        # Also add original (normalized) for direct comparison
-                                        template_names_normalized.add(normalized.lower().strip())
-                                        template_names_normalized.add(original.lower().strip().replace('.docx', '').replace('.DOCX', ''))
-                                        
-                                        template_names_original[key1] = original
-                                        template_names_original[key2] = original
+                                        normalized = ensure_docx_filename(t)
+                                        template_names_normalized.add(normalise_template_key(normalized))
+                                        # Also add without extension for flexibility
+                                        template_names_normalized.add(normalise_template_key(t.replace('.docx', '').replace('.DOCX', '')))
                                 
-                                logger.info(f"[update-plan] 🔍 Matching templates for plan {plan_id}")
-                                logger.info(f"[update-plan] 📋 Received template names: {allowed[:5]}...")
-                                logger.info(f"[update-plan] 📋 Normalized keys: {list(template_names_normalized)[:5]}...")
-                                logger.info(f"[update-plan] 📋 Available templates in DB: {[t.get('file_name', '') for t in templates_res.data[:10]]}")
+                                logger.info(f"Matching templates for plan {plan_id} against normalized names: {list(template_names_normalized)[:5]}...")
 
                                 inserted_count = 0
                                 for template in templates_res.data:
@@ -3408,354 +2530,84 @@ async def update_plan(request: Request, current_user: str = Depends(get_current_
                                     if not template_name:
                                         continue
                                     
-                                    # Try multiple normalization strategies for matching
-                                    # Strategy 1: Normalize with .docx
-                                    normalized_with_ext = normalise_template_key(ensure_docx_filename(template_name))
-                                    # Strategy 2: Normalize without extension
-                                    normalized_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
-                                    # Strategy 3: Direct lowercase comparison
-                                    template_lower = template_name.lower().strip()
-                                    template_lower_no_ext = template_lower.replace('.docx', '').replace('.docx', '')
+                                    # Normalize template name for comparison
+                                    normalized_template_name = normalise_template_key(ensure_docx_filename(template_name))
+                                    normalized_template_name_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
                                     
                                     # Check if this template matches any in the allowed list
-                                    # Try multiple matching strategies for flexibility
-                                    matches = False
-                                    matched_key = None
-                                    
-                                    # Try all normalization strategies
-                                    for test_key in [normalized_with_ext, normalized_no_ext, template_lower, template_lower_no_ext]:
-                                        if test_key in template_names_normalized:
-                                            matches = True
-                                            matched_key = test_key
-                                            original_name = template_names_original.get(test_key, test_key)
-                                            logger.info(f"[update-plan] ✅ Matched template '{template_name}' (normalized: '{test_key}') with allowed '{original_name}'")
-                                            break
-                                    
-                                    # If still no match, try fuzzy matching (case-insensitive, ignore extra spaces)
-                                    if not matches:
-                                        for allowed_original in allowed:
-                                            if allowed_original == '*':
-                                                continue
-                                            # Normalize both for comparison
-                                            allowed_normalized = normalise_template_key(ensure_docx_filename(allowed_original))
-                                            template_normalized = normalise_template_key(ensure_docx_filename(template_name))
-                                            
-                                            # Try direct comparison after normalization
-                                            if allowed_normalized == template_normalized:
-                                                matches = True
-                                                matched_key = allowed_normalized
-                                                logger.info(f"[update-plan] ✅ Matched template '{template_name}' with allowed '{allowed_original}' (fuzzy match)")
-                                                break
-                                    
-                                    if not matches:
-                                        logger.debug(f"[update-plan] ❌ Template '{template_name}' did not match any allowed templates")
-                                    
-                                    if matches:
+                                    if normalized_template_name in template_names_normalized or normalized_template_name_no_ext in template_names_normalized:
                                         try:
-                                            template_id = template['id']
-                                            # Get per-template limit if provided
-                                            max_downloads = None
-                                            if isinstance(template_limits, dict):
-                                                # Try both string and UUID key
-                                                max_downloads = template_limits.get(str(template_id)) or template_limits.get(template_id)
-                                                if max_downloads is not None:
-                                                    try:
-                                                        max_downloads = int(max_downloads) if max_downloads != '' else None
-                                                    except (ValueError, TypeError):
-                                                        max_downloads = None
-                                            
-                                            permission_data = {
+                                            supabase.table('plan_template_permissions').insert({
                                                 'plan_id': db_plan_id,
-                                                'template_id': template_id,
+                                                'template_id': template['id'],
                                                 'can_download': True
-                                            }
-                                            if max_downloads is not None:
-                                                permission_data['max_downloads_per_template'] = max_downloads
-                                            
-                                            supabase.table('plan_template_permissions').insert(permission_data).execute()
+                                            }).execute()
                                             inserted_count += 1
-                                            logger.debug(f"Added permission for template {template_name} (ID: {template_id}) to plan {plan_id} with limit {max_downloads}")
+                                            logger.debug(f"Added permission for template {template_name} (ID: {template['id']}) to plan {plan_id}")
                                         except Exception as insert_exc:
                                             logger.warning(f"Failed to insert permission for template {template_name}: {insert_exc}")
                                 
-                                logger.info(f"[update-plan] ✅ Set {inserted_count} template permissions for plan {plan_id} (matched {len(template_names_normalized)} template names)")
-                                
-                                # CRITICAL: If no templates were matched, log error
-                                if inserted_count == 0:
-                                    logger.error(f"[update-plan] ❌❌❌ NO TEMPLATES MATCHED FOR PLAN {plan_id}!")
-                                    logger.error(f"[update-plan] ❌ Sent templates: {allowed[:5]}...")
-                                    logger.error(f"[update-plan] ❌ Available templates in DB: {[t.get('file_name', '') for t in (templates_res.data or [])[:5]]}")
-                                    logger.error(f"[update-plan] ❌ Template IDs sent: {template_ids_from_request[:5] if template_ids_from_request else 'NONE'}...")
-                                    logger.error(f"[update-plan] ❌ This means NO permissions will be saved! Plan will have 0 templates!")
+                                logger.info(f"Set {inserted_count} template permissions for plan {plan_id} (matched {len(template_names_normalized)} template names)")
                     
                     logger.info(f"Updated plan in database: {plan_id}")
-                    database_update_success = True
-                    
-                    # Return success response with updated plan data
-                    # Get updated plan from database
-                    updated_plan_res = supabase.table('subscription_plans').select('*').eq('id', db_plan_id).limit(1).execute()
-                    if updated_plan_res.data:
-                        updated_plan_data = updated_plan_res.data[0]
-                        # CRITICAL: Wait a moment for database to be ready, then get fresh permissions
-                        import time
-                        time.sleep(0.5)  # Increased delay to ensure database transaction is committed
-                        
-                        # Get template permissions for response (including per-template limits)
-                        # CRITICAL: Filter by can_download=True to ensure we only get valid permissions
-                        perms_res = supabase.table('plan_template_permissions').select('template_id, max_downloads_per_template, can_download').eq('plan_id', db_plan_id).eq('can_download', True).execute()
-                        template_ids = [p['template_id'] for p in (perms_res.data or []) if p.get('can_download', True)]
-                        
-                        logger.info(f"[update-plan] After save - Found {len(template_ids)} template permissions for plan {plan_id}")
-                        if len(template_ids) == 0:
-                            logger.warning(f"[update-plan] ⚠️⚠️⚠️ NO PERMISSIONS FOUND AFTER SAVE! This means save failed or permissions were cleared.")
-                        
-                        # Build template_limits dict for response
-                        template_limits_response = {}
-                        for perm in (perms_res.data or []):
-                            template_id = perm['template_id']
-                            max_downloads = perm.get('max_downloads_per_template')
-                            if max_downloads is not None:
-                                template_limits_response[str(template_id)] = max_downloads
-                        
-                        # Check if all templates - need to convert template_ids to file_names for response
-                        # CRITICAL: Query ALL templates (including inactive) to ensure we can map all template_ids from permissions
-                        all_templates = supabase.table('document_templates').select('id, file_name, is_active').execute()
-                        all_active_template_ids = set(t['id'] for t in (all_templates.data or []) if t.get('is_active', True))
-                        plan_template_ids_set = set(template_ids)
-                        
-                        logger.info(f"[update-plan] Plan {plan_id} has permissions for {len(plan_template_ids_set)} templates out of {len(all_active_template_ids)} total active templates")
-                        logger.info(f"[update-plan] Plan template IDs: {list(plan_template_ids_set)[:5]}...")
-                        logger.info(f"[update-plan] All active template IDs: {list(all_active_template_ids)[:5]}...")
-                        logger.info(f"[update-plan] Sets equal? {plan_template_ids_set == all_active_template_ids}")
-                        
-                        # Convert template IDs to file names for CMS response
-                        # CRITICAL: Include ALL templates in map (active and inactive) to ensure we can map all permissions
-                        template_id_to_name = {t['id']: t.get('file_name', '') for t in (all_templates.data or [])}
-                        template_file_names = []
-                        missing_template_ids = []
-                        for tid in template_ids:
-                            if tid:
-                                template_name = template_id_to_name.get(tid)
-                                if template_name:
-                                    template_file_names.append(ensure_docx_filename(template_name))
-                                else:
-                                    missing_template_ids.append(tid)
-                                    logger.warning(f"[update-plan] ⚠️ Template ID {tid} not found in template map - permission exists but template missing!")
-                        
-                        if missing_template_ids:
-                            logger.warning(f"[update-plan] ⚠️ {len(missing_template_ids)} template IDs from permissions not found in database: {missing_template_ids[:3]}...")
-                        
-                        logger.info(f"[update-plan] Template file names for response: {template_file_names[:5]}... (total: {len(template_file_names)})")
-                        
-                        # CRITICAL: Only return '*' if plan has permissions for EVERY single template (exact set match)
-                        # AND there are actually templates in the database
-                        is_all_templates = (all_active_template_ids and 
-                                          len(all_active_template_ids) > 0 and 
-                                          len(plan_template_ids_set) > 0 and
-                                          plan_template_ids_set == all_active_template_ids)
-                        can_download = ['*'] if is_all_templates else (template_file_names if template_file_names else [])
-                        
-                        logger.info(f"[update-plan] Returning can_download: {'[*]' if is_all_templates else f'{len(template_file_names)} specific templates'}")
-                        if not is_all_templates and not template_file_names:
-                            logger.warning(f"[update-plan] ⚠️ Plan {plan_id} has NO template permissions! Returning empty array.")
-                        
-                        return {
-                            "success": True,
-                            "plan_id": plan_id,
-                            "plan_data": {
-                                "id": str(updated_plan_data['id']),
-                                "name": updated_plan_data.get('plan_name'),
-                                "plan_tier": updated_plan_data.get('plan_tier'),
-                                "max_downloads_per_month": updated_plan_data.get('max_downloads_per_month', 10),
-                                "can_download": can_download,
-                                "template_limits": template_limits_response if template_limits_response else None,
-                                "features": list(updated_plan_data.get('features', [])) if isinstance(updated_plan_data.get('features'), (list, tuple)) else []
-                            }
-                        }
-            except HTTPException:
-                raise
             except Exception as e:
                 logger.warning(f"Failed to update plan in database: {e}, using JSON fallback")
-                logger.error(f"Database update error details: {type(e).__name__}: {str(e)}")
-                import traceback
-                logger.error(traceback.format_exc())
         
-        # Only update JSON file if database update failed
-        # CRITICAL: Don't use plans.json fallback - only use database
-        # If database update failed, raise error instead of falling back to JSON
-        if not database_update_success:
-            logger.error(f"[update-plan] Database update failed for plan {plan_id}")
-            raise HTTPException(status_code=500, detail=f"Failed to update plan '{plan_id}' in database. Please check database connection.")
+        # Also update JSON file as fallback/primary storage
+        plans = read_json_file(PLANS_PATH, {})
+        if plan_id not in plans:
+            raise HTTPException(status_code=404, detail=f"Plan '{plan_id}' not found")
         
-        # All updates are done in database above - no need for JSON fallback
-        logger.info(f"[update-plan] ✅ Plan {plan_id} updated successfully in database (no JSON fallback used)")
+        # Get existing plan data
+        existing_plan = plans.get(plan_id, {})
+        
+        # Merge with existing plan data to preserve other fields
+        # Only update fields that are provided in plan_data
+        updated_plan = existing_plan.copy()
+        
+        # Update specific fields if provided
+        if 'can_download' in plan_data:
+            can_download = plan_data['can_download']
+            # Normalize: ensure it's a list and remove .docx extensions for consistency
+            if isinstance(can_download, str):
+                updated_plan['can_download'] = [ensure_docx_filename(can_download) if can_download != '*' else '*']
+            elif isinstance(can_download, list):
+                normalized = []
+                for t in can_download:
+                    if not t:
+                        continue
+                    if t == '*':
+                        normalized.append('*')
+                    elif isinstance(t, str):
+                        normalized.append(ensure_docx_filename(t))
+                    else:
+                        normalized.append(t)
+                updated_plan['can_download'] = normalized
+        
+        if 'max_downloads_per_month' in plan_data:
+            updated_plan['max_downloads_per_month'] = plan_data['max_downloads_per_month']
+        
+        if 'features' in plan_data:
+            updated_plan['features'] = plan_data['features'] if isinstance(plan_data['features'], list) else []
+        
+        # Preserve other fields from plan_data if they exist
+        for key in ['name', 'description', 'monthly_price', 'annual_price', 'plan_tier', 'is_active']:
+            if key in plan_data:
+                updated_plan[key] = plan_data[key]
+        
+        plans[plan_id] = updated_plan
+        write_json_atomic(PLANS_PATH, plans)
+        
+        logger.info(f"Updated plan: {plan_id}")
+        logger.info(f"  - can_download: {updated_plan.get('can_download')}")
+        logger.info(f"  - max_downloads_per_month: {updated_plan.get('max_downloads_per_month')}")
+        logger.info(f"  - features: {updated_plan.get('features')}")
         
         return {"success": True, "plan_id": plan_id, "plan_data": updated_plan}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating plan: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/update-broker-membership")
-async def update_broker_membership(request: Request, current_user: str = Depends(get_current_user)):
-    """Update broker membership template permissions"""
-    try:
-        body = await request.json()
-        membership_data = body.get('membership_data')
-        
-        if not membership_data:
-            raise HTTPException(status_code=400, detail="membership_data is required")
-        
-        if not supabase:
-            raise HTTPException(status_code=503, detail="Supabase not available")
-        
-        try:
-            # Get template selection and limits
-            allowed = membership_data.get('allowed_templates') or membership_data.get('can_download')
-            template_limits = membership_data.get('template_limits', {})  # {template_id: max_downloads, ...}
-            
-            if not allowed:
-                raise HTTPException(status_code=400, detail="Template selection (can_download) is required")
-            
-            # Get all active broker memberships - we'll update permissions for all of them
-            # (since broker membership is a single entity in CMS)
-            broker_memberships_res = supabase.table('broker_memberships').select('id').eq('payment_status', 'paid').eq('membership_status', 'active').execute()
-            
-            if not broker_memberships_res.data:
-                logger.warning("No active broker memberships found")
-                # Still create permissions structure for future memberships
-                broker_membership_ids = []
-            else:
-                broker_membership_ids = [bm['id'] for bm in broker_memberships_res.data]
-            
-            # Get all templates
-            templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
-            
-            if not templates_res.data:
-                raise HTTPException(status_code=404, detail="No active templates found")
-            
-            # Delete existing broker permissions for all memberships
-            if broker_membership_ids:
-                for membership_id in broker_membership_ids:
-                    supabase.table('broker_template_permissions').delete().eq('broker_membership_id', membership_id).execute()
-            
-            # Create new permissions
-            inserted_count = 0
-            
-            if allowed == '*' or allowed == ['*'] or (isinstance(allowed, list) and '*' in allowed):
-                # Allow all templates for all broker memberships
-                for membership_id in broker_membership_ids:
-                    for template in templates_res.data:
-                        template_id = template['id']
-                        max_downloads = template_limits.get(str(template_id)) if isinstance(template_limits, dict) else None
-                        if max_downloads is not None:
-                            try:
-                                max_downloads = int(max_downloads) if max_downloads != '' else None
-                            except (ValueError, TypeError):
-                                max_downloads = None
-                        
-                        permission_data = {
-                            'broker_membership_id': membership_id,
-                            'template_id': template_id,
-                            'can_download': True
-                        }
-                        if max_downloads is not None:
-                            permission_data['max_downloads_per_template'] = max_downloads
-                        
-                        supabase.table('broker_template_permissions').insert(permission_data).execute()
-                        inserted_count += 1
-                
-                logger.info(f"Set all templates permission for broker membership ({len(broker_membership_ids)} memberships)")
-            elif isinstance(allowed, list):
-                # Normalize template names
-                template_names_normalized = set()
-                for t in allowed:
-                    if t != '*':
-                        normalized = ensure_docx_filename(t)
-                        template_names_normalized.add(normalise_template_key(normalized))
-                        template_names_normalized.add(normalise_template_key(t.replace('.docx', '').replace('.DOCX', '')))
-                
-                # Match templates and create permissions
-                for membership_id in broker_membership_ids:
-                    for template in templates_res.data:
-                        template_name = template.get('file_name', '').strip()
-                        if not template_name:
-                            continue
-                        
-                        normalized_template_name = normalise_template_key(ensure_docx_filename(template_name))
-                        normalized_template_name_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
-                        
-                        if normalized_template_name in template_names_normalized or normalized_template_name_no_ext in template_names_normalized:
-                            try:
-                                template_id = template['id']
-                                max_downloads = None
-                                if isinstance(template_limits, dict):
-                                    max_downloads = template_limits.get(str(template_id)) or template_limits.get(template_id)
-                                    if max_downloads is not None:
-                                        try:
-                                            max_downloads = int(max_downloads) if max_downloads != '' else None
-                                        except (ValueError, TypeError):
-                                            max_downloads = None
-                                
-                                permission_data = {
-                                    'broker_membership_id': membership_id,
-                                    'template_id': template_id,
-                                    'can_download': True
-                                }
-                                if max_downloads is not None:
-                                    permission_data['max_downloads_per_template'] = max_downloads
-                                
-                                supabase.table('broker_template_permissions').insert(permission_data).execute()
-                                inserted_count += 1
-                                logger.debug(f"Added permission for template {template_name} (ID: {template_id}) to broker membership with limit {max_downloads}")
-                            except Exception as insert_exc:
-                                logger.warning(f"Failed to insert permission for template {template_name}: {insert_exc}")
-                
-                logger.info(f"Set {inserted_count} template permissions for broker membership")
-            
-            # Get updated permissions for response
-            template_limits_response = {}
-            if broker_membership_ids:
-                perms_res = supabase.table('broker_template_permissions').select('template_id, max_downloads_per_template').eq('broker_membership_id', broker_membership_ids[0]).execute()
-                for perm in (perms_res.data or []):
-                    template_id = perm['template_id']
-                    max_downloads = perm.get('max_downloads_per_template')
-                    if max_downloads is not None:
-                        template_limits_response[str(template_id)] = max_downloads
-            
-            # Convert template IDs to file names for response
-            all_templates = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
-            template_id_to_name = {t['id']: t.get('file_name', '') for t in (all_templates.data or [])}
-            
-            if broker_membership_ids:
-                perms_res = supabase.table('broker_template_permissions').select('template_id').eq('broker_membership_id', broker_membership_ids[0]).execute()
-                template_ids = [p['template_id'] for p in (perms_res.data or [])]
-                template_file_names = [ensure_docx_filename(template_id_to_name.get(tid, '')) for tid in template_ids if tid and template_id_to_name.get(tid)]
-            else:
-                template_file_names = []
-            
-            return {
-                "success": True,
-                "membership_data": {
-                    "id": "broker-membership",
-                    "name": "Broker Membership",
-                    "plan_tier": "broker",
-                    "can_download": template_file_names if template_file_names else ['*'],
-                    "template_limits": template_limits_response if template_limits_response else None
-                }
-            }
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error updating broker membership: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating broker membership: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/check-download-permission-db")
@@ -3850,67 +2702,67 @@ async def get_template_plan_info(template_identifier: str):
         
         plan_ids = [p['plan_id'] for p in (permissions_res.data or [])]
         
-        # CRITICAL: If template has NO plan permissions, it's available to ALL plans
-        if not plan_ids or len(plan_ids) == 0:
-            # Template has no plan restrictions - available to all active plans
-            logger.info(f"Template {template_id} has no plan permissions - available to all plans")
-            all_plans_res = supabase.table('subscription_plans').select(
-                'id, plan_name, plan_tier'
-            ).eq('is_active', True).execute()
+        if plan_ids:
+            plans_res = supabase.table('subscription_plans').select(
+                'id, plan_name, plan_tier, name'
+            ).in_('id', plan_ids).eq('is_active', True).execute()
             
             plans = []
-            if all_plans_res.data:
-                for plan in all_plans_res.data:
+            if plans_res.data:
+                for plan in plans_res.data:
                     plans.append({
                         "plan_id": str(plan['id']),
                         "plan_name": plan.get('plan_name') or plan.get('name') or plan.get('plan_tier'),
                         "plan_tier": plan.get('plan_tier')
                     })
             
+            # If template is available to all plans (check if any plan has * permission)
+            all_plans_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('is_active', True).execute()
+            if all_plans_res.data:
+                # Check if there's a plan with all templates access
+                for plan in all_plans_res.data:
+                    plan_permissions = supabase.table('plan_template_permissions').select('template_id').eq('plan_id', plan['id']).execute()
+                    # If plan has no restrictions or has all templates, include it
+                    if not plan_permissions.data or len(plan_permissions.data) == 0:
+                        # Check if plan allows all by checking can_download list in plans-db
+                        plan_tier = plan.get('plan_tier')
+                        plan_info = supabase.table('subscription_plans').select('*').eq('plan_tier', plan_tier).limit(1).execute()
+                        if plan_info.data:
+                            # Check plan permissions via RPC or direct check
+                            plans.append({
+                                "plan_id": str(plan['id']),
+                                "plan_name": plan.get('plan_name') or plan.get('name') or plan_tier,
+                                "plan_tier": plan_tier
+                            })
+            
+            # Remove duplicates
+            seen = set()
+            unique_plans = []
+            for plan in plans:
+                key = (plan.get('plan_id'), plan.get('plan_name'))
+                if key not in seen:
+                    seen.add(key)
+                    unique_plans.append(plan)
+            
             return {
                 "success": True,
                 "template_id": str(template_id),
                 "template_name": template_record.get('file_name') if template_record else template_identifier,
-                "plans": plans,
-                "plan_name": "All Plans" if plans else None,
-                "plan_tier": None,
-                "source": "database",
-                "available_to_all": True  # Flag to indicate template is available to all plans
+                "plans": unique_plans,
+                "plan_name": unique_plans[0]['plan_name'] if unique_plans else None,
+                "plan_tier": unique_plans[0]['plan_tier'] if unique_plans else None,
+                "source": "database"
             }
-        
-        # Template has specific plan permissions
-        plans_res = supabase.table('subscription_plans').select(
-            'id, plan_name, plan_tier'
-        ).in_('id', plan_ids).eq('is_active', True).execute()
-        
-        plans = []
-        if plans_res.data:
-            for plan in plans_res.data:
-                plans.append({
-                    "plan_id": str(plan['id']),
-                    "plan_name": plan.get('plan_name') or plan.get('name') or plan.get('plan_tier'),
-                    "plan_tier": plan.get('plan_tier')
-                })
-        
-        # Remove duplicates
-        seen = set()
-        unique_plans = []
-        for plan in plans:
-            key = (plan.get('plan_id'), plan.get('plan_name'))
-            if key not in seen:
-                seen.add(key)
-                unique_plans.append(plan)
-        
-        return {
-            "success": True,
-            "template_id": str(template_id),
-            "template_name": template_record.get('file_name') if template_record else template_identifier,
-            "plans": unique_plans,
-            "plan_name": unique_plans[0]['plan_name'] if unique_plans else None,
-            "plan_tier": unique_plans[0]['plan_tier'] if unique_plans else None,
-            "source": "database",
-            "available_to_all": False  # Template has specific plan restrictions
-        }
+        else:
+            return {
+                "success": True,
+                "template_id": str(template_id),
+                "template_name": template_record.get('file_name') if template_record else template_identifier,
+                "plans": [],
+                "plan_name": None,
+                "plan_tier": None,
+                "source": "database"
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -3958,32 +2810,10 @@ async def get_user_downloadable_templates(request: Request):
         # Load metadata map for fallback descriptions
         metadata_map = load_template_metadata()
         
-        # Get deleted templates list to filter them out
-        deleted_templates = get_deleted_templates()
-        if deleted_templates:
-            logger.info(f"Filtering out {len(deleted_templates)} deleted templates: {list(deleted_templates)[:5]}")
-        
         # Call database function
-        try:
-            templates_res = supabase.rpc('get_user_downloadable_templates', {
-                'p_user_id': user_id
-            }).execute()
-            
-            # Check for RPC errors
-            if hasattr(templates_res, 'error') and templates_res.error:
-                logger.error(f"RPC error: {templates_res.error}")
-                raise Exception(f"Database function error: {templates_res.error}")
-        except Exception as rpc_error:
-            logger.error(f"Error calling get_user_downloadable_templates RPC: {rpc_error}")
-            # SECURITY: If RPC fails, return empty list (deny all access for safety)
-            # Don't return all templates as fallback - that would be a security breach
-            logger.warning("RPC failed - returning empty template list for security")
-            return {
-                "success": True,
-                "templates": [],
-                "source": "rpc_error_safe_fallback",
-                "error": f"Could not fetch templates: {str(rpc_error)}"
-            }
+        templates_res = supabase.rpc('get_user_downloadable_templates', {
+            'p_user_id': user_id
+        }).execute()
         
         if templates_res.data:
             # Enhance with template details
@@ -3992,28 +2822,19 @@ async def get_user_downloadable_templates(request: Request):
             
             details_map = {d['id']: d for d in (details_res.data or [])}
             
-            # Get user's plan info INCLUDING max_downloads_per_month
+            # Get user's plan info
             user_plan_info = None
-            user_max_downloads = None
             try:
                 user_res = supabase.table('subscribers').select('subscription_plan, plan_tier').eq('user_id', user_id).limit(1).execute()
                 if user_res.data and user_res.data[0]:
                     plan_tier = user_res.data[0].get('plan_tier') or user_res.data[0].get('subscription_plan')
                     if plan_tier:
-                        plan_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name, max_downloads_per_month').eq('plan_tier', plan_tier).limit(1).execute()
+                        plan_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('plan_tier', plan_tier).limit(1).execute()
                         if plan_res.data:
-                            plan_data = plan_res.data[0]
                             user_plan_info = {
-                                "plan_name": plan_data.get('plan_name') or plan_data.get('name') or plan_tier,
+                                "plan_name": plan_res.data[0].get('plan_name') or plan_res.data[0].get('name') or plan_tier,
                                 "plan_tier": plan_tier
                             }
-                            # Get max_downloads_per_month from user's plan
-                            max_downloads_value = plan_data.get('max_downloads_per_month')
-                            if max_downloads_value == -1:
-                                user_max_downloads = -1  # -1 means unlimited
-                            elif max_downloads_value is not None:
-                                user_max_downloads = max_downloads_value
-                            logger.info(f"User plan: {user_plan_info['plan_name']}, max_downloads: {user_max_downloads}")
             except Exception as e:
                 logger.warning(f"Could not fetch user plan info: {e}")
             
@@ -4025,14 +2846,6 @@ async def get_user_downloadable_templates(request: Request):
                 # Get file_name and normalize for metadata lookup
                 file_name = details.get('file_name', '')
                 docx_file_name = ensure_docx_filename(file_name) if file_name else ''
-                
-                # CRITICAL: Skip deleted templates
-                if deleted_templates and docx_file_name:
-                    normalized_deleted = {ensure_docx_filename(name) for name in deleted_templates}
-                    if docx_file_name in normalized_deleted or docx_file_name.lower() in {name.lower() for name in normalized_deleted}:
-                        logger.debug(f"Skipping deleted template: {docx_file_name}")
-                        continue
-                
                 metadata_entry = metadata_map.get(docx_file_name, {}) if docx_file_name else {}
                 
                 # Get description from Supabase, fallback to metadata, fallback to empty
@@ -4056,99 +2869,25 @@ async def get_user_downloadable_templates(request: Request):
                 font_family = details.get('font_family') or metadata_entry.get('font_family')
                 font_size = details.get('font_size') or metadata_entry.get('font_size')
                 
-                # Check if template requires broker membership
-                requires_broker = details.get('requires_broker_membership') or metadata_entry.get('requires_broker_membership', False)
-                if requires_broker:
-                    # Check if user has broker membership
-                    try:
-                        broker_check = supabase.rpc('check_broker_membership_status', {'user_id_param': user_id}).execute()
-                        has_broker = broker_check.data if broker_check.data else False
-                        if not has_broker:
-                            logger.debug(f"Template {template_id} requires broker membership, but user {user_id} doesn't have it - skipping")
-                            continue
-                    except Exception as broker_exc:
-                        logger.warning(f"Could not check broker membership for user {user_id}: {broker_exc}")
-                        # If we can't check, skip templates that require broker membership for safety
-                        if requires_broker:
-                            continue
-                
-                # Get template's required plan (which plan is needed to download this template)
-                template_plan_name = None
-                template_plan_tiers = []
-                try:
-                    # Get plan permissions for this template
-                    perms_res = supabase.table('plan_template_permissions').select(
-                        'plan_id, can_download, max_downloads_per_template'
-                    ).eq('template_id', template_id).eq('can_download', True).execute()
-                    
-                    if perms_res.data and len(perms_res.data) > 0:
-                        plan_ids = [p['plan_id'] for p in perms_res.data]
-                        if plan_ids:
-                            # Get plan names
-                            plans_info = supabase.table('subscription_plans').select(
-                                'id, plan_name, plan_tier'
-                            ).in_('id', plan_ids).eq('is_active', True).execute()
-                            
-                            if plans_info.data and len(plans_info.data) > 0:
-                                plan_names = [p['plan_name'] for p in plans_info.data]
-                                template_plan_tiers = [p['plan_tier'] for p in plans_info.data]
-                                
-                                # Determine plan_name for display
-                                all_plans_res = supabase.table('subscription_plans').select('id').eq('is_active', True).execute()
-                                all_plan_ids = set(p['id'] for p in (all_plans_res.data or []))
-                                plan_ids_set = set(plan_ids)
-                                
-                                # Only show "All Plans" if template has permissions for EVERY active plan
-                                if plan_ids_set == all_plan_ids and len(plan_ids_set) > 0 and len(all_plan_ids) > 0:
-                                    template_plan_name = "All Plans"
-                                elif len(plan_names) > 0:
-                                    if len(plan_names) <= 2:
-                                        template_plan_name = ", ".join(plan_names)
-                                    else:
-                                        template_plan_name = ", ".join(plan_names[:2]) + f" +{len(plan_names)-2} more"
-                except Exception as perm_exc:
-                    logger.debug(f"Could not fetch template plan permissions for template {template_id}: {perm_exc}")
-                
-                # Use user's plan info for max_downloads calculation
+                # If user can download, use their plan name, otherwise try to get plan info for template
                 plan_name = None
                 plan_tier_val = None
-                final_max_downloads = t.get('max_downloads', 10)  # Default from RPC function
-                
-                # Always use user's plan info if available (for max_downloads)
-                if user_plan_info:
+                if t['can_download'] and user_plan_info:
                     plan_name = user_plan_info['plan_name']
                     plan_tier_val = user_plan_info['plan_tier']
-                    # Override max_downloads with user's plan max_downloads_per_month
-                    if user_max_downloads is not None:
-                        if user_max_downloads == -1:
-                            final_max_downloads = -1  # Unlimited
-                        else:
-                            final_max_downloads = user_max_downloads
-                        logger.info(f"Using user's plan max_downloads: {final_max_downloads} for template {template_id}")
-                else:
-                    # If no user plan info, check template permissions to show required plan
+                elif not t['can_download']:
+                    # Try to get which plan allows this template
                     try:
-                        perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).limit(1).execute()
-                        
-                        if not perm_res.data or len(perm_res.data) == 0:
-                            # Template has NO plan permissions - available to ALL plans
-                            plan_name = "All Plans"
-                            logger.info(f"Template {template_id} has no plan permissions - available to all plans")
-                        elif not t['can_download']:
-                            # User cannot download - get which plan allows this template
-                            perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).eq('can_download', True).limit(1).execute()
-                            if perm_res.data:
-                                plan_id = perm_res.data[0]['plan_id']
-                                plan_detail_res = supabase.table('subscription_plans').select('plan_name, plan_tier, name').eq('id', plan_id).limit(1).execute()
-                                if plan_detail_res.data:
-                                    plan_name = plan_detail_res.data[0].get('plan_name') or plan_detail_res.data[0].get('name') or plan_detail_res.data[0].get('plan_tier')
-                                    plan_tier_val = plan_detail_res.data[0].get('plan_tier')
-                                    logger.info(f"Found plan for locked template {template_id}: {plan_name} (tier: {plan_tier_val})")
+                        perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).eq('can_download', True).limit(1).execute()
+                        if perm_res.data:
+                            plan_id = perm_res.data[0]['plan_id']
+                            plan_detail_res = supabase.table('subscription_plans').select('plan_name, plan_tier, name').eq('id', plan_id).limit(1).execute()
+                            if plan_detail_res.data:
+                                plan_name = plan_detail_res.data[0].get('plan_name') or plan_detail_res.data[0].get('name') or plan_detail_res.data[0].get('plan_tier')
+                                plan_tier_val = plan_detail_res.data[0].get('plan_tier')
+                                logger.info(f"Found plan for locked template {template_id}: {plan_name} (tier: {plan_tier_val})")
                     except Exception as e:
                         logger.warning(f"Could not fetch plan info for template {template_id}: {e}")
-                        # Default: if can_download is true, assume available to all
-                        if t['can_download']:
-                            plan_name = "All Plans"
                 
                 enhanced_templates.append({
                     "id": str(template_id),
@@ -4161,12 +2900,11 @@ async def get_user_downloadable_templates(request: Request):
                     "font_size": font_size,
                     "placeholders": details.get('placeholders', []),
                     "can_download": t['can_download'],
-                    "max_downloads": final_max_downloads,  # Use user's plan max_downloads, not template's
+                    "max_downloads": t['max_downloads'],
                     "current_downloads": t['current_downloads'],
                     "remaining_downloads": t['remaining_downloads'],
-                    "plan_name": template_plan_name,  # Show template's required plan (which plan allows downloading)
-                    "plan_tier": template_plan_tiers[0] if template_plan_tiers else None,  # First plan tier if multiple
-                    "plan_tiers": template_plan_tiers,  # All plan tiers that allow this template
+                    "plan_name": plan_name,  # Always include plan_name (even if None)
+                    "plan_tier": plan_tier_val,
                     "metadata": {
                         "display_name": display_name,  # Always include display_name
                         "description": description or metadata_entry.get('description', ''),  # Always include description
@@ -4535,7 +3273,7 @@ def validate_placeholder_setting(setting: Dict) -> Tuple[bool, List[str]]:
     if not isinstance(setting, dict):
         return False, ["Setting must be a dictionary"]
     
-    source = setting.get('source', 'database')  # Default to database instead of random
+    source = setting.get('source', 'random')
     valid_sources = ['random', 'database', 'csv', 'custom']
     
     if source not in valid_sources:
@@ -4779,89 +3517,17 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     # No match found
     return (None, None)
 
-def generate_ai_random_data(placeholder: str, vessel_imo: str = None, context: str = None) -> str:
-    """Generate realistic random data using OpenAI AI"""
-    if not OPENAI_ENABLED or not openai_client:
-        logger.warning("OpenAI not available, falling back to standard random data")
-        # Use 'auto' mode to prevent infinite recursion (don't call AI again)
-        return generate_realistic_random_data(placeholder, vessel_imo, 'auto')
-    
-    try:
-        # Build context for AI prompt
-        prompt_context = f"Generate a realistic value for the placeholder '{placeholder}'"
-        if vessel_imo:
-            prompt_context += f" related to vessel IMO {vessel_imo}"
-        if context:
-            prompt_context += f". Context: {context}"
-        prompt_context += ". Return ONLY the value, no explanation. Make it realistic and professional for oil trading/maritime industry documents."
-        
-        # Call OpenAI API
-        response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a data generator for oil trading and maritime industry documents. Generate realistic, professional values for placeholders."},
-                {"role": "user", "content": prompt_context}
-            ],
-            max_tokens=100,
-            temperature=0.7
-        )
-        
-        ai_value = response.choices[0].message.content.strip()
-        logger.info(f"🤖 AI generated value for '{placeholder}': {ai_value}")
-        return ai_value
-        
-    except Exception as e:
-        logger.error(f"Error generating AI data for '{placeholder}': {e}")
-        logger.info("Falling back to standard random data generation")
-        # Use 'auto' mode to prevent infinite recursion (don't call AI again)
-        return generate_realistic_random_data(placeholder, vessel_imo, 'auto')
-
-def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, random_option: str = 'ai') -> str:
-    """Generate realistic random data for placeholders
-    
-    Args:
-        placeholder: The placeholder name
-        vessel_imo: Optional vessel IMO for context
-        random_option: 'ai' (default), 'auto', or 'fixed' - determines generation method
-    """
-    # If AI option is selected, use AI generation
-    if random_option == 'ai':
-        if OPENAI_ENABLED:
-            logger.info(f"🤖 Attempting AI generation for placeholder: '{placeholder}'")
-            return generate_ai_random_data(placeholder, vessel_imo)
-        else:
-            logger.warning(f"⚠️  AI requested for '{placeholder}' but OpenAI is not enabled. Check OPENAI_API_KEY environment variable.")
-            logger.info(f"   Falling back to realistic random data generation")
-            # Fall through to realistic random data generation below
-    
+def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
+    """Generate realistic random data for placeholders"""
     import random
     import hashlib
     
-    # Create unique seed for consistent data (only if not 'fixed')
-    if vessel_imo and random_option != 'fixed':
+    # Create unique seed for consistent data
+    if vessel_imo:
         seed_input = f"{vessel_imo}_{placeholder.lower()}"
         random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
     
     placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
-    
-    # Handle specific common placeholder types first
-    if placeholder_lower == 'via' or placeholder_lower.startswith('via'):
-        companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'Marine Services Group', 'International Vessel Corp']
-        return random.choice(companies)
-    elif 'position' in placeholder_lower or placeholder_lower == 'pos':
-        positions = ['Director', 'Manager', 'Senior Manager', 'Vice President', 'President', 'CEO', 'CFO', 'COO', 'General Manager', 'Operations Manager']
-        return random.choice(positions)
-    elif placeholder_lower == 'bin' or placeholder_lower.startswith('bin'):
-        # Business Identification Number (Kazakhstan format: 12 digits)
-        return f"{random.randint(100000000000, 999999999999)}"
-    elif placeholder_lower == 'okpo' or placeholder_lower.startswith('okpo'):
-        # OKPO code (Russian business registration, 8-10 digits)
-        return f"{random.randint(10000000, 9999999999)}"
-    elif 'invoice' in placeholder_lower or 'inv' in placeholder_lower:
-        prefixes = ['INV', 'CI', 'IN', 'DOC']
-        return f"{random.choice(prefixes)}-{random.randint(100000, 999999)}"
-    elif 'commercial' in placeholder_lower and 'invoice' in placeholder_lower:
-        return f"INV-{random.randint(100000, 999999)}"
     
     # Simple fallback data generation
     if 'date' in placeholder_lower:
@@ -4894,95 +3560,9 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None, ran
             return f"${random.randint(1000, 999999):,}"
         elif 'percent' in placeholder_lower or 'percentage' in placeholder_lower:
             return f"{random.uniform(0.1, 99.9):.2f}%"
-        elif 'company' in placeholder_lower or 'firm' in placeholder_lower or 'corporation' in placeholder_lower:
-            companies = [
-                'Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 
-                'Marine Services Group', 'International Vessel Corp', 'Petroleum Trading LLC',
-                'Maritime Logistics Co', 'Shipping Partners Ltd', 'Ocean Freight Services',
-                'Marine Transport Inc', 'International Shipping Group', 'Global Maritime Corp'
-            ]
-            return random.choice(companies)
-        elif 'address' in placeholder_lower or 'location' in placeholder_lower:
-            addresses = [
-                '123 Maritime Street, London, UK', '456 Harbor Road, Singapore', 
-                '789 Port Avenue, Dubai, UAE', '321 Dock Lane, Rotterdam, NL',
-                '555 Shipping Boulevard, Houston, TX, USA', '888 Portside Drive, Shanghai, China',
-                '777 Harbor View, Hamburg, Germany', '999 Maritime Plaza, Tokyo, Japan'
-            ]
-            return random.choice(addresses)
-        elif 'person' in placeholder_lower or 'contact' in placeholder_lower or 'name' in placeholder_lower:
-            names = [
-                'John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 
-                'David Johnson', 'Sarah Brown', 'Michael Chen', 'Emma Wilson',
-                'James Anderson', 'Sophie Martin', 'Robert Taylor', 'Anna Schmidt'
-            ]
-            return random.choice(names)
-        elif 'email' in placeholder_lower or 'mail' in placeholder_lower:
-            domains = ['example.com', 'maritime.com', 'shipping.com', 'trading.com', 'oil.com']
-            name = random.choice(['john', 'maria', 'david', 'sarah', 'michael', 'emma', 'james', 'sophie'])
-            return f"{name}{random.randint(1, 99)}@{random.choice(domains)}"
-        elif 'phone' in placeholder_lower or 'tel' in placeholder_lower or 'mobile' in placeholder_lower:
-            return f"+{random.randint(1, 99)} {random.randint(100, 999)} {random.randint(100000, 999999)}"
-        elif 'ref' in placeholder_lower or 'reference' in placeholder_lower or 'number' in placeholder_lower or 'id' in placeholder_lower:
-            prefixes = ['REF', 'PO', 'SO', 'INV', 'LC', 'BL', 'COA', 'SGS', 'DOC', 'ORD']
-            return f"{random.choice(prefixes)}-{random.randint(100000, 999999)}"
-        elif 'date' in placeholder_lower or 'time' in placeholder_lower:
-            from datetime import timedelta
-            return (datetime.now() - timedelta(days=random.randint(1, 30))).strftime('%Y-%m-%d')
         else:
-            # Generate context-aware realistic data based on placeholder name
-            # Try to infer what type of data is needed from the placeholder name
-            if any(word in placeholder_lower for word in ['buyer', 'seller', 'client', 'customer']):
-                companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc']
-                return random.choice(companies)
-            elif any(word in placeholder_lower for word in ['port', 'harbor', 'dock']):
-                ports = ['Rotterdam', 'Singapore', 'Dubai', 'Houston', 'Shanghai', 'Hamburg', 'Tokyo']
-                return random.choice(ports)
-            elif any(word in placeholder_lower for word in ['vessel', 'ship', 'boat']):
-                vessel_names = ['MV Atlantic Star', 'SS Ocean Breeze', 'MV Pacific Wave', 'SS Maritime Express']
-                return random.choice(vessel_names)
-            elif any(word in placeholder_lower for word in ['quantity', 'volume', 'capacity', 'tonnage', 'weight']):
-                return f"{random.randint(1000, 50000):,} MT"
-            elif any(word in placeholder_lower for word in ['price', 'cost', 'value', 'amount']):
-                return f"${random.randint(10000, 5000000):,}"
-            else:
-                # Last resort: generate context-aware realistic data
-                # Never use "Value-XXXX" format - always generate meaningful data
-                placeholder_words = placeholder_lower.replace('_', ' ').replace('-', ' ').split()
-                
-                # Try to infer from placeholder name
-                if len(placeholder_words) == 1:
-                    # Single word placeholder - try common business fields
-                    word = placeholder_words[0]
-                    if len(word) <= 4:  # Short codes like BIN, OKPO, VIA
-                        if word in ['via', 'bin', 'okpo', 'pos']:
-                            # Already handled above, but fallback
-                            if word == 'via':
-                                return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
-                            elif word == 'bin':
-                                return f"{random.randint(100000000000, 999999999999)}"
-                            elif word == 'okpo':
-                                return f"{random.randint(10000000, 9999999999)}"
-                            elif word == 'pos':
-                                return random.choice(['Director', 'Manager', 'Senior Manager'])
-                    
-                    # For other short codes, generate a number
-                    return f"{random.randint(100000, 999999)}"
-                else:
-                    # Multi-word placeholder - use first meaningful word
-                    first_word = next((w for w in placeholder_words if len(w) > 2), 'REF')
-                    # Generate based on word type
-                    if first_word in ['company', 'firm', 'corp', 'ltd']:
-                        return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
-                    elif first_word in ['number', 'num', 'no', 'nr', 'ref', 'id', 'code']:
-                        prefixes = ['REF', 'PO', 'SO', 'INV', 'LC', 'BL', 'COA', 'SGS']
-                        return f"{random.choice(prefixes)}-{random.randint(100000, 999999)}"
-                    elif first_word in ['name', 'person', 'contact']:
-                        return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'David Johnson'])
-                    else:
-                        # Generate a professional reference number
-                        prefixes = ['REF', 'DOC', 'ORD', 'INV']
-                        return f"{random.choice(prefixes)}-{random.randint(100000, 999999)}"
+            # Generate a more realistic generic value
+            return f"Value-{random.randint(1000, 9999)}"
 
 def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     """
@@ -5409,131 +3989,6 @@ def convert_docx_to_pdf(docx_path: str) -> str:
         logger.warning(f"PDF conversion failed: {e}, returning DOCX")
         return docx_path
 
-
-def convert_pdf_to_images_zip(pdf_path: str, base_filename: str) -> bytes:
-    """Convert PDF pages to images and create a zip file containing all images
-    
-    Args:
-        pdf_path: Path to the PDF file
-        base_filename: Base name for the images (without extension)
-        
-    Returns:
-        bytes: ZIP file content containing all PDF pages as PNG images
-    """
-    if not FITZ_AVAILABLE:
-        raise HTTPException(status_code=500, detail="PyMuPDF (fitz) is not available. Cannot convert PDF to images.")
-    
-    try:
-        # Open PDF
-        pdf_document = fitz.open(pdf_path)
-        total_pages = len(pdf_document)
-        logger.info(f"Converting PDF to images: {total_pages} pages")
-        
-        # Create zip file in memory
-        zip_buffer = io.BytesIO()
-        
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            # Convert each page to image
-            for page_num in range(total_pages):
-                page = pdf_document[page_num]
-                
-                # Render page to image (pixmap) at 2x resolution for better quality
-                # 150 DPI equivalent (72 * 2.083)
-                mat = fitz.Matrix(2.0, 2.0)
-                pix = page.get_pixmap(matrix=mat)
-                
-                # Convert pixmap to PNG bytes
-                img_bytes = pix.tobytes("png")
-                
-                # Add to zip with page number in filename
-                image_filename = f"{base_filename}_page_{page_num + 1:03d}.png"
-                zip_file.writestr(image_filename, img_bytes)
-                logger.debug(f"Added page {page_num + 1} to zip: {image_filename}")
-        
-        pdf_document.close()
-        
-        # Get zip file content
-        zip_buffer.seek(0)
-        zip_content = zip_buffer.read()
-        zip_buffer.close()
-        
-        logger.info(f"Successfully created zip file with {total_pages} images ({len(zip_content)} bytes)")
-        return zip_content
-        
-    except Exception as e:
-        logger.error(f"Error converting PDF to images: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to convert PDF to images: {str(e)}")
-
-
-def merge_images_to_pdf(pdf_path: str) -> bytes:
-    """Convert PDF to images and merge them back into a single high-quality PDF
-    
-    This function:
-    1. Converts PDF pages to high-resolution images
-    2. Merges all images back into a single PDF file
-    
-    Args:
-        pdf_path: Path to the source PDF file
-        
-    Returns:
-        bytes: PDF file content with all pages merged as images
-    """
-    if not FITZ_AVAILABLE:
-        raise HTTPException(status_code=500, detail="PyMuPDF (fitz) is not available. Cannot merge images to PDF.")
-    
-    try:
-        # Open source PDF
-        source_pdf = fitz.open(pdf_path)
-        total_pages = len(source_pdf)
-        logger.info(f"Merging {total_pages} pages from PDF to images and back to PDF")
-        
-        # Create a new PDF document
-        merged_pdf = fitz.open()
-        
-        # Process each page
-        for page_num in range(total_pages):
-            page = source_pdf[page_num]
-            
-            # Render page to image at high resolution (2x for better quality)
-            # This gives us 150 DPI equivalent (72 * 2.083)
-            mat = fitz.Matrix(2.0, 2.0)
-            pix = page.get_pixmap(matrix=mat)
-            
-            # Get page dimensions
-            page_rect = page.rect
-            
-            # Create a new page in the merged PDF with the same dimensions
-            new_page = merged_pdf.new_page(width=page_rect.width, height=page_rect.height)
-            
-            # Insert the image into the new page
-            # The pixmap is at 2x resolution, so we need to scale it down to fit the page
-            # Use the full page rect to ensure the image fills the page correctly
-            img_rect = fitz.Rect(0, 0, page_rect.width, page_rect.height)
-            
-            # Convert pixmap to image and insert (fitz handles the scaling automatically)
-            new_page.insert_image(img_rect, pixmap=pix)
-            
-            # Clean up pixmap to free memory
-            pix = None
-            
-            logger.debug(f"Merged page {page_num + 1}/{total_pages} into PDF")
-        
-        source_pdf.close()
-        
-        # Save merged PDF to bytes
-        pdf_bytes = merged_pdf.tobytes()
-        merged_pdf.close()
-        
-        logger.info(f"Successfully merged {total_pages} pages into PDF ({len(pdf_bytes)} bytes)")
-        return pdf_bytes
-        
-    except Exception as e:
-        logger.error(f"Error merging images to PDF: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Failed to merge images to PDF: {str(e)}")
-
-
 @app.options("/generate-document")
 async def options_generate_document(request: Request):
     """Handle CORS preflight for generate-document endpoint"""
@@ -5738,7 +4193,7 @@ async def generate_document(request: Request):
                     logger.warning(f"⚠️  Invalid placeholder setting for '{placeholder}': {', '.join(validation_errors)}")
                     logger.warning(f"   Will use random data as fallback")
                 
-                source = setting.get('source', 'database')  # Default to database instead of random
+                source = setting.get('source', 'random')
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source})")
                 logger.info(f"📋 FULL CMS SETTING for '{placeholder}':")
                 logger.info(f"   source: '{source}'")
@@ -5754,18 +4209,13 @@ async def generate_document(request: Request):
                     if source == 'random':
                         database_field = (setting.get('databaseField') or '').strip()
                         database_table = (setting.get('databaseTable') or '').strip()
-                        random_option = setting.get('randomOption', 'ai')
                         
                         # If user explicitly set databaseField or databaseTable, they want random data
                         # Don't override their choice with intelligent matching
                         if database_field or database_table:
                             logger.info(f"  🎲 Source is 'random' with explicit databaseField='{database_field}' or databaseTable='{database_table}'")
                             logger.info(f"  🎲 RESPECTING USER CHOICE: Will use random data (user explicitly configured this)")
-                            # Generate random data immediately with the correct randomOption
-                            seed_imo = None if random_option == 'fixed' else vessel_imo
-                            data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
-                            found = True
-                            logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
+                            # Don't set found = True, let it fall through to random data generation
                         elif not database_field:
                             # Only try intelligent matching if user didn't configure anything
                             logger.info(f"  🎲 Source is 'random' with NO databaseField configured, trying intelligent matching first...")
@@ -5776,12 +4226,8 @@ async def generate_document(request: Request):
                                 logger.info(f"  ✅✅✅ AUTO-MATCHED (from random source): {placeholder} = '{matched_value}' (from vessel field '{matched_field}')")
                                 logger.info(f"  💡 TIP: Change source to 'database' and set databaseField='{matched_field}' in CMS for explicit control")
                             else:
-                                logger.info(f"  ⚠️  Intelligent matching failed, will use random data as configured (randomOption: {random_option})")
-                                # Generate random data immediately with the correct randomOption
-                                seed_imo = None if random_option == 'fixed' else vessel_imo
-                                data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
-                                found = True
-                                logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
+                                logger.info(f"  ⚠️  Intelligent matching failed, will use random data as configured")
+                                # Don't set found = True, let it fall through to random data generation
                     
                     elif source == 'custom':
                         custom_value = str(setting.get('customValue', '')).strip()
@@ -5890,27 +4336,15 @@ async def generate_document(request: Request):
                                 table_info = f" from {database_table}" if database_table and database_table.lower() != 'vessels' else ""
                                 logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}'{table_info})")
                             else:
-                                logger.warning(f"  ⚠️  Could not match '{placeholder}' to any field in {database_table or 'vessels'}!")
+                                logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any field in {database_table or 'vessels'}!")
                                 if database_field:
-                                    logger.warning(f"  ⚠️  Explicit field '{database_field}' not found in data")
-                                logger.warning(f"  ⚠️  Available fields: {list(source_data.keys())[:20]}...")  # Show first 20
-                                logger.info(f"  🔄 Auto-fallback: Trying random data generation...")
-                                # Auto-fallback to random when database lookup fails
-                                random_option = setting.get('randomOption', 'ai')
-                                seed_imo = None if random_option == 'fixed' else vessel_imo
-                                data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
-                                found = True
-                                logger.info(f"  ✅ Auto-fallback: {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option})")
-                                logger.info(f"  💡 TIP: Check if databaseField in CMS matches field names exactly (case-insensitive)")
+                                    logger.error(f"  ❌ Explicit field '{database_field}' not found in data")
+                                logger.error(f"  ❌ Available fields: {list(source_data.keys())[:20]}...")  # Show first 20
+                                logger.error(f"  ❌ This will use RANDOM data!")
+                                logger.error(f"  💡 TIP: Check if databaseField in CMS matches field names exactly (case-insensitive)")
                         else:
-                            logger.warning(f"  ⚠️  No data available from {database_table or 'vessels'} table!")
-                            logger.info(f"  🔄 Auto-fallback: Trying random data generation...")
-                            # Auto-fallback to random when no data available
-                            random_option = setting.get('randomOption', 'ai')
-                            seed_imo = None if random_option == 'fixed' else vessel_imo
-                            data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
-                            found = True
-                            logger.info(f"  ✅ Auto-fallback: {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option})")
+                            logger.error(f"  ❌❌❌ FAILED: No data available from {database_table or 'vessels'} table!")
+                            logger.error(f"  ❌ This will use RANDOM data!")
 
                     elif source == 'csv':
                         csv_id = setting.get('csvId', '')
@@ -5972,56 +4406,29 @@ async def generate_document(request: Request):
                     logger.warning(f"   Will use random data as fallback")
 
             if not found:
-                # If source is 'database' but no setting was found, try intelligent matching first
-                # This handles new placeholders that default to database source
-                source = setting.get('source', 'database') if setting else 'database'
+                # Try intelligent matching even if not configured in CMS
+                # This helps match common vessel fields automatically
+                logger.info(f"  🔍 {placeholder}: Not found in configured sources, trying intelligent database matching...")
+                intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
                 
-                if source == 'database' or not setting:
-                    # Try intelligent database matching first (auto-fallback behavior)
-                    logger.info(f"  🔍 {placeholder}: Database source but no match found, trying intelligent database matching...")
-                    intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
-                    
-                    if intelligent_field and intelligent_value:
-                        data_mapping[placeholder] = intelligent_value
-                        found = True
-                        logger.info(f"  ✅✅✅ AUTO-MATCHED: {placeholder} = '{intelligent_value}' (from vessel field '{intelligent_field}')")
-                        logger.info(f"  💡 TIP: Configure this in CMS for more control over data source")
-                    else:
-                        # Fall back to random data
-                        logger.info(f"  🔄 Intelligent matching failed, auto-fallback to random data...")
-                        if setting:
-                            random_option = setting.get('randomOption', 'ai')
-                            logger.info(f"  ⚠️  {placeholder}: Using RANDOM data (source: 'database', database lookup failed)")
-                        else:
-                            random_option = 'ai'
-                            logger.info(f"  ⚠️  {placeholder}: Not configured in CMS, defaulting to database then random")
-
-                        seed_imo = None if random_option == 'fixed' else vessel_imo
-                        data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
-                        logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
+                if intelligent_field and intelligent_value:
+                    data_mapping[placeholder] = intelligent_value
+                    found = True
+                    logger.info(f"  ✅✅✅ AUTO-MATCHED: {placeholder} = '{intelligent_value}' (from vessel field '{intelligent_field}')")
+                    logger.info(f"  💡 TIP: Configure this in CMS for more control over data source")
                 else:
-                    # For other sources (custom, csv), try intelligent matching as fallback
-                    logger.info(f"  🔍 {placeholder}: Not found in configured sources, trying intelligent database matching...")
-                    intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
-                    
-                    if intelligent_field and intelligent_value:
-                        data_mapping[placeholder] = intelligent_value
-                        found = True
-                        logger.info(f"  ✅✅✅ AUTO-MATCHED: {placeholder} = '{intelligent_value}' (from vessel field '{intelligent_field}')")
-                        logger.info(f"  💡 TIP: Configure this in CMS for more control over data source")
+                    # Fall back to random data
+                    if setting:
+                        random_option = setting.get('randomOption', 'auto')
+                        source = setting.get('source', 'random')
+                        logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
                     else:
-                        # Fall back to random data
-                        if setting:
-                            random_option = setting.get('randomOption', 'ai')
-                            source = setting.get('source', 'database')  # Default to database instead of random
-                            logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
-                        else:
-                            random_option = 'ai'
-                            logger.warning(f"  ⚠⚠⚠ {placeholder}: Not configured in CMS and no intelligent match found, using random data")
+                        random_option = 'auto'
+                        logger.warning(f"  ⚠⚠⚠ {placeholder}: Not configured in CMS and no intelligent match found, using random data")
 
-                        seed_imo = None if random_option == 'fixed' else vessel_imo
-                        data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo, random_option)
-                        logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
+                    seed_imo = None if random_option == 'fixed' else vessel_imo
+                    data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo)
+                    logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
@@ -6067,30 +4474,13 @@ async def generate_document(request: Request):
         if not template_display_name:
             template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
         
-        # Convert PDF to images and merge back to PDF (high quality merged PDF)
-        if pdf_path.endswith('.pdf') and os.path.exists(pdf_path):
-            base_filename = f"{template_display_name}_{vessel_imo}"
-            logger.info(f"Converting PDF to images and merging back to PDF: {base_filename}")
-            logger.info(f"PDF file path: {pdf_path}, exists: {os.path.exists(pdf_path)}")
-            
-            try:
-                # Convert PDF to images and merge back into a single high-quality PDF
-                merged_pdf_content = merge_images_to_pdf(pdf_path)
-                file_content = merged_pdf_content
-                media_type = "application/pdf"
-                filename = f"{template_display_name}_{vessel_imo}.pdf"
-                logger.info(f"Successfully created merged PDF: {filename} ({len(merged_pdf_content)} bytes)")
-            except Exception as merge_error:
-                logger.error(f"Failed to merge PDF images: {merge_error}", exc_info=True)
-                # Fallback to original PDF if merge fails
-                logger.warning("Falling back to original PDF file")
-                with open(pdf_path, 'rb') as f:
-                    file_content = f.read()
-                media_type = "application/pdf"
-                filename = f"{template_display_name}_{vessel_imo}.pdf"
-                logger.info(f"Using original PDF as fallback: {filename} ({len(file_content)} bytes)")
+        # Read file content
+        if pdf_path.endswith('.pdf'):
+            with open(pdf_path, 'rb') as f:
+                file_content = f.read()
+            media_type = "application/pdf"
+            filename = f"{template_display_name}_{vessel_imo}.pdf"
         else:
-            # If no PDF, return DOCX
             with open(processed_docx, 'rb') as f:
                 file_content = f.read()
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -6116,47 +4506,15 @@ async def generate_document(request: Request):
                         template_id = template_res.data[0]['id']
 
                 if template_id:
-                    # Check per-template download limit before recording
-                    try:
-                        permission_result = supabase.rpc('can_user_download_template', {
-                            'p_user_id': user_id,
-                            'p_template_id': template_id
-                        }).execute()
-                        
-                        if permission_result.data:
-                            perm_data = permission_result.data
-                            can_download = perm_data.get('can_download', False)
-                            limit_reached = perm_data.get('limit_reached', False)
-                            
-                            if not can_download:
-                                logger.warning(f"User {user_id} does not have permission to download template {template_id}")
-                                # Don't block the download, but log it
-                            elif limit_reached:
-                                logger.warning(f"User {user_id} has reached per-template download limit for template {template_id}")
-                                # Don't block the download, but log it
-                            else:
-                                # Record the download
-                                download_record = {
-                                    'user_id': user_id,
-                                    'template_id': template_id,
-                                    'vessel_imo': vessel_imo,
-                                    'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
-                                    'file_size': len(file_content)
-                                }
-                                supabase.table('user_document_downloads').insert(download_record).execute()
-                                logger.info(f"Recorded download for user {user_id}, template {template_id}")
-                    except Exception as perm_check_error:
-                        logger.warning(f"Could not check download permission, recording anyway: {perm_check_error}")
-                        # Fallback: record download anyway if permission check fails
-                        download_record = {
-                            'user_id': user_id,
-                            'template_id': template_id,
-                            'vessel_imo': vessel_imo,
-                            'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
-                            'file_size': len(file_content)
-                        }
-                        supabase.table('user_document_downloads').insert(download_record).execute()
-                        logger.info(f"Recorded download for user {user_id}, template {template_id} (permission check failed)")
+                    download_record = {
+                        'user_id': user_id,
+                        'template_id': template_id,
+                        'vessel_imo': vessel_imo,
+                        'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
+                        'file_size': len(file_content)
+                    }
+                    supabase.table('user_document_downloads').insert(download_record).execute()
+                    logger.info(f"Recorded download for user {user_id}, template {template_id}")
             except Exception as e:
                 logger.warning(f"Failed to record download: {e}")
 
@@ -6171,23 +4529,11 @@ async def generate_document(request: Request):
         except Exception as cleanup_error:
             logger.debug(f"Cleanup warning: {cleanup_error}")
 
-        # Return file with properly encoded filename for PDF download
-        # Use RFC 5987 format for better browser compatibility
-        encoded_filename = quote(filename.encode('utf-8'))
-        content_disposition = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
-        
-        # Explicitly set headers to ensure PDF downloads correctly
-        # Set both Content-Type and use media_type parameter for maximum compatibility
-        headers = {
-            "Content-Disposition": content_disposition,
-            "Content-Type": media_type,
-            "X-Content-Type-Options": "nosniff"  # Prevent MIME type sniffing
-        }
-        
+        # Return file
         return Response(
             content=file_content,
             media_type=media_type,
-            headers=headers
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
     except HTTPException:
         raise
@@ -6210,566 +4556,6 @@ async def options_process_document(request: Request):
 async def process_document_legacy(request: Request):
     """Legacy route that proxies to generate-document for backward compatibility"""
     return await generate_document(request)
-
-# ============================================================================
-# EMAIL SERVICE ENDPOINTS
-# ============================================================================
-
-try:
-    from email_service import EmailService
-    EMAIL_SERVICE_AVAILABLE = True
-except ImportError:
-    EMAIL_SERVICE_AVAILABLE = False
-    logger.warning("Email service not available. Email endpoints will be disabled.")
-
-@app.options("/email/test-smtp")
-@app.options("/api/email/test-smtp")  # Also support direct /api path
-async def options_test_smtp(request: Request):
-    """Handle CORS preflight for test-smtp endpoint"""
-    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
-
-@app.post("/email/test-smtp")
-@app.post("/api/email/test-smtp")  # Also support direct /api path
-async def test_smtp_connection(request: Request):
-    """Test SMTP connection with provided configuration"""
-    try:
-        import smtplib
-    except ImportError:
-        raise HTTPException(status_code=503, detail="SMTP library not available")
-    
-    try:
-        body = await request.json()
-        
-        # Map frontend field names to backend field names
-        host = body.get('host', '')
-        port = body.get('port', 587)
-        username = body.get('username', '')
-        password = body.get('password', '')
-        enable_tls = body.get('enableTLS', True)
-        
-        # Validate required fields
-        if not host or not username or not password:
-            raise HTTPException(status_code=400, detail="Missing required fields: host, username, password")
-        
-        # Test SMTP connection - handle SSL (port 465) and TLS (port 587) properly
-        try:
-            # Port 465 typically uses SSL (SMTP_SSL)
-            if port == 465:
-                server = smtplib.SMTP_SSL(host, port, timeout=10)
-            # Port 587 and others use TLS with STARTTLS when enabled
-            elif enable_tls:
-                server = smtplib.SMTP(host, port, timeout=10)
-                server.starttls()
-            else:
-                server = smtplib.SMTP(host, port, timeout=10)
-            
-            server.login(username, password)
-            server.quit()
-            
-            return {"success": True, "message": "SMTP connection successful"}
-        except smtplib.SMTPAuthenticationError as e:
-            error_msg = str(e)
-            if "authentication failed" in error_msg.lower() or "535" in error_msg:
-                return {"success": False, "message": f"Authentication failed. Please check your username and password. {error_msg}"}
-            return {"success": False, "message": f"Authentication failed: {error_msg}"}
-        except smtplib.SMTPConnectError as e:
-            error_msg = str(e)
-            return {"success": False, "message": f"Connection failed to {host}:{port}. Please check the server address and port. {error_msg}"}
-        except (smtplib.SMTPServerDisconnected, ConnectionError, OSError) as e:
-            error_msg = str(e)
-            if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
-                return {"success": False, "message": f"Connection timed out. Server {host}:{port} may be unreachable or firewall is blocking the connection."}
-            return {"success": False, "message": f"Connection error: {error_msg}"}
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"SMTP connection test error: {error_msg}")
-            return {"success": False, "message": f"SMTP error: {error_msg}"}
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error testing SMTP connection: {e}")
-        return {"success": False, "message": str(e)}
-
-@app.options("/email/test-imap")
-@app.options("/api/email/test-imap")  # Also support direct /api path
-async def options_test_imap(request: Request):
-    """Handle CORS preflight for test-imap endpoint"""
-    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
-
-@app.post("/email/test-imap")
-@app.post("/api/email/test-imap")  # Also support direct /api path
-async def test_imap_connection(request: Request):
-    """Test IMAP connection with provided configuration"""
-    try:
-        import imaplib
-    except ImportError:
-        raise HTTPException(status_code=503, detail="IMAP library not available")
-    
-    try:
-        body = await request.json()
-        
-        # Map frontend field names to backend field names
-        host = body.get('host', '')
-        port = body.get('port', 993)
-        username = body.get('username', '')
-        password = body.get('password', '')
-        enable_tls = body.get('enableTLS', True)
-        
-        # Validate required fields
-        if not host or not username or not password:
-            raise HTTPException(status_code=400, detail="Missing required fields: host, username, password")
-        
-        # Test IMAP connection directly (simpler and more reliable)
-        try:
-            if enable_tls:
-                mail = imaplib.IMAP4_SSL(host, port, timeout=10)
-            else:
-                mail = imaplib.IMAP4(host, port, timeout=10)
-            
-            mail.login(username, password)
-            mail.logout()
-            
-            return {"success": True, "message": "IMAP connection successful"}
-        except imaplib.IMAP4.error as e:
-            return {"success": False, "message": f"IMAP authentication failed: {str(e)}"}
-        except Exception as e:
-            return {"success": False, "message": f"IMAP error: {str(e)}"}
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error testing IMAP connection: {e}")
-        return {"success": False, "message": str(e)}
-
-# ============================================================================
-# API KEY AUTHENTICATION
-# ============================================================================
-
-security = HTTPBearer()
-
-async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify API key from Authorization header"""
-    api_key = credentials.credentials
-    
-    if not supabase:
-        raise HTTPException(status_code=503, detail="Database connection unavailable")
-    
-    try:
-        # Hash the provided API key
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        
-        # Look up API key in database
-        result = supabase.table('api_keys').select('*').eq('key_hash', key_hash).eq('is_active', True).single().execute()
-        
-        if not result.data:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-        
-        api_key_record = result.data
-        
-        # Check if key is expired
-        if api_key_record.get('expires_at'):
-            expires_at = datetime.fromisoformat(api_key_record['expires_at'].replace('Z', '+00:00'))
-            if expires_at < datetime.now(expires_at.tzinfo):
-                raise HTTPException(status_code=401, detail="API key has expired")
-        
-        # Update last_used_at
-        supabase.table('api_keys').update({
-            'last_used_at': datetime.now().isoformat()
-        }).eq('id', api_key_record['id']).execute()
-        
-        return api_key_record
-    except Exception as e:
-        logger.error(f"API key verification error: {e}")
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-def log_api_usage(api_key_id: str, endpoint: str, method: str, status_code: int, 
-                  response_time_ms: int, ip_address: str, user_agent: str = None):
-    """Log API usage for analytics"""
-    try:
-        if supabase:
-            supabase.table('api_usage_logs').insert({
-                'api_key_id': api_key_id,
-                'endpoint': endpoint,
-                'method': method,
-                'status_code': status_code,
-                'response_time_ms': response_time_ms,
-                'ip_address': ip_address,
-                'user_agent': user_agent,
-            }).execute()
-    except Exception as e:
-        logger.error(f"Failed to log API usage: {e}")
-
-# ============================================================================
-# API KEY MANAGEMENT ENDPOINTS
-# ============================================================================
-
-@app.options("/api-keys/generate")
-@app.options("/api/api-keys/generate")
-async def options_generate_api_key(request: Request):
-    """Handle CORS preflight for generate API key endpoint"""
-    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
-
-@app.post("/api-keys/generate")
-@app.post("/api/api-keys/generate")
-async def generate_api_key(request: Request):
-    """Generate a new API key (admin only - should be protected by admin auth)"""
-    try:
-        body = await request.json()
-        name = body.get('name', '')
-        description = body.get('description', '')
-        
-        if not name:
-            raise HTTPException(status_code=400, detail="Name is required")
-        
-        # Generate API key
-        prefix = "pk_live_"
-        random_part = secrets.token_urlsafe(24)
-        api_key = prefix + random_part
-        
-        # Hash the key for storage
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        key_prefix = api_key[:20]  # First 20 chars for display
-        
-        # Store in database
-        if not supabase:
-            raise HTTPException(status_code=503, detail="Database connection unavailable")
-        
-        result = supabase.table('api_keys').insert({
-            'name': name,
-            'description': description,
-            'key_hash': key_hash,
-            'key_prefix': key_prefix,
-            'permissions': {},
-            'rate_limit_per_minute': 60,
-            'rate_limit_per_hour': 1000,
-            'rate_limit_per_day': 10000,
-            'is_active': True,
-        }).execute()
-        
-        if not result.data:
-            raise HTTPException(status_code=500, detail="Failed to create API key")
-        
-        return {
-            "success": True,
-            "api_key": api_key,  # Only returned once!
-            "key_id": result.data[0]['id'],
-            "key_prefix": key_prefix,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating API key: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# PUBLIC API ENDPOINTS (Require API Key)
-# ============================================================================
-
-@app.get("/api/v1/vessels")
-async def get_vessels_api(
-    api_key_record: dict = Depends(verify_api_key),
-    request: Request = None,
-    limit: int = 100,
-    offset: int = 0,
-    imo: Optional[str] = None,
-):
-    """Get list of vessels (API endpoint)"""
-    start_time = datetime.now()
-    try:
-        if not supabase:
-            raise HTTPException(status_code=503, detail="Database connection unavailable")
-        
-        query = supabase.table('vessels').select('*')
-        
-        if imo:
-            query = query.eq('imo', imo)
-        
-        query = query.range(offset, offset + limit - 1).order('created_at', desc=True)
-        result = query.execute()
-        
-        response_time = int((datetime.now() - start_time).total_seconds() * 1000)
-        client_ip = request.client.host if request else None
-        user_agent = request.headers.get('user-agent') if request else None
-        
-        log_api_usage(
-            api_key_record['id'],
-            '/api/v1/vessels',
-            'GET',
-            200,
-            response_time,
-            client_ip,
-            user_agent
-        )
-        
-        return {
-            "success": True,
-            "data": result.data or [],
-            "count": len(result.data or []),
-            "limit": limit,
-            "offset": offset,
-        }
-    except Exception as e:
-        logger.error(f"Error fetching vessels: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/vessels/{imo}")
-async def get_vessel_by_imo_api(
-    imo: str,
-    api_key_record: dict = Depends(verify_api_key),
-    request: Request = None,
-):
-    """Get vessel by IMO number (API endpoint)"""
-    start_time = datetime.now()
-    try:
-        if not supabase:
-            raise HTTPException(status_code=503, detail="Database connection unavailable")
-        
-        result = supabase.table('vessels').select('*').eq('imo', imo).single().execute()
-        
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Vessel not found")
-        
-        response_time = int((datetime.now() - start_time).total_seconds() * 1000)
-        client_ip = request.client.host if request else None
-        user_agent = request.headers.get('user-agent') if request else None
-        
-        log_api_usage(
-            api_key_record['id'],
-            f'/api/v1/vessels/{imo}',
-            'GET',
-            200,
-            response_time,
-            client_ip,
-            user_agent
-        )
-        
-        return {
-            "success": True,
-            "data": result.data,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching vessel: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/ports")
-async def get_ports_api(
-    api_key_record: dict = Depends(verify_api_key),
-    request: Request = None,
-    limit: int = 100,
-    offset: int = 0,
-):
-    """Get list of ports (API endpoint)"""
-    start_time = datetime.now()
-    try:
-        if not supabase:
-            raise HTTPException(status_code=503, detail="Database connection unavailable")
-        
-        result = supabase.table('ports').select('*').range(offset, offset + limit - 1).order('created_at', desc=True).execute()
-        
-        response_time = int((datetime.now() - start_time).total_seconds() * 1000)
-        client_ip = request.client.host if request else None
-        user_agent = request.headers.get('user-agent') if request else None
-        
-        log_api_usage(
-            api_key_record['id'],
-            '/api/v1/ports',
-            'GET',
-            200,
-            response_time,
-            client_ip,
-            user_agent
-        )
-        
-        return {
-            "success": True,
-            "data": result.data or [],
-            "count": len(result.data or []),
-            "limit": limit,
-            "offset": offset,
-        }
-    except Exception as e:
-        logger.error(f"Error fetching ports: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/companies")
-async def get_companies_api(
-    api_key_record: dict = Depends(verify_api_key),
-    request: Request = None,
-    limit: int = 100,
-    offset: int = 0,
-):
-    """Get list of companies (API endpoint)"""
-    start_time = datetime.now()
-    try:
-        if not supabase:
-            raise HTTPException(status_code=503, detail="Database connection unavailable")
-        
-        result = supabase.table('companies').select('*').range(offset, offset + limit - 1).order('created_at', desc=True).execute()
-        
-        response_time = int((datetime.now() - start_time).total_seconds() * 1000)
-        client_ip = request.client.host if request else None
-        user_agent = request.headers.get('user-agent') if request else None
-        
-        log_api_usage(
-            api_key_record['id'],
-            '/api/v1/companies',
-            'GET',
-            200,
-            response_time,
-            client_ip,
-            user_agent
-        )
-        
-        return {
-            "success": True,
-            "data": result.data or [],
-            "count": len(result.data or []),
-            "limit": limit,
-            "offset": offset,
-        }
-    except Exception as e:
-        logger.error(f"Error fetching companies: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# WEBHOOK DELIVERY SYSTEM
-# ============================================================================
-
-async def deliver_webhook(webhook_id: str, event_type: str, payload: dict):
-    """Deliver a webhook to a configured endpoint"""
-    try:
-        if not supabase:
-            logger.error("Supabase not available for webhook delivery")
-            return
-        
-        # Get webhook configuration
-        result = supabase.table('webhooks').select('*').eq('id', webhook_id).eq('is_active', True).single().execute()
-        
-        if not result.data:
-            logger.warning(f"Webhook {webhook_id} not found or inactive")
-            return
-        
-        webhook = result.data
-        
-        # Check if webhook listens to this event
-        events = webhook.get('events', [])
-        if event_type not in events:
-            logger.debug(f"Webhook {webhook_id} does not listen to event {event_type}")
-            return
-        
-        # Prepare webhook payload
-        webhook_payload = {
-            "event": event_type,
-            "timestamp": datetime.now().isoformat(),
-            "data": payload,
-        }
-        
-        # Add HMAC signature if secret is configured
-        headers = webhook.get('headers', {}) or {}
-        if webhook.get('secret'):
-            import hmac
-            import base64
-            secret = webhook['secret']
-            signature = hmac.new(
-                secret.encode(),
-                json.dumps(webhook_payload).encode(),
-                hashlib.sha256
-            ).digest()
-            headers['X-Webhook-Signature'] = base64.b64encode(signature).decode()
-        
-        headers['Content-Type'] = 'application/json'
-        
-        # Create delivery log entry
-        delivery_id = str(uuid.uuid4())
-        supabase.table('webhook_deliveries').insert({
-            'id': delivery_id,
-            'webhook_id': webhook_id,
-            'event_type': event_type,
-            'payload': webhook_payload,
-            'status': 'pending',
-            'attempt_number': 1,
-        }).execute()
-        
-        # Attempt delivery
-        timeout = webhook.get('timeout_seconds', 30)
-        retry_count = webhook.get('retry_count', 3)
-        
-        for attempt in range(1, retry_count + 1):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        webhook['url'],
-                        json=webhook_payload,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=timeout)
-                    ) as response:
-                        status_code = response.status
-                        response_text = await response.text()
-                        
-                        # Update delivery log
-                        supabase.table('webhook_deliveries').update({
-                            'status': 'success' if 200 <= status_code < 300 else 'failed',
-                            'status_code': status_code,
-                            'response_body': response_text[:1000],  # Limit response body size
-                            'delivered_at': datetime.now().isoformat(),
-                            'attempt_number': attempt,
-                        }).eq('id', delivery_id).execute()
-                        
-                        if 200 <= status_code < 300:
-                            logger.info(f"Webhook {webhook_id} delivered successfully (attempt {attempt})")
-                            return
-                        else:
-                            logger.warning(f"Webhook {webhook_id} returned status {status_code} (attempt {attempt})")
-                            
-            except asyncio.TimeoutError:
-                error_msg = f"Timeout after {timeout}s"
-                logger.warning(f"Webhook {webhook_id} timeout (attempt {attempt})")
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Webhook {webhook_id} delivery error (attempt {attempt}): {e}")
-            
-            # Update delivery log with error
-            supabase.table('webhook_deliveries').update({
-                'status': 'retrying' if attempt < retry_count else 'failed',
-                'error_message': error_msg,
-                'attempt_number': attempt,
-            }).eq('id', delivery_id).execute()
-            
-            # Wait before retry (exponential backoff)
-            if attempt < retry_count:
-                await asyncio.sleep(2 ** attempt)
-        
-        logger.error(f"Webhook {webhook_id} failed after {retry_count} attempts")
-        
-    except Exception as e:
-        logger.error(f"Error delivering webhook {webhook_id}: {e}")
-
-async def trigger_webhook_event(event_type: str, payload: dict):
-    """Trigger webhook delivery for all active webhooks listening to this event"""
-    try:
-        if not supabase:
-            return
-        
-        # Get all active webhooks
-        result = supabase.table('webhooks').select('id').eq('is_active', True).execute()
-        
-        if not result.data:
-            return
-        
-        # Deliver to all matching webhooks
-        tasks = []
-        for webhook in result.data:
-            tasks.append(deliver_webhook(webhook['id'], event_type, payload))
-        
-        # Deliver asynchronously (don't wait)
-        if tasks:
-            asyncio.create_task(asyncio.gather(*tasks, return_exceptions=True))
-    
-    except Exception as e:
-        logger.error(f"Error triggering webhook event {event_type}: {e}")
 
 # ============================================================================
 # STARTUP
