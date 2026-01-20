@@ -10,9 +10,12 @@ import uuid
 import tempfile
 import logging
 import csv
+import zipfile
+import io
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body
+from urllib.parse import quote
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +23,19 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from docx import Document
 import re
+
+# Try to import optional dependencies
+try:
+    import fitz  # PyMuPDF
+    FITZ_AVAILABLE = True
+except ImportError:
+    FITZ_AVAILABLE = False
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 
 # ============================================================================
 # CONFIGURATION
@@ -116,6 +132,24 @@ except Exception as e:
     supabase = None
 
 SUPABASE_ENABLED = supabase is not None
+
+# OpenAI Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_ENABLED = OPENAI_AVAILABLE and bool(OPENAI_API_KEY)
+openai_client = None
+
+if OPENAI_ENABLED:
+    try:
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        logger.info("OpenAI client initialized successfully")
+    except Exception as e:
+        logger.warning(f"Failed to initialize OpenAI client: {e}")
+        openai_client = None
+else:
+    if not OPENAI_AVAILABLE:
+        logger.warning("OpenAI library not installed. AI-powered random data generation will be disabled.")
+    elif not OPENAI_API_KEY:
+        logger.warning("OpenAI API key not configured. AI-powered random data generation will be disabled.")
 
 
 def encode_bytea(data: bytes) -> str:
@@ -4017,6 +4051,62 @@ def convert_docx_to_pdf(docx_path: str) -> str:
         logger.warning(f"PDF conversion failed: {e}, returning DOCX")
         return docx_path
 
+
+def convert_pdf_to_images_zip(pdf_path: str, base_filename: str) -> bytes:
+    """Convert PDF pages to images and create a zip file containing all images
+    
+    Args:
+        pdf_path: Path to the PDF file
+        base_filename: Base name for the images (without extension)
+        
+    Returns:
+        bytes: ZIP file content containing all PDF pages as PNG images
+    """
+    if not FITZ_AVAILABLE:
+        raise HTTPException(status_code=500, detail="PyMuPDF (fitz) is not available. Cannot convert PDF to images.")
+    
+    try:
+        # Open PDF
+        pdf_document = fitz.open(pdf_path)
+        total_pages = len(pdf_document)
+        logger.info(f"Converting PDF to images: {total_pages} pages")
+        
+        # Create zip file in memory
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Convert each page to image
+            for page_num in range(total_pages):
+                page = pdf_document[page_num]
+                
+                # Render page to image (pixmap) at 2x resolution for better quality
+                # 300 DPI equivalent (72 * 4.167)
+                mat = fitz.Matrix(2.0, 2.0)
+                pix = page.get_pixmap(matrix=mat)
+                
+                # Convert pixmap to PNG bytes
+                img_bytes = pix.tobytes("png")
+                
+                # Add to zip with page number in filename
+                image_filename = f"{base_filename}_page_{page_num + 1:03d}.png"
+                zip_file.writestr(image_filename, img_bytes)
+                logger.debug(f"Added page {page_num + 1} to zip: {image_filename}")
+        
+        pdf_document.close()
+        
+        # Get zip file content
+        zip_buffer.seek(0)
+        zip_content = zip_buffer.read()
+        zip_buffer.close()
+        
+        logger.info(f"Successfully created zip file with {total_pages} images ({len(zip_content)} bytes)")
+        return zip_content
+        
+    except Exception as e:
+        logger.error(f"Error converting PDF to images: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to convert PDF to images: {str(e)}")
+
+
 @app.options("/generate-document")
 async def options_generate_document(request: Request):
     """Handle CORS preflight for generate-document endpoint"""
@@ -4502,13 +4592,27 @@ async def generate_document(request: Request):
         if not template_display_name:
             template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
         
-        # Read file content
-        if pdf_path.endswith('.pdf'):
-            with open(pdf_path, 'rb') as f:
-                file_content = f.read()
-            media_type = "application/pdf"
-            filename = f"{template_display_name}_{vessel_imo}.pdf"
+        # Convert PDF to images and create zip file (users download images, not PDF)
+        if pdf_path.endswith('.pdf') and os.path.exists(pdf_path):
+            base_filename = f"{template_display_name}_{vessel_imo}"
+            logger.info(f"Converting PDF to images ZIP for download: {base_filename}")
+            
+            try:
+                # Convert PDF pages to images and create zip
+                zip_content = convert_pdf_to_images_zip(pdf_path, base_filename)
+                file_content = zip_content
+                media_type = "application/zip"
+                filename = f"{template_display_name}_{vessel_imo}_images.zip"
+                logger.info(f"Successfully created ZIP file with images: {filename} ({len(zip_content)} bytes)")
+            except Exception as zip_error:
+                logger.error(f"Failed to convert PDF to images zip: {zip_error}", exc_info=True)
+                # Raise error - user should get images only
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Failed to convert PDF to images: {str(zip_error)}. Please try again."
+                )
         else:
+            # If no PDF, return DOCX
             with open(processed_docx, 'rb') as f:
                 file_content = f.read()
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -4538,7 +4642,7 @@ async def generate_document(request: Request):
                         'user_id': user_id,
                         'template_id': template_id,
                         'vessel_imo': vessel_imo,
-                        'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
+                        'download_type': 'zip' if pdf_path.endswith('.pdf') else 'docx',
                         'file_size': len(file_content)
                     }
                     supabase.table('user_document_downloads').insert(download_record).execute()
@@ -4557,11 +4661,20 @@ async def generate_document(request: Request):
         except Exception as cleanup_error:
             logger.debug(f"Cleanup warning: {cleanup_error}")
 
-        # Return file
+        # Return file with properly encoded filename
+        encoded_filename = quote(filename.encode('utf-8'))
+        content_disposition = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
+        
+        headers = {
+            "Content-Disposition": content_disposition,
+            "Content-Type": media_type,
+            "X-Content-Type-Options": "nosniff"
+        }
+        
         return Response(
             content=file_content,
             media_type=media_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers=headers
         )
     except HTTPException:
         raise
