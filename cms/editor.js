@@ -15,7 +15,10 @@ class TemplateEditor {
             apiBase = 'http://localhost:8000';
         } 
         // Production domains
-        else if (hostname === 'control.petrodealhub.com' || hostname === 'petrodealhub.com' || hostname === 'www.petrodealhub.com') {
+        else if (hostname === 'control.petrodealhub.com') {
+            // Use same origin (document-processor API) instead of main API
+            apiBase = 'https://control.petrodealhub.com';
+        } else if (hostname === 'petrodealhub.com' || hostname === 'www.petrodealhub.com') {
             apiBase = 'https://petrodealhub.com/api';
         } 
         // If CMS is served from /cms/, API should be at root
