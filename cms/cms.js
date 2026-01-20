@@ -10,7 +10,8 @@ class DocumentCMS {
         } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
             apiBase = 'http://localhost:8000';
         } else if (hostname === 'control.petrodealhub.com') {
-            apiBase = 'https://petrodealhub.com/api';
+            // Use same origin (document-processor API) instead of main API
+            apiBase = 'https://control.petrodealhub.com';
         } else if (origin && origin.startsWith('http')) {
             apiBase = `${origin.replace(/\/$/, '')}/api`;
         }
