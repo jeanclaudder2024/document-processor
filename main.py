@@ -2331,11 +2331,11 @@ async def delete_template(
 
 @app.get("/placeholder-settings")
 async def get_placeholder_settings(
+    request: Request,
     template_name: Optional[str] = None,
-    template_id: Optional[str] = None,
-    current_user: str = Depends(get_current_user)
+    template_id: Optional[str] = None
 ):
-    """Get placeholder settings (all or per-template)"""
+    """Get placeholder settings (all or per-template) - allows unauthenticated access for CMS editor"""
     try:
         if SUPABASE_ENABLED and (template_name or template_id):
             template_record = None
