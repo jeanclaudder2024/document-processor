@@ -2334,6 +2334,7 @@ async def delete_template(
 # ============================================================================
 
 @app.get("/placeholder-settings")
+@app.get("/cmsplaceholder-settings")  # Alias for nginx rewrite compatibility
 async def get_placeholder_settings(
     request: Request,
     template_name: Optional[str] = None,
@@ -2406,6 +2407,7 @@ async def get_placeholder_settings(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/placeholder-settings")
+@app.post("/cmsplaceholder-settings")  # Alias for nginx rewrite compatibility
 async def save_placeholder_settings(request: Request):
     """Save placeholder settings for a template"""
     # Allow unauthenticated access for CMS editor
