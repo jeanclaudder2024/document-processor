@@ -774,22 +774,21 @@ async def auth_login(request: Request):
         users_data['sessions'][token] = username
         write_json_atomic(USERS_PATH, users_data)
 
-        # Set HttpOnly cookie with SameSite=None and Secure for cross-origin,
-        # or Lax for same-site
+        # Set HttpOnly cookie - handle localhost/127.0.0.1 cross-origin issue
         response = Response(content=json.dumps(
             {"success": True, "user": username}), media_type="application/json")
-        # Use SameSite='None' and Secure=True if running on different ports,
-        # but check origin first
+        
         origin = request.headers.get('origin', '')
-        if origin and origin.startswith(
-            'http://127.0.0.1') or origin.startswith('http://localhost'):
-            # Same-site cookies work with Lax for same-origin requests
-            response.set_cookie(key='session', value=token,
-                                httponly=True, samesite='Lax', max_age=86400)
-        else:
-            # For true cross-origin, use None with Secure (requires HTTPS)
-            response.set_cookie(key='session', value=token,
-                                httponly=True, samesite='Lax', max_age=86400)
+        # Use Lax for same-site cookies (works when both use same hostname)
+        # For localhost development, both CMS and API should use localhost
+        response.set_cookie(
+            key='session', 
+            value=token,
+            httponly=True, 
+            samesite='Lax',  # Works for same-site requests
+            max_age=86400,
+            path='/'
+        )
         return response
     except HTTPException:
         raise
