@@ -179,6 +179,7 @@ def decode_bytea(value) -> Optional[bytes]:
 def resolve_template_record(template_name: str) -> Optional[Dict]:
     """Find a template row in Supabase by various name permutations"""
     if not SUPABASE_ENABLED:
+        logger.warning("Supabase not enabled, cannot resolve template record")
         return None
 
     # Allow direct lookup by UUID string
@@ -189,16 +190,20 @@ def resolve_template_record(template_name: str) -> Optional[Dict]:
 
     if template_uuid:
         try:
+            logger.debug(f"Attempting UUID lookup for template: {template_uuid}")
             response = supabase.table('document_templates') \
                 .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at, font_family, font_size') \
                 .eq('id', str(template_uuid)) \
                 .limit(1) \
                 .execute()
-            if response.data:
+            if response.data and len(response.data) > 0:
+                logger.debug(f"✅ Found template by UUID: {template_uuid} -> {response.data[0].get('file_name')}")
                 return response.data[0]
+            else:
+                logger.warning(f"⚠️ No template found in database with UUID: {template_uuid}")
         except Exception as exc:
             logger.error(
-                f"Failed to resolve template by ID '{template_name}': {exc}")
+                f"❌ Failed to resolve template by ID '{template_name}': {exc}", exc_info=True)
 
     name_with_ext = template_name if template_name.endswith(
         '.docx') else f"{template_name}.docx"
@@ -2338,13 +2343,30 @@ async def get_placeholder_settings(
     try:
         if SUPABASE_ENABLED and (template_name or template_id):
             template_record = None
+            search_identifier = template_id or template_name
+            logger.info(f"🔍 Looking up placeholder settings for template_id={template_id}, template_name={template_name}")
+            
             if template_id:
                 template_record = resolve_template_record(template_id)
+                if template_record:
+                    logger.info(f"✅ Found template by ID: {template_id} -> {template_record.get('file_name')}")
+                else:
+                    logger.warning(f"⚠️ Template not found by ID: {template_id}")
+            
             if not template_record and template_name:
                 template_record = resolve_template_record(template_name)
+                if template_record:
+                    logger.info(f"✅ Found template by name: {template_name} -> {template_record.get('file_name')}")
+                else:
+                    logger.warning(f"⚠️ Template not found by name: {template_name}")
+            
             if not template_record:
-                raise HTTPException(status_code=404, detail="Template not found")
+                error_msg = f"Template not found: template_id={template_id}, template_name={template_name}"
+                logger.error(f"❌ {error_msg}")
+                raise HTTPException(status_code=404, detail=error_msg)
+            
             settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
+            logger.info(f"✅ Loaded {len(settings)} placeholder settings for template {template_record.get('file_name')}")
             return {
                 "template": template_record.get('file_name') or template_name,
                 "settings": settings,
