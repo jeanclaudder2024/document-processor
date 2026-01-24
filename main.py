@@ -4201,7 +4201,13 @@ async def options_generate_document(request: Request):
     """Handle CORS preflight for generate-document endpoint"""
     return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
+@app.options("/api/generate-document")
+async def options_api_generate_document(request: Request):
+    """CORS preflight when Nginx forwards /api prefix (no trailing slash in proxy_pass)"""
+    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
+
 @app.post("/generate-document")
+@app.post("/api/generate-document")
 async def generate_document(request: Request):
     """Generate a document from template"""
     template_temp_path: Optional[str] = None
