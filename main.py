@@ -3669,51 +3669,117 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     return (None, None)
 
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
-    """Generate realistic random data for placeholders"""
+    """Generate realistic random data for placeholders (maritime/oil shipping context)."""
     import random
     import hashlib
-    
-    # Create unique seed for consistent data
+
     if vessel_imo:
         seed_input = f"{vessel_imo}_{placeholder.lower()}"
         random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
-    
-    placeholder_lower = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
-    
-    # Simple fallback data generation
-    if 'date' in placeholder_lower:
+
+    pl = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
+
+    # Dates
+    if 'date' in pl:
         from datetime import timedelta
-        return (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
-    elif 'result' in placeholder_lower:
-        # Generate varied results
-        results = ['0.01%', '0.15%', '0.23%', '0.45%', '0.67%', '1.20%', '2.34%', '0.89%', '0.12%']
-        return random.choice(results)
-    elif 'email' in placeholder_lower:
-        return f"test{random.randint(100,999)}@example.com"
-    elif 'phone' in placeholder_lower or 'tel' in placeholder_lower:
-        return f"+{random.randint(1,99)} {random.randint(100,999)} {random.randint(100000,999999)}"
-    elif 'name' in placeholder_lower:
-        return f"Test Company {random.randint(1,100)}"
-    elif 'ref' in placeholder_lower or 'number' in placeholder_lower:
+        d = random.randint(1, 60)
+        return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
+    if 'result' in pl:
+        return random.choice(['0.01%', '0.15%', '0.23%', '0.45%', '0.67%', '1.20%', '2.34%', '0.89%', '0.12%'])
+
+    # Contact
+    if 'email' in pl:
+        domains = ['maritimetrading.com', 'oceanfreight.co', 'petrodealhub.com', 'globaltankers.com', 'harborlogistics.com']
+        return f"contact{random.randint(1,999)}@{random.choice(domains)}"
+    if 'phone' in pl or 'tel' in pl:
+        return f"+{random.choice([1,44,31,49,33,971,65])} {random.randint(100,999)} {random.randint(100000,999999)}"
+
+    # References
+    if 'ref' in pl or ('number' in pl and 'phone' not in pl):
         return f"REF-{random.randint(100000,999999)}"
-    else:
-        # Generate more realistic data based on placeholder name
-        if 'company' in placeholder_lower or 'firm' in placeholder_lower:
-            companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'Marine Services Group', 'International Vessel Corp']
-            return random.choice(companies)
-        elif 'address' in placeholder_lower:
-            addresses = ['123 Maritime Street, London, UK', '456 Harbor Road, Singapore', '789 Port Avenue, Dubai, UAE', '321 Dock Lane, Rotterdam, NL']
-            return random.choice(addresses)
-        elif 'person' in placeholder_lower or 'contact' in placeholder_lower:
-            names = ['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown']
-            return random.choice(names)
-        elif 'value' in placeholder_lower or 'amount' in placeholder_lower or 'price' in placeholder_lower:
-            return f"${random.randint(1000, 999999):,}"
-        elif 'percent' in placeholder_lower or 'percentage' in placeholder_lower:
-            return f"{random.uniform(0.1, 99.9):.2f}%"
-        else:
-            # Generate a more realistic generic value
-            return f"Value-{random.randint(1000, 9999)}"
+
+    # Maritime/oil – companies, ports, products, persons
+    if 'company' in pl or 'firm' in pl or 'seller' in pl or 'buyer' in pl:
+        companies = [
+            'Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services',
+            'International Vessel Corp', 'Gulf Energy Trading', 'Nordic Tanker Co', 'Pacific Petrochemicals',
+            'Harbor Logistics AG', 'Blue Ocean Freight Ltd', 'Saudi Aramco Trading', 'Shell Maritime'
+        ]
+        return random.choice(companies)
+    if 'address' in pl:
+        addrs = [
+            '123 Maritime Street, London, UK', '456 Harbor Road, Singapore', '789 Port Avenue, Dubai, UAE',
+            '321 Dock Lane, Rotterdam, NL', '55 Raffles Place, Singapore 048619', 'Level 12, One Raffles Quay, Singapore'
+        ]
+        return random.choice(addrs)
+    if 'port' in pl or 'harbor' in pl or 'loading' in pl or 'discharge' in pl:
+        ports = ['Rotterdam', 'Singapore', 'Fujairah', 'Houston', 'Antwerp', 'Hamburg', 'Ras Tanura', 'Yanbu', 'Jebel Ali', 'Southampton']
+        return random.choice(ports)
+    if 'product' in pl or 'cargo' in pl or 'oil' in pl or 'grade' in pl:
+        products = ['Crude Oil', 'Diesel', 'Jet A-1', 'Fuel Oil 380', 'Gasoline', 'LNG', 'LPG', 'Brent Blend', 'Murban Crude']
+        return random.choice(products)
+    if 'person' in pl or 'contact' in pl or 'name' in pl:
+        names = ['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown', 'James Wilson', 'Elena Petrova']
+        return random.choice(names)
+
+    # Numbers
+    if 'value' in pl or 'amount' in pl or 'price' in pl:
+        return f"${random.randint(1000, 999999):,}"
+    if 'percent' in pl or 'percentage' in pl:
+        return f"{random.uniform(0.1, 99.9):.2f}%"
+    if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl:
+        return f"{random.randint(1000, 50000):,} MT"
+
+    return f"Value-{random.randint(1000, 9999)}"
+
+
+def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
+    """Try to resolve placeholder from configured CSV. Returns value or None."""
+    if not setting:
+        return None
+    csv_id = (setting.get('csvId') or '').strip()
+    csv_field = (setting.get('csvField') or '').strip()
+    if not csv_id or not csv_field:
+        return None
+    try:
+        row_idx = int(setting.get('csvRow') or 0)
+        data = get_csv_data(csv_id, row_idx)
+        if not data:
+            return None
+        if csv_field in data:
+            v = data[csv_field]
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        for k, v in data.items():
+            if k.lower() == csv_field.lower() and v is not None and str(v).strip():
+                return str(v).strip()
+    except Exception:
+        pass
+    return None
+
+
+def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str = None) -> str:
+    """AI-generated realistic data (OpenAI when available), else improved random. Maritime/oil context."""
+    if OPENAI_ENABLED and openai_client:
+        try:
+            imo = (vessel or {}).get('imo') or vessel_imo or 'N/A'
+            prompt = (
+                f"Generate a single realistic value for the placeholder '{placeholder}' "
+                f"in maritime/oil shipping. Vessel IMO: {imo}. "
+                f"Return ONLY the value, no quotes, no explanation, no extra text."
+            )
+            r = openai_client.chat.completions.create(
+                model='gpt-4o-mini',
+                messages=[{'role': 'user', 'content': prompt}],
+                max_tokens=80,
+                temperature=0.7,
+            )
+            text = (r.choices[0].message.content or '').strip().strip('"\'')
+            if text:
+                return text[:500]
+        except Exception as e:
+            logger.warning(f"OpenAI fallback for '{placeholder}': {e}")
+    return generate_realistic_random_data(placeholder, vessel_imo)
 
 def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     """
@@ -4648,29 +4714,27 @@ async def generate_document(request: Request):
                     logger.warning(f"   Will use random data as fallback")
 
             if not found:
-                # Try intelligent matching even if not configured in CMS
-                # This helps match common vessel fields automatically
-                logger.info(f"  🔍 {placeholder}: Not found in configured sources, trying intelligent database matching...")
+                # Professional default cascade: Database → CSV → AI (realistic)
+                logger.info(f"  🔍 {placeholder}: Cascade DB → CSV → AI (realistic)")
+                # 1. Database (intelligent vessel match)
                 intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
-                
                 if intelligent_field and intelligent_value:
                     data_mapping[placeholder] = intelligent_value
                     found = True
-                    logger.info(f"  ✅✅✅ AUTO-MATCHED: {placeholder} = '{intelligent_value}' (from vessel field '{intelligent_field}')")
-                    logger.info(f"  💡 TIP: Configure this in CMS for more control over data source")
-                else:
-                    # Fall back to random data
-                    if setting:
-                        random_option = setting.get('randomOption', 'auto')
-                        source = setting.get('source', 'random')
-                        logger.warning(f"  ⚠⚠⚠ {placeholder}: Using RANDOM data (source in CMS: '{source}', found: {found})")
-                    else:
-                        random_option = 'auto'
-                        logger.warning(f"  ⚠⚠⚠ {placeholder}: Not configured in CMS and no intelligent match found, using random data")
-
-                    seed_imo = None if random_option == 'fixed' else vessel_imo
-                    data_mapping[placeholder] = generate_realistic_random_data(placeholder, seed_imo)
-                    logger.info(f"  {placeholder} -> '{data_mapping[placeholder]}' (RANDOM data, mode: {random_option}, vessel IMO: {vessel_imo})")
+                    logger.info(f"  ✅ AUTO-MATCHED (DB): {placeholder} = '{intelligent_value}' (from '{intelligent_field}')")
+                if not found:
+                    # 2. CSV (from CMS config)
+                    csv_val = _try_csv_for_placeholder(setting)
+                    if csv_val:
+                        data_mapping[placeholder] = csv_val
+                        found = True
+                        logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
+                if not found:
+                    # 3. AI realistic (OpenAI when available, else improved random)
+                    ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
+                    data_mapping[placeholder] = ai_val
+                    found = True
+                    logger.info(f"  ✅ AI/random: {placeholder} = '{ai_val}'")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
