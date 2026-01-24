@@ -4196,6 +4196,35 @@ def convert_pdf_to_images_zip(pdf_path: str, base_filename: str) -> bytes:
         raise HTTPException(status_code=500, detail=f"Failed to convert PDF to images: {str(e)}")
 
 
+def convert_pdf_to_images_then_to_pdf(pdf_path: str) -> bytes:
+    """Convert PDF → images → new PDF (image-based). Each page becomes an image in the output PDF.
+    Returns PDF bytes (application/pdf) for download.
+    """
+    if not FITZ_AVAILABLE:
+        raise HTTPException(status_code=500, detail="PyMuPDF (fitz) is not available. Cannot convert PDF.")
+    try:
+        src = fitz.open(pdf_path)
+        total = len(src)
+        logger.info(f"Converting PDF to images then to PDF: {total} pages")
+        out = fitz.open()
+        for i in range(total):
+            page = src[i]
+            mat = fitz.Matrix(2.0, 2.0)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            w, h = pix.width, pix.height
+            r = fitz.Rect(0, 0, w, h)
+            new_page = out.new_page(-1, width=w, height=h)
+            new_page.insert_image(r, pixmap=pix)
+        src.close()
+        pdf_bytes = out.write(deflate=False)
+        out.close()
+        logger.info(f"Created image-based PDF: {len(pdf_bytes)} bytes ({total} pages)")
+        return pdf_bytes
+    except Exception as e:
+        logger.error(f"Error converting PDF to images then to PDF: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to convert PDF: {str(e)}")
+
+
 @app.options("/generate-document")
 async def options_generate_document(request: Request):
     """Handle CORS preflight for generate-document endpoint"""
@@ -4687,24 +4716,22 @@ async def generate_document(request: Request):
         if not template_display_name:
             template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
         
-        # Convert PDF to images and create zip file (users download images, not PDF)
+        # Flow: Template → PDF → images → new PDF (image-based) → download PDF
         if pdf_path.endswith('.pdf') and os.path.exists(pdf_path):
             base_filename = f"{template_display_name}_{vessel_imo}"
-            logger.info(f"Converting PDF to images ZIP for download: {base_filename}")
-            
+            logger.info(f"Converting PDF to images then to PDF for download: {base_filename}")
             try:
-                # Convert PDF pages to images and create zip
-                zip_content = convert_pdf_to_images_zip(pdf_path, base_filename)
-                file_content = zip_content
-                media_type = "application/zip"
-                filename = f"{template_display_name}_{vessel_imo}_images.zip"
-                logger.info(f"Successfully created ZIP file with images: {filename} ({len(zip_content)} bytes)")
-            except Exception as zip_error:
-                logger.error(f"Failed to convert PDF to images zip: {zip_error}", exc_info=True)
-                # Raise error - user should get images only
+                file_content = convert_pdf_to_images_then_to_pdf(pdf_path)
+                media_type = "application/pdf"
+                filename = f"{template_display_name}_{vessel_imo}.pdf"
+                logger.info(f"Successfully created image-based PDF: {filename} ({len(file_content)} bytes)")
+            except HTTPException:
+                raise
+            except Exception as conv_error:
+                logger.error(f"Failed to convert PDF to images then PDF: {conv_error}", exc_info=True)
                 raise HTTPException(
-                    status_code=500, 
-                    detail=f"Failed to convert PDF to images: {str(zip_error)}. Please try again."
+                    status_code=500,
+                    detail=f"Failed to convert PDF: {str(conv_error)}. Please try again."
                 )
         else:
             # If no PDF, return DOCX
@@ -4737,7 +4764,7 @@ async def generate_document(request: Request):
                         'user_id': user_id,
                         'template_id': template_id,
                         'vessel_imo': vessel_imo,
-                        'download_type': 'zip' if pdf_path.endswith('.pdf') else 'docx',
+                        'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
                         'file_size': len(file_content)
                     }
                     supabase.table('user_document_downloads').insert(download_record).execute()
