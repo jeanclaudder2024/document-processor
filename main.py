@@ -780,21 +780,23 @@ async def auth_login(request: Request):
         users_data['sessions'][token] = username
         write_json_atomic(USERS_PATH, users_data)
 
-        # Set HttpOnly cookie - handle localhost/127.0.0.1 cross-origin issue
+        # Set HttpOnly cookie - handle localhost vs cross-origin (petrodealhub.com -> control)
         response = Response(content=json.dumps(
             {"success": True, "user": username}), media_type="application/json")
-        
-        origin = request.headers.get('origin', '')
-        # Use Lax for same-site cookies (works when both use same hostname)
-        # For localhost development, both CMS and API should use localhost
-        response.set_cookie(
-            key='session', 
-            value=token,
-            httponly=True, 
-            samesite='Lax',  # Works for same-site requests
-            max_age=86400,
-            path='/'
+        origin = (request.headers.get('origin') or '').strip().lower()
+        # Cross-origin: petrodealhub.com -> control. SameSite=Lax blocks cookies on DELETE.
+        # Use None + Secure so cross-origin DELETE (doc CMS) sends session.
+        use_cross_site = origin in (
+            'https://petrodealhub.com', 'https://www.petrodealhub.com',
+            'https://control.petrodealhub.com',
         )
+        kwargs = dict(key='session', value=token, httponly=True, max_age=86400, path='/')
+        if use_cross_site:
+            kwargs['samesite'] = 'none'
+            kwargs['secure'] = True
+        else:
+            kwargs['samesite'] = 'lax'
+        response.set_cookie(**kwargs)
         return response
     except HTTPException:
         raise
@@ -2392,6 +2394,25 @@ async def delete_template(
     except Exception as e:
         logger.error(f"Error deleting template: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.options("/api/templates/{template_name}")
+async def options_delete_template_api(request: Request, template_name: str):
+    """CORS preflight for DELETE /api/templates/{template_name} (VPS Nginx /api prefix)."""
+    return Response(
+        status_code=204,
+        headers=_cors_preflight_headers(request, "DELETE, OPTIONS"),
+    )
+
+
+@app.delete("/api/templates/{template_name}")
+async def delete_template_api(
+    template_name: str,
+    current_user: str = Depends(get_current_user),
+):
+    """Delete template (same as /templates/{name}) for Nginx /api-prefixed requests."""
+    return await delete_template(template_name, current_user)
+
 
 # ============================================================================
 # STEP 5: PLACEHOLDER SETTINGS API (JSON-backed)
