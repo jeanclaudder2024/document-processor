@@ -9,6 +9,7 @@ import hashlib
 import uuid
 import tempfile
 import logging
+import traceback
 import csv
 import zipfile
 import io
@@ -836,6 +837,44 @@ async def auth_me(request: Request):
 
     return {"success": True, "user": username}
 
+
+def _cors_preflight_headers_auth(request: Request, allowed_methods: str) -> Dict[str, str]:
+    """CORS headers for auth preflight (used before _cors_preflight_headers is defined)."""
+    origin = request.headers.get("origin", "")
+    h: Dict[str, str] = {
+        "Access-Control-Allow-Methods": allowed_methods,
+        "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "Content-Type, Authorization"),
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+    if origin and origin in ALLOWED_ORIGINS:
+        h["Access-Control-Allow-Origin"] = origin
+    elif ALLOWED_ORIGINS:
+        h["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
+    else:
+        h["Access-Control-Allow-Origin"] = "*"
+    return h
+
+
+@app.options("/auth/login")
+async def options_auth_login(request: Request):
+    """CORS preflight for /auth/login."""
+    return Response(status_code=204, headers=_cors_preflight_headers_auth(request, "POST, OPTIONS"))
+
+
+@app.options("/auth/logout")
+async def options_auth_logout(request: Request):
+    """CORS preflight for /auth/logout."""
+    return Response(status_code=204, headers=_cors_preflight_headers_auth(request, "POST, OPTIONS"))
+
+
+@app.options("/auth/me")
+async def options_auth_me(request: Request):
+    """CORS preflight for /auth/me."""
+    return Response(status_code=204, headers=_cors_preflight_headers_auth(request, "GET, POST, OPTIONS"))
+
+
 # ============================================================================
 # BASIC HEALTH & ROOT ENDPOINTS
 # ============================================================================
@@ -1481,13 +1520,32 @@ async def get_templates(request: Request):
                 continue
 
             file_path = os.path.join(TEMPLATES_DIR, file_name)
+            
+            # Check if file exists before processing
+            if not os.path.exists(file_path):
+                logger.warning(f"Template file not found, skipping: {file_path}")
+                continue
+            
             try:
                 file_size = os.path.getsize(file_path)
             except OSError:
-                file_size = 0
-            created_at = datetime.fromtimestamp(
-                os.path.getctime(file_path)).isoformat()
-            placeholders = extract_placeholders_from_docx(file_path)
+                logger.warning(f"Could not get file size for {file_path}, skipping")
+                continue
+                
+            try:
+                created_at = datetime.fromtimestamp(
+                    os.path.getctime(file_path)).isoformat()
+            except OSError:
+                logger.warning(f"Could not get creation time for {file_path}, using current time")
+                created_at = datetime.now().isoformat()
+                
+            try:
+                placeholders = extract_placeholders_from_docx(file_path)
+            except Exception as ph_exc:
+                logger.error(f"Failed to extract placeholders from {file_path}: {ph_exc}")
+                # Continue with empty placeholders rather than failing completely
+                placeholders = []
+                
             metadata_entry = metadata_map.get(file_name, {})
 
             template_id = hashlib.md5(file_name.encode()).hexdigest()[:12]
@@ -1514,9 +1572,15 @@ async def get_templates(request: Request):
             templates_by_key[file_name] = template_payload
 
         return {"templates": templates}
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         logger.error(f"Error listing templates: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        logger.error(traceback.format_exc())
+        # Return empty list instead of crashing - allows UI to still function
+        return {"templates": [], "error": str(e), "warning": "Some templates could not be loaded"}
 
 
 @app.get("/plans-db")
@@ -2903,16 +2967,18 @@ async def get_user_downloadable_templates(request: Request):
         if templates_res.data:
             # Enhance with template details
             template_ids = [t['template_id'] for t in templates_res.data]
+            if not template_ids:
+                return {"success": True, "templates": [], "source": "database"}
+
             details_res = supabase.table('document_templates').select('id, title, description, file_name, placeholders, font_family, font_size').in_('id', template_ids).execute()
-            
             details_map = {d['id']: d for d in (details_res.data or [])}
-            
-            # Get user's plan info
+
+            # Get user's plan info (subscribers.subscription_tier)
             user_plan_info = None
             try:
-                user_res = supabase.table('subscribers').select('subscription_plan, plan_tier').eq('user_id', user_id).limit(1).execute()
+                user_res = supabase.table('subscribers').select('subscription_tier').eq('user_id', user_id).limit(1).execute()
                 if user_res.data and user_res.data[0]:
-                    plan_tier = user_res.data[0].get('plan_tier') or user_res.data[0].get('subscription_plan')
+                    plan_tier = user_res.data[0].get('subscription_tier')
                     if plan_tier:
                         plan_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('plan_tier', plan_tier).limit(1).execute()
                         if plan_res.data:
@@ -3012,8 +3078,8 @@ async def get_user_downloadable_templates(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting user downloadable templates: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error getting user downloadable templates: %s\n%s", e, traceback.format_exc())
+        return {"success": True, "templates": [], "source": "database"}
 
 # ============================================================================
 # CSV DATA ENDPOINTS
@@ -4702,8 +4768,8 @@ async def generate_document(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error generating document: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error generating document: %s\n%s", e, traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Document generation failed")
     finally:
         if template_temp_path and os.path.exists(template_temp_path):
             try:
