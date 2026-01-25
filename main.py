@@ -1818,12 +1818,11 @@ async def update_template_metadata(
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="font_size must be an integer")
         
-        plan_ids = payload.get('plan_ids', [])  # Array of plan IDs or plan_tiers
-        if not isinstance(plan_ids, list):
-            plan_ids = []
+        # Only touch plan permissions when explicitly sent (Plans tab). Metadata-only save must not wipe them.
+        plan_ids_raw = payload.get('plan_ids') if 'plan_ids' in payload else None
+        plan_ids = plan_ids_raw if isinstance(plan_ids_raw, list) else []
         
         # Convert plan_tiers to plan_ids (UUIDs) if needed
-        # The CMS may send plan_tier values (basic, professional, etc.) instead of UUIDs
         resolved_plan_ids = []
         if plan_ids and SUPABASE_ENABLED:
             for plan_identifier in plan_ids:
@@ -1888,16 +1887,13 @@ async def update_template_metadata(
                         import traceback
                         logger.error(traceback.format_exc())
                 
-                # Update plan assignments
-                if plan_ids is not None:
+                # Update plan assignments only when plan_ids was explicitly sent
+                if 'plan_ids' in payload:
                     try:
-                        # Delete existing permissions
                         supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
-                        
-                        # Insert new permissions
-                        if plan_ids:
+                        if resolved_plan_ids:
                             permission_rows = []
-                            for plan_id in plan_ids:
+                            for plan_id in resolved_plan_ids:
                                 if plan_id:  # Only add non-empty plan IDs
                                     permission_rows.append({
                                         'plan_id': str(plan_id),
@@ -2524,7 +2520,7 @@ async def save_placeholder_settings(request: Request):
                 if not placeholder:
                     continue
                 sanitised_settings[placeholder] = {
-                    'source': cfg.get('source', 'random'),
+                    'source': cfg.get('source', 'database'),
                     'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
                     'databaseTable': str(cfg.get('databaseTable', '')).strip() if cfg.get('databaseTable') else '',
                     'databaseField': str(cfg.get('databaseField', '')).strip() if cfg.get('databaseField') else '',
