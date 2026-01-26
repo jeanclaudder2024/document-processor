@@ -16,8 +16,8 @@ class TemplateEditor {
         } 
         // Production domains
         else if (hostname === 'control.petrodealhub.com') {
-            // Use same origin (document-processor API) instead of main API
-            apiBase = 'https://control.petrodealhub.com';
+            // Use /api so Nginx proxies to backend; /database-tables, /csv-files, /plans-db etc. go through /api/
+            apiBase = 'https://control.petrodealhub.com/api';
         } else if (hostname === 'petrodealhub.com' || hostname === 'www.petrodealhub.com') {
             apiBase = 'https://petrodealhub.com/api';
         } 

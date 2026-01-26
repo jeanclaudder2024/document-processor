@@ -94,11 +94,11 @@ app.add_middleware(
     max_age=600,
 )
 
-# Directories
+# Directories (DATA_DIR overridable via env on VPS)
 BASE_DIR = os.getcwd()
 TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
 TEMP_DIR = os.path.join(BASE_DIR, 'temp')
-DATA_DIR = os.path.join(BASE_DIR, 'data')
+DATA_DIR = os.environ.get('DOCUMENT_PROCESSOR_DATA_DIR') or os.path.join(BASE_DIR, 'data')
 STORAGE_DIR = os.path.join(BASE_DIR, 'storage')
 CMS_DIR = os.path.join(BASE_DIR, 'cms')
 
@@ -106,6 +106,7 @@ os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(STORAGE_DIR, exist_ok=True)
+logger.info(f"DATA_DIR={DATA_DIR}")
 if os.path.isdir(CMS_DIR):
     app.mount("/cms", StaticFiles(directory=CMS_DIR, html=True), name="cms")
 
@@ -667,20 +668,23 @@ def dataset_id_to_filename(dataset_id: str) -> str:
 
 def list_csv_datasets() -> List[Dict[str, str]]:
     datasets: List[Dict[str, str]] = []
-    if not os.path.exists(DATA_DIR):
-        return datasets
-    metadata = load_data_sources_metadata()
-    for entry in os.listdir(DATA_DIR):
-        if not entry.lower().endswith('.csv'):
-            continue
-        dataset_id = entry[:-4]
-        file_path = os.path.join(DATA_DIR, entry)
-        datasets.append({
-            "id": dataset_id,
-            "filename": entry,
-            "path": file_path,
-            "display_name": metadata.get(dataset_id, {}).get('display_name')
-        })
+    try:
+        if not os.path.exists(DATA_DIR):
+            return datasets
+        metadata = load_data_sources_metadata()
+        for entry in os.listdir(DATA_DIR):
+            if not entry.lower().endswith('.csv'):
+                continue
+            dataset_id = entry[:-4]
+            file_path = os.path.join(DATA_DIR, entry)
+            datasets.append({
+                "id": dataset_id,
+                "filename": entry,
+                "path": file_path,
+                "display_name": metadata.get(dataset_id, {}).get('display_name')
+            })
+    except Exception as e:
+        logger.warning(f"list_csv_datasets error: {e}")
     return datasets
 
 
@@ -2410,6 +2414,42 @@ async def delete_template_api(
     return await delete_template(template_name, current_user)
 
 
+@app.get("/api/database-tables")
+async def get_database_tables_api(request: Request):
+    """CMS editor: /api/database-tables (Nginx forwards with /api prefix)."""
+    return await get_database_tables(request)
+
+
+@app.get("/api/database-tables/{table_name}/columns")
+async def get_database_table_columns_api(table_name: str, request: Request):
+    """CMS editor: /api/database-tables/{table_name}/columns."""
+    return await get_database_table_columns(table_name, request)
+
+
+@app.get("/api/csv-files")
+async def get_csv_files_api(request: Request):
+    """CMS editor: /api/csv-files."""
+    return await get_csv_files(request)
+
+
+@app.get("/api/csv-fields/{csv_id}")
+async def get_csv_fields_api(csv_id: str, request: Request):
+    """CMS editor: /api/csv-fields/{csv_id}."""
+    return await get_csv_fields(csv_id, request)
+
+
+@app.get("/api/plans-db")
+async def get_plans_db_api():
+    """CMS editor: /api/plans-db."""
+    return await get_plans_db()
+
+
+@app.get("/api/plans")
+async def get_plans_api():
+    """CMS editor fallback: /api/plans."""
+    return await get_plans()
+
+
 # ============================================================================
 # STEP 5: PLACEHOLDER SETTINGS API (JSON-backed)
 # ============================================================================
@@ -3177,10 +3217,21 @@ async def get_all_data(current_user: str = Depends(get_current_user)):
         logger.error(f"Error getting data sources: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def _resolve_csv_dataset(csv_id: str):
+    """Resolve csv_id to a dataset from list_csv_datasets (case-insensitive match). Use actual path."""
+    csv_id = (csv_id or "").strip()
+    if not csv_id:
+        return None
+    csv_lower = csv_id.lower()
+    for d in list_csv_datasets():
+        if d["id"].lower() == csv_lower and os.path.exists(d["path"]):
+            return d
+    return None
+
+
 @app.get("/csv-files")
 async def get_csv_files(request: Request):
     """Get list of available CSV files"""
-    # Allow unauthenticated access for CMS editor
     try:
         csv_files = []
         for dataset in list_csv_datasets():
@@ -3190,28 +3241,24 @@ async def get_csv_files(request: Request):
                     "filename": dataset["filename"],
                     "display_name": dataset.get("display_name") or dataset["id"].replace('_', ' ').title()
                 })
-
         logger.info(f"Returning {len(csv_files)} CSV files")
         return {"success": True, "csv_files": csv_files}
     except Exception as e:
         logger.error(f"Error getting CSV files: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"success": True, "csv_files": []}
 
 @app.get("/csv-fields/{csv_id}")
 async def get_csv_fields(csv_id: str, request: Request):
-    """Get columns/fields from a CSV file"""
+    """Get columns/fields from a CSV file. Resolves csv_id via list (case-insensitive, actual path)."""
     try:
-        dataset_id = normalise_dataset_id(csv_id)
-        if not dataset_id:
+        dataset = _resolve_csv_dataset(csv_id)
+        if not dataset:
             raise HTTPException(status_code=404, detail="CSV file not found")
 
-        file_path = os.path.join(DATA_DIR, dataset_id_to_filename(dataset_id))
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail=f"CSV file not found: {dataset_id}")
-
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(dataset["path"], 'r', encoding='utf-8', errors='replace') as f:
             reader = csv.DictReader(f)
-            fields = [{"name": field, "label": field.replace('_', ' ').title()} for field in reader.fieldnames]
+            names = list(reader.fieldnames or [])
+        fields = [{"name": n, "label": n.replace('_', ' ').title()} for n in names]
 
         return {"success": True, "fields": fields}
     except HTTPException:
