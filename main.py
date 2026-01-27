@@ -267,7 +267,7 @@ def fetch_template_placeholders(template_id: str,
                 continue
                 
             supabase_settings[placeholder_key] = {
-                'source': row.get('source', 'random'),
+                'source': row.get('source') or 'database',  # Default to database, not random
                 'customValue': str(row.get('custom_value') or '').strip(),
                 'databaseTable': str(row.get('database_table') or '').strip(),
                 'databaseField': str(row.get('database_field') or '').strip(),
@@ -363,7 +363,7 @@ def upsert_template_placeholders(template_id: str,
             rows.append({
                 'template_id': template_id,
                 'placeholder': placeholder,
-                'source': cfg.get('source', 'random'),
+                'source': cfg.get('source') or 'database',  # Default to database, not random
                 'custom_value': cfg.get('customValue'),
                 'database_table': cfg.get('databaseTable') or cfg.get('database_table'),
                 'database_field': cfg.get('databaseField') or cfg.get('database_field'),
@@ -2504,7 +2504,7 @@ async def get_placeholder_settings(
             for row in response.data or []:
                 template_id = str(row['template_id'])
                 aggregated.setdefault(template_id, {})[row['placeholder']] = {
-                    'source': row.get('source', 'random'),
+                    'source': row.get('source') or 'database',  # Default to database, not random
                     'customValue': row.get('custom_value') or '',
                     'databaseTable': row.get('database_table') or '',
                     'databaseField': row.get('database_field') or '',
