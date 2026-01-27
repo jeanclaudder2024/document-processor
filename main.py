@@ -3714,19 +3714,28 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
             best_match = str(field_value).strip()
     
     # Strategy 3: Use best match if confidence is high enough
-    if best_match and best_score >= 0.75:  # 75% similarity threshold
+    if best_match and best_score >= 0.70:  # Lowered from 75% to 70% for more aggressive matching
         logger.debug(f"  ✅ High confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
         return (best_field, best_match)
     
-    # Strategy 4: Try partial word matching with lower threshold
-    if best_match and best_score >= 0.60:  # 60% similarity threshold
+    # Strategy 4: Try partial word matching with lower threshold (more aggressive)
+    if best_match and best_score >= 0.50:  # Lowered from 60% to 50% for more aggressive matching
         # Additional validation: check if key words match
-        key_words_placeholder = {w for w in placeholder_words if len(w) >= 4}
+        key_words_placeholder = {w for w in placeholder_words if len(w) >= 3}  # Lowered from 4 to 3
         if key_words_placeholder:
             best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
-            key_words_field = {w for w in best_field_words if len(w) >= 4}
+            key_words_field = {w for w in best_field_words if len(w) >= 3}  # Lowered from 4 to 3
             if key_words_placeholder.intersection(key_words_field):
                 logger.debug(f"  ✅ Medium confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
+                return (best_field, best_match)
+    
+    # Strategy 5: Even more lenient - if any word matches and similarity >= 40%
+    if best_match and best_score >= 0.40:
+        key_words_placeholder = {w for w in placeholder_words if len(w) >= 3}
+        if key_words_placeholder:
+            best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
+            if key_words_placeholder.intersection(best_field_words):
+                logger.debug(f"  ✅ Low confidence match (any word overlap): '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
                 return (best_field, best_match)
     
     # No match found
@@ -4708,15 +4717,16 @@ async def generate_document(request: Request):
                                 table_info = f" from {database_table}" if database_table and database_table.lower() != 'vessels' else ""
                                 logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}'{table_info})")
                             else:
-                                logger.error(f"  ❌❌❌ FAILED: Could not match '{placeholder}' to any field in {database_table or 'vessels'}!")
+                                # Explicitly set found=False so cascade triggers
+                                found = False
+                                logger.warning(f"  ⚠️  Database source failed for '{placeholder}', will try cascade (DB → CSV → AI)")
                                 if database_field:
-                                    logger.error(f"  ❌ Explicit field '{database_field}' not found in data")
-                                logger.error(f"  ❌ Available fields: {list(source_data.keys())[:20]}...")  # Show first 20
-                                logger.error(f"  ❌ This will use RANDOM data!")
-                                logger.error(f"  💡 TIP: Check if databaseField in CMS matches field names exactly (case-insensitive)")
+                                    logger.warning(f"  ⚠️  Explicit field '{database_field}' not found in data")
+                                logger.debug(f"  📋 Available fields: {list(source_data.keys())[:20]}...")
                         else:
-                            logger.error(f"  ❌❌❌ FAILED: No data available from {database_table or 'vessels'} table!")
-                            logger.error(f"  ❌ This will use RANDOM data!")
+                            # Explicitly set found=False so cascade triggers
+                            found = False
+                            logger.warning(f"  ⚠️  No data available from {database_table or 'vessels'} table, will try cascade")
 
                     elif source == 'csv':
                         csv_id = setting.get('csvId', '')
