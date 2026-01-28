@@ -2509,6 +2509,14 @@ async def get_placeholder_settings(
                 raise HTTPException(status_code=404, detail=error_msg)
             
             settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
+            
+            # CRITICAL: Convert any 'random' sources to 'database' (database is default)
+            # This fixes existing templates that were created with random as default
+            for placeholder, setting in settings.items():
+                if setting.get('source') == 'random' or not setting.get('source') or setting.get('source') == '':
+                    setting['source'] = 'database'
+                    logger.debug(f"🔧 Converted placeholder '{placeholder}' source from '{setting.get('source')}' to 'database'")
+            
             logger.info(f"✅ Loaded {len(settings)} placeholder settings for template {template_record.get('file_name')}")
             return {
                 "template": template_record.get('file_name') or template_name,
@@ -2524,8 +2532,12 @@ async def get_placeholder_settings(
             aggregated: Dict[str, Dict[str, Dict]] = {}
             for row in response.data or []:
                 template_id = str(row['template_id'])
+                source = row.get('source') or 'database'
+                # CRITICAL: Convert 'random' to 'database' (database is default)
+                if source == 'random' or source == '' or source is None:
+                    source = 'database'
                 aggregated.setdefault(template_id, {})[row['placeholder']] = {
-                    'source': row.get('source') or 'database',  # Default to database, not random
+                    'source': source,  # Always database by default, not random
                     'customValue': row.get('custom_value') or '',
                     'databaseTable': row.get('database_table') or '',
                     'databaseField': row.get('database_field') or '',
@@ -2547,6 +2559,33 @@ async def get_placeholder_settings(
     except Exception as e:
         logger.error(f"Error getting placeholder settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/placeholder-settings/fix-random-defaults")
+async def fix_random_defaults(current_user: str = Depends(get_current_user)):
+    """Fix existing placeholder settings that have source='random' to source='database'."""
+    if not SUPABASE_ENABLED:
+        raise HTTPException(status_code=503, detail="Supabase not available")
+    
+    try:
+        # Find all placeholders with source='random' or null/empty
+        response = supabase.table('template_placeholders').select('template_id, placeholder, source').execute()
+        
+        fixed_count = 0
+        for row in response.data or []:
+            source = row.get('source')
+            if not source or source == '' or source == 'random':
+                template_id = row['template_id']
+                placeholder = row['placeholder']
+                supabase.table('template_placeholders').update({
+                    'source': 'database'
+                }).eq('template_id', template_id).eq('placeholder', placeholder).execute()
+                fixed_count += 1
+        
+        return {"success": True, "fixed_count": fixed_count, "message": f"Fixed {fixed_count} placeholder settings to use 'database' as default"}
+    except Exception as e:
+        logger.error(f"Failed to fix random defaults: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fix defaults: {str(e)}")
+
 
 @app.post("/placeholder-settings")
 @app.post("/cmsplaceholder-settings")  # Alias for nginx rewrite compatibility
