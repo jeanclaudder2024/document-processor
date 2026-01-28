@@ -135,23 +135,44 @@ except Exception as e:
 
 SUPABASE_ENABLED = supabase is not None
 
-# OpenAI Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# OpenAI Configuration - Try Supabase first, then environment variable
+def get_openai_api_key_from_supabase() -> Optional[str]:
+    """Get OpenAI API key from Supabase system_settings table."""
+    if not SUPABASE_ENABLED:
+        return None
+    try:
+        response = supabase.table('system_settings').select('setting_value').eq('setting_key', 'openai_api_key').limit(1).execute()
+        if response.data and len(response.data) > 0:
+            setting_value = response.data[0].get('setting_value')
+            # Handle JSONB - can be string or dict
+            if isinstance(setting_value, str):
+                return setting_value.strip() if setting_value else None
+            elif isinstance(setting_value, dict):
+                # If stored as {"value": "key"} or similar
+                return str(setting_value.get('value', '')).strip() or None
+            return str(setting_value).strip() if setting_value else None
+    except Exception as e:
+        logger.debug(f"Could not retrieve OpenAI API key from Supabase: {e}")
+    return None
+
+# Try Supabase first, then environment variable
+OPENAI_API_KEY = get_openai_api_key_from_supabase() or os.getenv("OPENAI_API_KEY", "")
 OPENAI_ENABLED = OPENAI_AVAILABLE and bool(OPENAI_API_KEY)
 openai_client = None
 
 if OPENAI_ENABLED:
     try:
         openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        logger.info("OpenAI client initialized successfully")
+        key_source = "Supabase" if get_openai_api_key_from_supabase() else "environment variable"
+        logger.info(f"OpenAI client initialized successfully (API key from {key_source})")
     except Exception as e:
         logger.warning(f"Failed to initialize OpenAI client: {e}")
         openai_client = None
 else:
     if not OPENAI_AVAILABLE:
-        logger.warning("OpenAI library not installed. AI-powered random data generation will be disabled.")
+        logger.warning("OpenAI library not installed. AI-powered placeholder matching will be disabled.")
     elif not OPENAI_API_KEY:
-        logger.warning("OpenAI API key not configured. AI-powered random data generation will be disabled.")
+        logger.warning("OpenAI API key not configured (check Supabase system_settings or OPENAI_API_KEY env var). AI-powered placeholder matching will be disabled.")
 
 
 def encode_bytea(data: bytes) -> str:
@@ -3558,14 +3579,100 @@ def _calculate_similarity(str1: str, str2: str) -> float:
     similarity = 1.0 - (distance / max_len) if max_len > 0 else 1.0
     return similarity
 
+def _ai_powered_field_match(placeholder: str, vessel: Dict, available_fields: List[str] = None) -> Optional[tuple]:
+    """
+    Use AI to intelligently match placeholder to database field.
+    Returns (matched_field_name, matched_value) or None if no match.
+    """
+    if not OPENAI_ENABLED or not openai_client or not vessel:
+        return None
+    
+    try:
+        # Get available vessel fields
+        if available_fields is None:
+            available_fields = [k for k, v in vessel.items() if v is not None and str(v).strip() != '']
+        
+        if not available_fields:
+            return None
+        
+        # Prepare context for AI
+        vessel_summary = {k: str(v)[:100] for k, v in list(vessel.items())[:20]}  # First 20 fields, truncated
+        
+        prompt = f"""You are a maritime document processing assistant. Match the placeholder "{placeholder}" to the best database field from the available vessel data.
+
+Available vessel fields (with sample values):
+{json.dumps(vessel_summary, indent=2)}
+
+Available field names: {', '.join(available_fields[:50])}
+
+Task:
+1. Understand what the placeholder "{placeholder}" represents (e.g., vessel name, IMO number, port, date, quantity, etc.)
+2. Find the BEST matching field from the available fields
+3. Return ONLY the field name that best matches, nothing else
+
+Examples:
+- "vesselname" → "name"
+- "imonumber" → "imo"
+- "portofloading" → "loading_port" or "currentport"
+- "cargoquantity" → "cargo_quantity"
+- "ownername" → "owner_name"
+
+Return ONLY the field name (e.g., "name", "imo", "owner_name"), or "NONE" if no good match exists."""
+
+        response = openai_client.chat.completions.create(
+            model='gpt-4o-mini',
+            messages=[
+                {'role': 'system', 'content': 'You are a maritime data matching expert. Return only the field name or "NONE".'},
+                {'role': 'user', 'content': prompt}
+            ],
+            max_tokens=50,
+            temperature=0.1,  # Low temperature for consistent matching
+        )
+        
+        matched_field = (response.choices[0].message.content or '').strip().strip('"\'')
+        
+        if matched_field.upper() == 'NONE' or not matched_field:
+            return None
+        
+        # Verify the matched field exists in vessel data
+        if matched_field in vessel:
+            value = vessel[matched_field]
+            if value is not None and str(value).strip() != '':
+                logger.debug(f"  🤖 AI match: '{placeholder}' -> '{matched_field}' = '{value}'")
+                return (matched_field, str(value).strip())
+        
+        # Try case-insensitive match
+        matched_field_lower = matched_field.lower()
+        for field_name, field_value in vessel.items():
+            if field_name.lower() == matched_field_lower:
+                if field_value is not None and str(field_value).strip() != '':
+                    logger.debug(f"  🤖 AI match (case-insensitive): '{placeholder}' -> '{field_name}' = '{field_value}'")
+                    return (field_name, str(field_value).strip())
+        
+        return None
+        
+    except Exception as e:
+        logger.debug(f"AI-powered matching failed for '{placeholder}': {e}")
+        return None
+
+
 def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     """
     ADVANCED intelligent matching: Maximize database usage (90% of data is in DB).
-    Uses multiple sophisticated strategies to match placeholders to vessel fields.
+    Uses AI-powered matching first, then multiple sophisticated strategies.
     Returns (matched_field_name, matched_value) or (None, None) if no match.
     """
     if not vessel:
         return (None, None)
+    
+    # Strategy 0: AI-Powered Matching (if OpenAI is available)
+    # This uses AI to understand placeholder meaning and match to best database field
+    if OPENAI_ENABLED and openai_client:
+        ai_match = _ai_powered_field_match(placeholder, vessel)
+        if ai_match:
+            matched_field, matched_value = ai_match
+            logger.info(f"  🤖✅ AI-POWERED MATCH: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
+            return (matched_field, matched_value)
     
     # Normalize placeholder name for matching
     placeholder_clean = placeholder.strip()
