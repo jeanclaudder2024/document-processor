@@ -150,19 +150,26 @@ class TemplateEditor {
             
             // Load placeholder settings
             const settingsData = await this.apiJson(`/placeholder-settings?template_id=${encodeURIComponent(templateId)}`);
+            console.log('[loadTemplateById] 📥 Settings data received:', settingsData);
+            
+            let originalLoadedSettings = null;
             if (settingsData && settingsData.settings) {
                 // Handle both formats: settings can be nested by template_id or direct object
                 let loadedSettings = settingsData.settings;
                 if (settingsData.settings[templateId]) {
                     loadedSettings = settingsData.settings[templateId];
+                    console.log(`[loadTemplateById] 📋 Found nested settings for template_id: ${templateId}`);
                 }
+                originalLoadedSettings = JSON.parse(JSON.stringify(loadedSettings || {})); // Deep copy for comparison
                 this.currentSettings = loadedSettings || {};
+                console.log('[loadTemplateById] 📋 Loaded settings:', this.currentSettings);
                 
                 // CRITICAL: Ensure ALL placeholders have source='database' by default
                 // Fix any placeholders that have source='random', null, empty, or missing
                 this.placeholders.forEach(ph => {
                     if (!this.currentSettings[ph]) {
                         this.currentSettings[ph] = { source: 'database' };
+                        console.log(`🔧 Created new setting for '${ph}' with source='database'`);
                     } else {
                         // Force database if source is random, null, empty, or missing
                         const currentSource = this.currentSettings[ph].source;
@@ -172,16 +179,59 @@ class TemplateEditor {
                         }
                     }
                 });
+                
+                // Double-check: Normalize ALL settings one more time
+                Object.keys(this.currentSettings).forEach(ph => {
+                    const s = this.currentSettings[ph];
+                    if (!s.source || s.source === '' || s.source === 'random' || s.source === null || s.source === undefined) {
+                        s.source = 'database';
+                        console.log(`🔧 Final normalization: Fixed '${ph}' source to 'database'`);
+                    }
+                });
             } else {
                 this.currentSettings = {};
                 // Initialize all placeholders with 'database' as default source
                 this.placeholders.forEach(ph => {
                     this.currentSettings[ph] = { source: 'database' };
+                    console.log(`🔧 Initialized placeholder '${ph}' with source='database'`);
+                });
+            }
+            
+            console.log('[loadTemplateById] ✅ Final currentSettings:', this.currentSettings);
+            
+            // Auto-save fixed settings if any were changed from random to database
+            // This ensures the database is updated with correct defaults
+            let settingsChanged = false;
+            if (originalLoadedSettings) {
+                this.placeholders.forEach(ph => {
+                    const setting = this.currentSettings[ph];
+                    const originalSetting = originalLoadedSettings[ph];
+                    if (setting && setting.source === 'database') {
+                        // Check if this was changed from random/null
+                        if (originalSetting && (originalSetting.source === 'random' || !originalSetting.source || originalSetting.source === '')) {
+                            settingsChanged = true;
+                            console.log(`🔧 Detected change: '${ph}' was '${originalSetting.source}' now 'database'`);
+                        }
+                    }
                 });
             }
             
             // Display placeholders
             this.displayPlaceholders();
+            
+            // Auto-save if settings were fixed (but only once, not on every load)
+            if (settingsChanged && !sessionStorage.getItem(`settings_fixed_${templateId}`)) {
+                console.log('[loadTemplateById] 💾 Auto-saving fixed settings to database...');
+                setTimeout(async () => {
+                    try {
+                        await this.savePlaceholderSettings();
+                        sessionStorage.setItem(`settings_fixed_${templateId}`, 'true');
+                        console.log('[loadTemplateById] ✅ Auto-saved fixed settings');
+                    } catch (e) {
+                        console.warn('[loadTemplateById] ⚠️ Auto-save failed (non-critical):', e);
+                    }
+                }, 1000);
+            }
             
             // Load plan assignments for this template (after plans are loaded)
             if (this.plans && Object.keys(this.plans).length > 0) {
@@ -454,8 +504,8 @@ class TemplateEditor {
                         <strong><code>${ph}</code></strong>
                         <select class="form-select form-select-sm" style="width: 150px;" 
                                 onchange="editor.handleSourceChange('${ph}', this.value)">
-                            <option value="database" ${setting.source === 'database' || !setting.source ? 'selected' : ''}>Database</option>
-                            <option value="random" ${setting.source === 'random' ? 'selected' : ''}>Random</option>
+                            <option value="database" ${(setting.source === 'database' || !setting.source || setting.source === '' || setting.source === 'random' || setting.source === null || setting.source === undefined) ? 'selected' : ''}>Database</option>
+                            <option value="random" ${(setting.source === 'random' && setting.source !== null && setting.source !== undefined && setting.source !== '') ? 'selected' : ''}>Random</option>
                             <option value="custom" ${setting.source === 'custom' ? 'selected' : ''}>Custom</option>
                             <option value="csv" ${setting.source === 'csv' ? 'selected' : ''}>CSV</option>
                         </select>
@@ -471,7 +521,7 @@ class TemplateEditor {
                     </div>
                     
                     <!-- Database Source -->
-                    <div class="source-option ${setting.source === 'database' || !setting.source || setting.source === '' ? 'active' : ''}" data-source="database">
+                    <div class="source-option ${(setting.source === 'database' || !setting.source || setting.source === '' || setting.source === 'random' || setting.source === null || setting.source === undefined) ? 'active' : ''}" data-source="database">
                         <label class="form-label small">Database Table:</label>
                         <select class="form-select form-select-sm mb-2" id="dbTable_${ph}"
                                 onchange="editor.handleDatabaseTableChange('${ph}', this.value)">
