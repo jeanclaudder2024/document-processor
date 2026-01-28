@@ -3692,6 +3692,40 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
         'quantity': 'cargo_quantity', 'amount': 'cargo_quantity', 'volume': 'cargo_quantity',
         'product': 'cargo_type', 'commodity': 'cargo_type', 'oil': 'oil_type',
         'date': 'updated_at', 'validity': 'updated_at', 'expiry': 'updated_at',
+        # Additional common variations
+        'shipname': 'name', 'tankername': 'name', 'carriername': 'name',
+        'vesselimo': 'imo', 'shipimo': 'imo', 'tankerimo': 'imo',
+        'vesseltype': 'vessel_type', 'shiptype': 'vessel_type', 'tankertype': 'vessel_type',
+        'vesselowner': 'owner_name', 'shipowner': 'owner_name', 'tankerowner': 'owner_name',
+        'portofregistry': 'registry_port', 'homeport': 'registry_port', 'registrationport': 'registry_port',
+        'grossweight': 'gross_tonnage', 'netweight': 'net_tonnage', 'cargoweight': 'cargo_quantity',
+        'loadport': 'loading_port', 'dischargeport': 'destination_port', 'arrivalport': 'destination_port',
+        'departport': 'departure_port', 'sailingport': 'departure_port', 'fromport': 'departure_port',
+        'toport': 'destination_port', 'finalport': 'destination_port', 'endport': 'destination_port',
+        'cargoquantity': 'cargo_quantity', 'loadquantity': 'cargo_quantity', 'mt': 'cargo_quantity',
+        'oilgrade': 'oil_type', 'crudetype': 'oil_type', 'producttype': 'cargo_type',
+        'vesselstatus': 'status', 'shipstatus': 'status', 'currentstatus': 'status',
+        'eta': 'eta', 'etd': 'etd', 'arrivaltime': 'eta', 'departuretime': 'etd',
+        'vesselspeed': 'speed', 'shipspeed': 'speed', 'averagespeed': 'speed',
+        'dwttonnage': 'deadweight', 'deadweighttons': 'deadweight', 'tonnage': 'deadweight',
+        'grosstons': 'gross_tonnage', 'nettons': 'net_tonnage',
+        'mastername': 'captain_name', 'captainname': 'captain_name', 'master': 'captain_name',
+        'classification': 'class_society', 'class': 'class_society', 'classificationclass': 'class_society',
+        'builtyear': 'built', 'constructedyear': 'built', 'constructionyear': 'built', 'ageyear': 'built',
+        # Analysis/SGS specific
+        'sampledate': 'updated_at', 'testdate': 'updated_at', 'analysisdate': 'updated_at',
+        'result': 'cargo_quantity', 'testresult': 'cargo_quantity', 'analysisresult': 'cargo_quantity',
+        'specification': 'cargo_type', 'spec': 'cargo_type', 'grade': 'oil_type',
+        'density': 'cargo_quantity', 'viscosity': 'cargo_quantity', 'api': 'cargo_quantity',
+        'sulfur': 'cargo_quantity', 'sulphur': 'cargo_quantity', 'water': 'cargo_quantity',
+        'sediment': 'cargo_quantity', 'ash': 'cargo_quantity', 'pour': 'cargo_quantity',
+        # Invoice/commercial specific  
+        'invoicedate': 'updated_at', 'invoiceno': 'imo', 'invoicenumber': 'imo',
+        'contractno': 'imo', 'contractnumber': 'imo', 'refno': 'imo', 'referenceno': 'imo',
+        'blno': 'imo', 'blnumber': 'imo', 'billoflading': 'imo',
+        'unitprice': 'price', 'pricepermt': 'price', 'rateperton': 'price',
+        'totalamount': 'deal_value', 'totalvalue': 'deal_value', 'invoiceamount': 'deal_value',
+        'currency': 'flag', 'paymentterms': 'shipping_type', 'terms': 'shipping_type',
     }
     
     # Strategy 1: Direct mapping (highest priority)
@@ -3846,10 +3880,70 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
             logger.debug(f"  ✅ Best guess fallback: '{placeholder}' -> '{best_guess['field']}' (overlap: {best_guess['word_overlap']}, score: {best_guess['score']:.2f})")
             return (best_guess['field'], best_guess['value'])
     
-    # Strategy 9: Last resort - use ANY non-empty vessel field (prefer common fields)
-    # Priority: name, imo, flag, owner_name, operator_name, etc.
+    # Strategy 9: Smart guess based on placeholder pattern
+    # Analyze placeholder name and guess most likely field
+    pl_lower = placeholder_normalized.lower()
+    
+    # Pattern-based field selection
+    pattern_to_fields = {
+        # Names and identifiers
+        ('name', 'vessel', 'ship', 'tanker'): ['name', 'vessel_name'],
+        ('imo', 'number', 'id'): ['imo'],
+        ('flag', 'country', 'nation', 'registry'): ['flag', 'registry_port'],
+        ('type', 'kind', 'category'): ['vessel_type', 'cargo_type', 'oil_type'],
+        ('owner', 'company', 'firm'): ['owner_name', 'vessel_owner', 'operator_name'],
+        ('operator', 'manager'): ['operator_name', 'ism_manager'],
+        
+        # Location
+        ('port', 'harbor', 'dock', 'terminal'): ['currentport', 'departure_port', 'destination_port', 'loading_port'],
+        ('destination', 'arrival'): ['destination_port', 'destination'],
+        ('departure', 'origin', 'from'): ['departure_port', 'origin'],
+        ('position', 'location', 'where'): ['position', 'current_region', 'currentport'],
+        
+        # Dimensions
+        ('length', 'loa', 'long'): ['length', 'loa'],
+        ('width', 'beam', 'breadth'): ['width', 'beam'],
+        ('draft', 'draught', 'depth'): ['draft', 'draught'],
+        ('tonnage', 'dwt', 'weight', 'gross'): ['deadweight', 'gross_tonnage', 'net_tonnage'],
+        
+        # Cargo
+        ('cargo', 'freight', 'load', 'product'): ['cargo_type', 'cargo_quantity', 'oil_type'],
+        ('quantity', 'amount', 'volume', 'qty'): ['cargo_quantity', 'quantity'],
+        ('oil', 'crude', 'petroleum'): ['oil_type', 'cargo_type'],
+        
+        # Dates
+        ('date', 'time', 'when', 'eta', 'etd'): ['updated_at', 'created_at', 'eta', 'etd'],
+        ('built', 'year', 'construction'): ['built', 'year_built'],
+        
+        # Contact
+        ('email', 'mail'): ['email', 'contact_email'],
+        ('phone', 'tel', 'telephone', 'contact'): ['phone', 'contact_phone'],
+        ('address', 'street'): ['address'],
+        
+        # Speed and performance
+        ('speed', 'velocity', 'knots'): ['speed', 'cruising_speed'],
+        
+        # Price and commercial
+        ('price', 'cost', 'value', 'rate'): ['price', 'market_price', 'deal_value'],
+        ('buyer', 'purchaser'): ['buyer_name'],
+        ('seller', 'vendor'): ['seller_name'],
+    }
+    
+    # Try pattern matching
+    for patterns, fields in pattern_to_fields.items():
+        for pattern in patterns:
+            if pattern in pl_lower:
+                for field in fields:
+                    if field in vessel:
+                        value = vessel[field]
+                        if value is not None and str(value).strip() != '':
+                            logger.debug(f"  ✅ Pattern match: '{placeholder}' (pattern: '{pattern}') -> '{field}'")
+                            return (field, str(value).strip())
+    
+    # Strategy 10: Last resort - use ANY non-empty vessel field (prefer common fields)
     priority_fields = ['name', 'imo', 'flag', 'owner_name', 'operator_name', 'vessel_type', 
-                       'currentport', 'cargo_type', 'cargo_quantity', 'length', 'width', 'draft']
+                       'currentport', 'cargo_type', 'cargo_quantity', 'length', 'width', 'draft',
+                       'deadweight', 'gross_tonnage', 'speed', 'built', 'oil_type']
     for priority_field in priority_fields:
         if priority_field in vessel:
             value = vessel[priority_field]
@@ -3863,7 +3957,7 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
             logger.debug(f"  ✅ Last resort (any field): '{placeholder}' -> '{field_name}'")
             return (field_name, str(field_value).strip())
     
-    # No match found
+    # No match found - vessel data is empty
     return (None, None)
 
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
@@ -4694,36 +4788,37 @@ async def generate_document(request: Request):
                 matched_placeholders.append(placeholder)
                 logger.debug(f"✅ Found CMS setting for '{placeholder}' (matched key: '{setting_key}')")
 
+            # CRITICAL: ALWAYS try database matching FIRST for ALL placeholders
+            # This ensures 90% of data comes from database (as user requested)
+            # This runs whether or not there's a CMS setting
+            logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [ALWAYS try DB first]")
+            logger.info(f"  🗄️  STEP 1: Always trying intelligent database matching first...")
+            matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+            if matched_field and matched_value:
+                data_mapping[placeholder] = matched_value
+                found = True
+                logger.info(f"  ✅✅✅ DATABASE MATCH (always first): {placeholder} = '{matched_value}' (from '{matched_field}')")
+                # Skip to next placeholder - database match takes priority
+                continue
+            else:
+                logger.info(f"  ⚠️  No intelligent DB match for '{placeholder}', will try configured source or cascade")
+
             if setting:
                 # Validate setting structure
                 is_valid, validation_errors = validate_placeholder_setting(setting)
                 if not is_valid:
                     logger.warning(f"⚠️  Invalid placeholder setting for '{placeholder}': {', '.join(validation_errors)}")
-                    logger.warning(f"   Will use cascade (DB → CSV → AI) as fallback")
+                    logger.warning(f"   Will use cascade (CSV → random/AI) as fallback")
                 
                 source = setting.get('source') or 'database'
-                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source}) [ALWAYS try DB first]")
-                logger.info(f"📋 FULL CMS SETTING for '{placeholder}':")
-                logger.info(f"   source: '{source}'")
-                logger.info(f"   customValue: '{setting.get('customValue')}'")
-                logger.info(f"   databaseTable: '{setting.get('databaseTable')}'")
-                logger.info(f"   databaseField: '{setting.get('databaseField')}'")
-                logger.info(f"   csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
-                logger.info(f"   randomOption: '{setting.get('randomOption')}'")
+                logger.info(f"  📋 CMS SETTING for '{placeholder}' (source: {source}):")
+                logger.info(f"     customValue: '{setting.get('customValue')}'")
+                logger.info(f"     databaseTable: '{setting.get('databaseTable')}'")
+                logger.info(f"     databaseField: '{setting.get('databaseField')}'")
+                logger.info(f"     csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
+                logger.info(f"     randomOption: '{setting.get('randomOption')}'")
 
                 try:
-                    # CRITICAL: ALWAYS try database matching FIRST, regardless of source setting
-                    # This ensures 90% of data comes from database (as user requested)
-                    logger.info(f"  🗄️  STEP 1: Always trying intelligent database matching first...")
-                    matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
-                    if matched_field and matched_value:
-                        data_mapping[placeholder] = matched_value
-                        found = True
-                        logger.info(f"  ✅✅✅ DATABASE MATCH (always first): {placeholder} = '{matched_value}' (from '{matched_field}')")
-                        # Skip to next placeholder - database match takes priority
-                        continue
-                    else:
-                        logger.info(f"  ⚠️  No intelligent DB match for '{placeholder}', will try configured source: {source}")
                     
                     # STEP 2: If database matching failed, try configured source
                     if source == 'custom':
