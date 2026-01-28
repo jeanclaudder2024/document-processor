@@ -1177,6 +1177,119 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
     }
     return predefined.get(table_name.lower(), [])
 
+
+def _build_schema_for_mapping() -> Dict[str, List[str]]:
+    """Build {table: [col1, col2, ...]} for vessels, ports, refineries, companies, brokers."""
+    tables = ['vessels', 'ports', 'refineries', 'companies', 'brokers']
+    schema: Dict[str, List[str]] = {}
+    for t in tables:
+        cols = _get_predefined_table_columns(t)
+        schema[t] = [c['name'] for c in cols]
+    return schema
+
+
+# Rule-based placeholder -> (table, field) for upload-time mapping when OpenAI is unavailable.
+# Most mappings target vessels; use vessels table. Field must exist in _get_predefined_table_columns('vessels').
+_UPLOAD_FIELD_MAPPINGS: Dict[str, str] = {
+    'imonumber': 'imo', 'imo_number': 'imo', 'imono': 'imo', 'imo': 'imo',
+    'vesselname': 'name', 'vessel_name': 'name', 'shipname': 'name', 'name': 'name',
+    'vesseltype': 'vessel_type', 'vessel_type': 'vessel_type', 'shiptype': 'vessel_type',
+    'flagstate': 'flag', 'flag_state': 'flag', 'flag': 'flag',
+    'mmsi': 'mmsi', 'mmsinumber': 'mmsi',
+    'lengthoverall': 'length', 'length_overall': 'length', 'loa': 'length', 'length': 'length',
+    'width': 'width', 'beam': 'beam', 'breadth': 'beam', 'draft': 'draft',
+    'deadweight': 'deadweight', 'dwt': 'deadweight', 'grosstonnage': 'gross_tonnage', 'gross_tonnage': 'gross_tonnage',
+    'ownername': 'owner_name', 'owner_name': 'owner_name', 'vesselowner': 'owner_name', 'owner': 'owner_name',
+    'operatorname': 'operator_name', 'operator_name': 'operator_name', 'vesseloperator': 'operator_name',
+    'callsign': 'callsign', 'built': 'built', 'yearbuilt': 'built', 'year_built': 'built',
+    'cargocapacity': 'cargo_capacity', 'cargo_capacity': 'cargo_capacity',
+    'currentport': 'currentport', 'loadingport': 'loading_port', 'loading_port': 'loading_port',
+    'port': 'currentport', 'country': 'flag', 'email': 'email', 'phone': 'phone',
+    'address': 'address', 'companyname': 'owner_name', 'company_name': 'owner_name',
+}
+
+
+def _ai_suggest_placeholder_mapping(
+    placeholders: List[str],
+    schema: Dict[str, List[str]],
+) -> Dict[str, Tuple[str, str]]:
+    """
+    Suggest (table, column) per placeholder using AI or rule-based fallback.
+    Returns {placeholder: (table, column)}. Skips placeholders with no good match.
+    """
+    result: Dict[str, Tuple[str, str]] = {}
+    vessels_cols = set(schema.get('vessels') or [])
+
+    def normalize_key(s: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+    # Rule-based fallback: map to (vessels, field) using _UPLOAD_FIELD_MAPPINGS
+    def rule_based() -> None:
+        for ph in placeholders:
+            key = normalize_key(ph)
+            if not key:
+                continue
+            field = _UPLOAD_FIELD_MAPPINGS.get(key)
+            if field and field in vessels_cols:
+                result[ph] = ('vessels', field)
+
+    if OPENAI_ENABLED and openai_client and schema:
+        flat: List[str] = []
+        for t, cols in schema.items():
+            for c in cols:
+                flat.append(f"{t}.{c}")
+        schema_str = ", ".join(flat[:200])
+        ph_list = ", ".join(placeholders[:150])
+        prompt = f"""You are a maritime document expert. Map each placeholder to the best database table.column.
+
+Available table.column options: {schema_str}
+
+Placeholders to map: {ph_list}
+
+Rules:
+- Prefer "vessels" for ship/vessel/IMO/owner/operator/dimensions/flag/cargo.
+- Use "ports" for port names, countries, cities.
+- Use "companies" or "brokers" for company/broker names, emails, phones when vessel fields don't fit.
+- Return valid table.column only; if no good match, return NONE for that placeholder.
+
+Return a JSON object: {{ "placeholder1": "table.column", "placeholder2": "NONE", ... }}. Use exact placeholder strings as keys. No other text."""
+
+        try:
+            r = openai_client.chat.completions.create(
+                model='gpt-4o-mini',
+                messages=[{'role': 'user', 'content': prompt}],
+                max_tokens=2000,
+                temperature=0.1,
+            )
+            raw = (r.choices[0].message.content or '').strip()
+            json_match = re.search(r'\{[\s\S]*\}', raw)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group())
+                    for ph, val in data.items():
+                        if ph not in placeholders or not isinstance(val, str):
+                            continue
+                        val = val.strip().upper()
+                        if val == 'NONE' or not val:
+                            continue
+                        if '.' in val:
+                            t, col = val.split('.', 1)
+                            t, col = t.strip().lower(), col.strip().lower()
+                            if t in schema and col in (schema.get(t) or []):
+                                result[ph] = (t, col)
+                except json.JSONDecodeError:
+                    pass
+            if not result:
+                rule_based()
+        except Exception as e:
+            logger.warning(f"AI mapping suggestion failed, using rule-based fallback: {e}")
+            rule_based()
+    else:
+        rule_based()
+
+    return result
+
+
 # ============================================================================
 # STEP 3: PLACEHOLDER EXTRACTION (from DOCX files)
 # ============================================================================
@@ -2123,9 +2236,6 @@ async def upload_template(
                         warnings.append("Supabase file storage error; using local copy")
                         logger.error(f"Supabase file upsert error: {file_response.error}")
 
-                    # Do NOT create placeholder settings on upload. Default "database" is display-only
-                    # until user configures in editor.js and saves. Prevents "direct add mapping".
-
                     # Create plan_template_permissions entries for selected plans
                     if plan_ids_list and template_id:
                         try:
@@ -2160,8 +2270,32 @@ async def upload_template(
                 warnings.append("Supabase sync failed; template available locally")
                 logger.error(f"Failed to store template in Supabase: {exc}")
 
-        # Do NOT persist placeholder settings on upload. Placeholders default to "database"
-        # in editor.js when none exist; user configures table/field and saves there.
+        # AI-generated mapping on upload: map each placeholder -> (table, column), persist.
+        mapped_count = 0
+        if placeholders:
+            schema = _build_schema_for_mapping()
+            suggested = _ai_suggest_placeholder_mapping(placeholders, schema)
+            default_settings: Dict[str, Dict] = {}
+            for ph in placeholders:
+                cfg: Dict = {
+                    'source': 'database',
+                    'customValue': '',
+                    'databaseTable': '',
+                    'databaseField': '',
+                    'csvId': '',
+                    'csvField': '',
+                    'csvRow': 0,
+                    'randomOption': 'auto',
+                }
+                if ph in suggested:
+                    t, col = suggested[ph]
+                    cfg['databaseTable'] = t
+                    cfg['databaseField'] = col
+                default_settings[ph] = cfg
+            tid = template_id or docx_filename
+            upsert_template_placeholders(tid, default_settings, docx_filename)
+            mapped_count = len(suggested)
+            logger.info(f"Mapping created: {mapped_count}/{len(placeholders)} placeholders mapped (template {tid})")
 
         # Remove template from deleted list if it was previously deleted (re-upload scenario)
         unmark_template_as_deleted(docx_filename)
@@ -2194,6 +2328,9 @@ async def upload_template(
         }
         if template_id:
             response_payload["template_id"] = str(template_id)
+        if placeholders:
+            response_payload["mapping_created"] = True
+            response_payload["mapped_count"] = mapped_count
         if warnings:
             response_payload["warnings"] = warnings
 
