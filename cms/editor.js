@@ -151,13 +151,25 @@ class TemplateEditor {
             // Load placeholder settings
             const settingsData = await this.apiJson(`/placeholder-settings?template_id=${encodeURIComponent(templateId)}`);
             if (settingsData && settingsData.settings) {
-                this.currentSettings = settingsData.settings;
-                // Ensure all placeholders have a default source of 'database' if not set
+                // Handle both formats: settings can be nested by template_id or direct object
+                let loadedSettings = settingsData.settings;
+                if (settingsData.settings[templateId]) {
+                    loadedSettings = settingsData.settings[templateId];
+                }
+                this.currentSettings = loadedSettings || {};
+                
+                // CRITICAL: Ensure ALL placeholders have source='database' by default
+                // Fix any placeholders that have source='random', null, empty, or missing
                 this.placeholders.forEach(ph => {
                     if (!this.currentSettings[ph]) {
                         this.currentSettings[ph] = { source: 'database' };
-                    } else if (!this.currentSettings[ph].source) {
-                        this.currentSettings[ph].source = 'database';
+                    } else {
+                        // Force database if source is random, null, empty, or missing
+                        const currentSource = this.currentSettings[ph].source;
+                        if (!currentSource || currentSource === '' || currentSource === 'random' || currentSource === null || currentSource === undefined) {
+                            this.currentSettings[ph].source = 'database';
+                            console.log(`🔧 Fixed placeholder '${ph}': source changed from '${currentSource}' to 'database'`);
+                        }
                     }
                 });
             } else {
@@ -415,7 +427,7 @@ class TemplateEditor {
         }
 
         container.innerHTML = this.placeholders.map(ph => {
-            const setting = this.currentSettings[ph] || { 
+            let setting = this.currentSettings[ph] || { 
                 source: 'database', 
                 customValue: '', 
                 databaseTable: '',
@@ -425,6 +437,16 @@ class TemplateEditor {
                 csvRow: 0, 
                 randomOption: 'ai' 
             };
+            
+            // CRITICAL: Force database if source is random, null, empty, or missing
+            if (!setting.source || setting.source === '' || setting.source === 'random' || setting.source === null || setting.source === undefined) {
+                setting = { ...setting, source: 'database' };
+                // Update currentSettings to persist the fix
+                if (!this.currentSettings[ph]) {
+                    this.currentSettings[ph] = {};
+                }
+                this.currentSettings[ph].source = 'database';
+            }
             
             return `
                 <div class="placeholder-config" data-placeholder="${ph}">
@@ -716,6 +738,15 @@ class TemplateEditor {
         }
 
         try {
+            // CRITICAL: Ensure all settings have source='database' by default (not random)
+            Object.keys(this.currentSettings).forEach(ph => {
+                const setting = this.currentSettings[ph];
+                if (!setting.source || setting.source === '' || setting.source === 'random' || setting.source === null || setting.source === undefined) {
+                    setting.source = 'database';
+                    console.log(`🔧 Fixed placeholder '${ph}': source changed to 'database' before save`);
+                }
+            });
+            
             console.log('💾 Saving placeholder settings...');
             console.log('   Template ID:', this.currentTemplateId);
             console.log('   Settings count:', Object.keys(this.currentSettings).length);
