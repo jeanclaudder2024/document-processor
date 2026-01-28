@@ -1,3 +1,4 @@
+
 """
 Document Processing API - Clean Rebuild
 Handles Word document processing with vessel data from Supabase
@@ -287,8 +288,13 @@ def fetch_template_placeholders(template_id: str,
             if not placeholder_key:
                 continue
                 
+            source = row.get('source') or 'database'
+            # CRITICAL: Convert 'random' to 'database' (database is default)
+            if source == 'random' or source == '' or source is None:
+                source = 'database'
+            
             supabase_settings[placeholder_key] = {
-                'source': row.get('source') or 'database',  # Default to database, not random
+                'source': source,  # Always database by default, never random
                 'customValue': str(row.get('custom_value') or '').strip(),
                 'databaseTable': str(row.get('database_table') or '').strip(),
                 'databaseField': str(row.get('database_field') or '').strip(),
@@ -313,6 +319,13 @@ def fetch_template_placeholders(template_id: str,
     
     # Then, override with Supabase settings (higher priority)
     merged_settings.update(supabase_settings)
+    
+    # CRITICAL: Normalize all sources to 'database' by default (never 'random')
+    for placeholder, setting in merged_settings.items():
+        source = setting.get('source')
+        if not source or source == '' or source == 'random' or source is None:
+            setting['source'] = 'database'
+            logger.debug(f"🔧 Normalized placeholder '{placeholder}' source to 'database' (was: '{source}')")
     
     if merged_settings:
         logger.info(f"Merged {len(merged_settings)} placeholder settings (Supabase: {len(supabase_settings)}, Disk: {len(disk_result)})")
@@ -381,10 +394,15 @@ def upsert_template_placeholders(template_id: str,
     if SUPABASE_ENABLED and settings:
         rows = []
         for placeholder, cfg in settings.items():
+            source = cfg.get('source') or 'database'
+            # CRITICAL: Convert 'random' to 'database' (database is default)
+            if source == 'random' or source == '' or source is None:
+                source = 'database'
+            
             rows.append({
                 'template_id': template_id,
                 'placeholder': placeholder,
-                'source': cfg.get('source') or 'database',  # Default to database, not random
+                'source': source,  # Always database by default, never random
                 'custom_value': cfg.get('customValue'),
                 'database_table': cfg.get('databaseTable') or cfg.get('database_table'),
                 'database_field': cfg.get('databaseField') or cfg.get('database_field'),
@@ -2619,8 +2637,14 @@ async def save_placeholder_settings(request: Request):
             for placeholder, cfg in new_settings.items():
                 if not placeholder:
                     continue
+                # CRITICAL: Force database as default, never allow random/null/empty as default
+                source = cfg.get('source', 'database')
+                if not source or source == '' or source == 'random' or source is None:
+                    source = 'database'
+                    logger.info(f"🔧 Fixed placeholder '{placeholder}': source changed to 'database' (was: '{cfg.get('source')}')")
+                
                 sanitised_settings[placeholder] = {
-                    'source': cfg.get('source', 'database'),
+                    'source': source,  # Always database by default
                     'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
                     'databaseTable': str(cfg.get('databaseTable', '')).strip() if cfg.get('databaseTable') else '',
                     'databaseField': str(cfg.get('databaseField', '')).strip() if cfg.get('databaseField') else '',
