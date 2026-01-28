@@ -152,87 +152,65 @@ class TemplateEditor {
             const settingsData = await this.apiJson(`/placeholder-settings?template_id=${encodeURIComponent(templateId)}`);
             console.log('[loadTemplateById] 📥 Settings data received:', settingsData);
             
-            let originalLoadedSettings = null;
-            if (settingsData && settingsData.settings) {
-                // Handle both formats: settings can be nested by template_id or direct object
-                let loadedSettings = settingsData.settings;
-                if (settingsData.settings[templateId]) {
-                    loadedSettings = settingsData.settings[templateId];
-                    console.log(`[loadTemplateById] 📋 Found nested settings for template_id: ${templateId}`);
-                }
-                originalLoadedSettings = JSON.parse(JSON.stringify(loadedSettings || {})); // Deep copy for comparison
-                this.currentSettings = loadedSettings || {};
-                console.log('[loadTemplateById] 📋 Loaded settings:', this.currentSettings);
-                
-                // CRITICAL: Ensure ALL placeholders have source='database' by default
-                // Fix any placeholders that have source='random', null, empty, or missing
+            const nested = settingsData && settingsData.settings && settingsData.settings[templateId];
+            const loadedSettings = nested || (settingsData && settingsData.settings) || {};
+            const hasStoredSettings = settingsData && settingsData.settings && Object.keys(loadedSettings).length > 0;
+
+            if (!hasStoredSettings) {
+                // No stored settings (e.g. newly uploaded template): default to database only, NO mapping.
+                // Do NOT persist; user configures table/field in editor and saves explicitly.
+                this.currentSettings = {};
+                this.placeholders.forEach(ph => {
+                    this.currentSettings[ph] = { source: 'database' };
+                    console.log(`[loadTemplateById] 🔧 No stored settings: '${ph}' default source='database' (no mapping)`);
+                });
+                this.displayPlaceholders();
+            } else {
+                const originalLoadedSettings = JSON.parse(JSON.stringify(loadedSettings));
+                this.currentSettings = { ...loadedSettings };
+                console.log('[loadTemplateById] 📋 Loaded stored settings:', this.currentSettings);
+                // Ensure all placeholders have source='database' by default; fix random/null/empty
                 this.placeholders.forEach(ph => {
                     if (!this.currentSettings[ph]) {
                         this.currentSettings[ph] = { source: 'database' };
                         console.log(`🔧 Created new setting for '${ph}' with source='database'`);
                     } else {
-                        // Force database if source is random, null, empty, or missing
-                        const currentSource = this.currentSettings[ph].source;
-                        if (!currentSource || currentSource === '' || currentSource === 'random' || currentSource === null || currentSource === undefined) {
+                        const raw = this.currentSettings[ph].source;
+                        if (!raw || raw === '' || raw === 'random' || raw === null || raw === undefined) {
                             this.currentSettings[ph].source = 'database';
-                            console.log(`🔧 Fixed placeholder '${ph}': source changed from '${currentSource}' to 'database'`);
+                            console.log(`🔧 Fixed '${ph}': source -> 'database'`);
                         }
                     }
                 });
-                
-                // Double-check: Normalize ALL settings one more time
                 Object.keys(this.currentSettings).forEach(ph => {
                     const s = this.currentSettings[ph];
                     if (!s.source || s.source === '' || s.source === 'random' || s.source === null || s.source === undefined) {
                         s.source = 'database';
-                        console.log(`🔧 Final normalization: Fixed '${ph}' source to 'database'`);
                     }
                 });
-            } else {
-                this.currentSettings = {};
-                // Initialize all placeholders with 'database' as default source
-                this.placeholders.forEach(ph => {
-                    this.currentSettings[ph] = { source: 'database' };
-                    console.log(`🔧 Initialized placeholder '${ph}' with source='database'`);
-                });
-            }
-            
-            console.log('[loadTemplateById] ✅ Final currentSettings:', this.currentSettings);
-            
-            // Auto-save fixed settings if any were changed from random to database
-            // This ensures the database is updated with correct defaults
-            let settingsChanged = false;
-            if (originalLoadedSettings) {
+                this.displayPlaceholders();
+                let settingsChanged = false;
                 this.placeholders.forEach(ph => {
                     const setting = this.currentSettings[ph];
-                    const originalSetting = originalLoadedSettings[ph];
-                    if (setting && setting.source === 'database') {
-                        // Check if this was changed from random/null
-                        if (originalSetting && (originalSetting.source === 'random' || !originalSetting.source || originalSetting.source === '')) {
-                            settingsChanged = true;
-                            console.log(`🔧 Detected change: '${ph}' was '${originalSetting.source}' now 'database'`);
-                        }
+                    const orig = originalLoadedSettings[ph];
+                    if (setting && setting.source === 'database' && orig && (orig.source === 'random' || !orig.source || orig.source === '')) {
+                        settingsChanged = true;
                     }
                 });
+                if (settingsChanged && !sessionStorage.getItem(`settings_fixed_${templateId}`)) {
+                    console.log('[loadTemplateById] 💾 Auto-saving fixed settings...');
+                    setTimeout(async () => {
+                        try {
+                            await this.savePlaceholderSettings();
+                            sessionStorage.setItem(`settings_fixed_${templateId}`, 'true');
+                        } catch (e) {
+                            console.warn('[loadTemplateById] ⚠️ Auto-save failed:', e);
+                        }
+                    }, 1000);
+                }
             }
-            
-            // Display placeholders
-            this.displayPlaceholders();
-            
-            // Auto-save if settings were fixed (but only once, not on every load)
-            if (settingsChanged && !sessionStorage.getItem(`settings_fixed_${templateId}`)) {
-                console.log('[loadTemplateById] 💾 Auto-saving fixed settings to database...');
-                setTimeout(async () => {
-                    try {
-                        await this.savePlaceholderSettings();
-                        sessionStorage.setItem(`settings_fixed_${templateId}`, 'true');
-                        console.log('[loadTemplateById] ✅ Auto-saved fixed settings');
-                    } catch (e) {
-                        console.warn('[loadTemplateById] ⚠️ Auto-save failed (non-critical):', e);
-                    }
-                }, 1000);
-            }
-            
+            console.log('[loadTemplateById] ✅ Final currentSettings:', this.currentSettings);
+
             // Load plan assignments for this template (after plans are loaded)
             if (this.plans && Object.keys(this.plans).length > 0) {
                 await this.loadTemplatePlans();

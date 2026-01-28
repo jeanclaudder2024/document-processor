@@ -2123,23 +2123,9 @@ async def upload_template(
                         warnings.append("Supabase file storage error; using local copy")
                         logger.error(f"Supabase file upsert error: {file_response.error}")
 
-                    existing_settings = fetch_template_placeholders(template_id, template_record.get('file_name'))
-                    missing_placeholders = [
-                        {
-                            'template_id': template_id,
-                            'placeholder': placeholder,
-                            'source': 'database',
-                            'random_option': 'auto'
-                        }
-                        for placeholder in placeholders
-                        if placeholder not in existing_settings
-                    ]
-                    if missing_placeholders:
-                        placeholders_response = supabase.table('template_placeholders').insert(missing_placeholders).execute()
-                        if getattr(placeholders_response, "error", None):
-                            warnings.append("Supabase placeholder sync error; using local settings")
-                            logger.error(f"Supabase placeholder insert error: {placeholders_response.error}")
-                    
+                    # Do NOT create placeholder settings on upload. Default "database" is display-only
+                    # until user configures in editor.js and saves. Prevents "direct add mapping".
+
                     # Create plan_template_permissions entries for selected plans
                     if plan_ids_list and template_id:
                         try:
@@ -2174,21 +2160,8 @@ async def upload_template(
                 warnings.append("Supabase sync failed; template available locally")
                 logger.error(f"Failed to store template in Supabase: {exc}")
 
-        # Persist placeholder defaults locally (and optionally to Supabase)
-        default_settings: Dict[str, Dict] = {}
-        existing_local_settings = fetch_template_placeholders(template_id or docx_filename, docx_filename)
-        for placeholder in placeholders:
-            default_settings[placeholder] = existing_local_settings.get(placeholder, {
-                'source': 'database',
-                'customValue': '',
-                'databaseField': '',
-                'csvId': '',
-                'csvField': '',
-                'csvRow': 0,
-                'randomOption': 'auto'
-            })
-
-        upsert_template_placeholders(template_id or docx_filename, default_settings, docx_filename)
+        # Do NOT persist placeholder settings on upload. Placeholders default to "database"
+        # in editor.js when none exist; user configures table/field and saves there.
 
         # Remove template from deleted list if it was previously deleted (re-upload scenario)
         unmark_template_as_deleted(docx_filename)
