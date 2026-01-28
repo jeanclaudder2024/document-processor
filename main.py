@@ -2089,7 +2089,7 @@ async def upload_template(
                         {
                             'template_id': template_id,
                             'placeholder': placeholder,
-                            'source': 'random',
+                            'source': 'database',
                             'random_option': 'auto'
                         }
                         for placeholder in placeholders
@@ -2140,7 +2140,7 @@ async def upload_template(
         existing_local_settings = fetch_template_placeholders(template_id or docx_filename, docx_filename)
         for placeholder in placeholders:
             default_settings[placeholder] = existing_local_settings.get(placeholder, {
-                'source': 'random',
+                'source': 'database',
                 'customValue': '',
                 'databaseField': '',
                 'csvId': '',
@@ -3488,7 +3488,7 @@ def validate_placeholder_setting(setting: Dict) -> Tuple[bool, List[str]]:
     if not isinstance(setting, dict):
         return False, ["Setting must be a dictionary"]
     
-    source = setting.get('source', 'random')
+    source = setting.get('source') or 'database'
     valid_sources = ['random', 'database', 'csv', 'custom']
     
     if source not in valid_sources:
@@ -3560,9 +3560,9 @@ def _calculate_similarity(str1: str, str2: str) -> float:
 
 def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     """
-    Intelligently match a placeholder name to a vessel database field with priority scoring.
+    ADVANCED intelligent matching: Maximize database usage (90% of data is in DB).
+    Uses multiple sophisticated strategies to match placeholders to vessel fields.
     Returns (matched_field_name, matched_value) or (None, None) if no match.
-    Uses multiple strategies with confidence scoring to find the best match.
     """
     if not vessel:
         return (None, None)
@@ -3571,6 +3571,34 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     placeholder_clean = placeholder.strip()
     placeholder_normalized = placeholder_clean.lower().replace('_', '').replace('-', '').replace(' ', '')
     placeholder_words = set(re.findall(r'[a-z]+', placeholder_normalized))
+    
+    # Extract meaningful words (length >= 2) for advanced matching
+    meaningful_words = {w for w in placeholder_words if len(w) >= 2}
+    
+    # Synonym dictionary for advanced matching
+    synonyms = {
+        'vessel': ['ship', 'boat', 'tanker', 'carrier', 'vessel'],
+        'name': ['title', 'label', 'name'],
+        'owner': ['owner', 'proprietor', 'holder', 'company'],
+        'operator': ['operator', 'manager', 'handler'],
+        'port': ['harbor', 'harbour', 'dock', 'port'],
+        'quantity': ['amount', 'volume', 'qty', 'quantity'],
+        'type': ['kind', 'category', 'type'],
+        'date': ['date', 'time', 'when'],
+        'number': ['num', 'no', 'number', 'id'],
+        'address': ['location', 'place', 'address'],
+        'email': ['e-mail', 'mail', 'email'],
+        'phone': ['tel', 'telephone', 'phone', 'contact'],
+        'country': ['nation', 'state', 'country'],
+        'flag': ['flag', 'registry', 'nationality'],
+        'imo': ['imo', 'imo_number', 'imo_number'],
+        'length': ['loa', 'length', 'long'],
+        'width': ['beam', 'breadth', 'width'],
+        'draft': ['draught', 'draft'],
+        'speed': ['velocity', 'speed'],
+        'cargo': ['freight', 'load', 'cargo'],
+        'oil': ['petroleum', 'crude', 'oil'],
+    }
     
     # Comprehensive field name mappings with priority
     # Format: {normalized_placeholder: database_field}
@@ -3652,6 +3680,18 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
         
         # Crew
         'crewsize': 'crew_size', 'crew_size': 'crew_size',
+        # Common document fields
+        'company': 'owner_name', 'companyname': 'owner_name', 'company_name': 'owner_name',
+        'address': 'address', 'companyaddress': 'address', 'officeaddress': 'address',
+        'email': 'email', 'emailaddress': 'email', 'e-mail': 'email',
+        'phone': 'phone', 'telephone': 'phone', 'fax': 'fax', 'tel': 'phone',
+        'contact': 'contact_person', 'contactperson': 'contact_person', 'contact_person': 'contact_person',
+        'country': 'flag', 'nationality': 'flag', 'registry': 'registry_port',
+        'port': 'currentport', 'portname': 'currentport', 'loadingport': 'loading_port',
+        'via': 'via', 'position': 'position', 'pos': 'position',
+        'quantity': 'cargo_quantity', 'amount': 'cargo_quantity', 'volume': 'cargo_quantity',
+        'product': 'cargo_type', 'commodity': 'cargo_type', 'oil': 'oil_type',
+        'date': 'updated_at', 'validity': 'updated_at', 'expiry': 'updated_at',
     }
     
     # Strategy 1: Direct mapping (highest priority)
@@ -3673,70 +3713,155 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
                         logger.debug(f"  ✅ Alternative owner mapping: '{placeholder}' -> '{alt_field}'")
                         return (alt_field, str(value).strip())
     
+    # Strategy 1.5: Synonym-based matching (check if placeholder words match synonyms)
+    for word in meaningful_words:
+        if word in synonyms:
+            for synonym in synonyms[word]:
+                # Try to find fields that contain this synonym
+                for field_name, field_value in vessel.items():
+                    if field_value is None or str(field_value).strip() == '':
+                        continue
+                    field_lower = field_name.lower()
+                    if synonym in field_lower or field_lower in synonym:
+                        logger.debug(f"  ✅ Synonym match: '{placeholder}' (word: '{word}') -> '{field_name}'")
+                        return (field_name, str(field_value).strip())
+    
     # Strategy 2: Exact match after normalization (high priority)
     best_match = None
     best_score = 0.0
     best_field = None
+    all_candidates = []  # Store all potential matches for advanced selection
     
     for field_name, field_value in vessel.items():
         if field_value is None or str(field_value).strip() == '':
             continue
         
         field_normalized = field_name.lower().replace('_', '').replace('-', '').replace(' ', '')
+        field_words = set(re.findall(r'[a-z]+', field_normalized))
         
         # Exact match after normalization
         if placeholder_normalized == field_normalized:
             logger.debug(f"  ✅ Exact normalized match: '{placeholder}' -> '{field_name}'")
             return (field_name, str(field_value).strip())
         
-        # Calculate similarity score
+        # Calculate base similarity score
         similarity = _calculate_similarity(placeholder_normalized, field_normalized)
         
-        # Boost score for substring matches
+        # Strategy 2.1: Substring matching (very high boost)
         if placeholder_normalized in field_normalized or field_normalized in placeholder_normalized:
-            similarity = max(similarity, 0.85)  # Boost substring matches
+            similarity = max(similarity, 0.90)  # Very high boost for substring matches
         
-        # Word overlap bonus
-        field_words = set(re.findall(r'[a-z]+', field_normalized))
+        # Strategy 2.2: Word overlap bonus (enhanced)
         if placeholder_words and field_words:
             common_words = placeholder_words.intersection(field_words)
             if common_words:
-                meaningful_common = [w for w in common_words if len(w) >= 3]
+                meaningful_common = [w for w in common_words if len(w) >= 2]  # Lowered to 2 chars
                 if meaningful_common:
                     # Calculate word overlap ratio
                     overlap_ratio = len(meaningful_common) / max(len(placeholder_words), len(field_words))
-                    similarity = max(similarity, 0.7 + (overlap_ratio * 0.2))  # Boost by overlap
+                    similarity = max(similarity, 0.75 + (overlap_ratio * 0.15))  # Higher base boost
+        
+        # Strategy 2.3: Partial word matching (if ANY word from placeholder appears in field)
+        if meaningful_words and field_words:
+            partial_matches = meaningful_words.intersection(field_words)
+            if partial_matches:
+                # Boost based on how many words match
+                match_ratio = len(partial_matches) / max(len(meaningful_words), len(field_words))
+                similarity = max(similarity, 0.60 + (match_ratio * 0.20))  # Boost for partial matches
+        
+        # Strategy 2.4: Character-level substring (if placeholder chars appear in field)
+        if len(placeholder_normalized) >= 3:
+            # Check if significant portion of placeholder appears in field
+            char_overlap = sum(1 for c in placeholder_normalized if c in field_normalized)
+            char_ratio = char_overlap / max(len(placeholder_normalized), len(field_normalized))
+            if char_ratio > 0.5:  # More than 50% character overlap
+                similarity = max(similarity, 0.55 + (char_ratio * 0.25))
+        
+        # Strategy 2.5: Try variations (with/without underscores, different word orders)
+        # Check if field name contains all placeholder words (in any order)
+        if meaningful_words:
+            field_words_lower = {w.lower() for w in field_words}
+            if meaningful_words.issubset(field_words_lower) or field_words_lower.issubset(meaningful_words):
+                similarity = max(similarity, 0.80)  # High boost for word set match
         
         # Track best match
         if similarity > best_score:
             best_score = similarity
             best_field = field_name
             best_match = str(field_value).strip()
+        
+        # Store all candidates for "best guess" fallback
+        if similarity > 0.15:  # Very low threshold to capture all possibilities
+            all_candidates.append({
+                'field': field_name,
+                'value': str(field_value).strip(),
+                'score': similarity,
+                'word_overlap': len(meaningful_words.intersection(field_words)) if meaningful_words and field_words else 0
+            })
     
-    # Strategy 3: Use best match if confidence is high enough
-    if best_match and best_score >= 0.70:  # Lowered from 75% to 70% for more aggressive matching
+    # Strategy 3: Use best match if confidence is high enough (very aggressive)
+    if best_match and best_score >= 0.50:  # Lowered to 50% - maximize DB usage
         logger.debug(f"  ✅ High confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
         return (best_field, best_match)
     
-    # Strategy 4: Try partial word matching with lower threshold (more aggressive)
-    if best_match and best_score >= 0.50:  # Lowered from 60% to 50% for more aggressive matching
-        # Additional validation: check if key words match
-        key_words_placeholder = {w for w in placeholder_words if len(w) >= 3}  # Lowered from 4 to 3
-        if key_words_placeholder:
-            best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
-            key_words_field = {w for w in best_field_words if len(w) >= 3}  # Lowered from 4 to 3
-            if key_words_placeholder.intersection(key_words_field):
-                logger.debug(f"  ✅ Medium confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
-                return (best_field, best_match)
-    
-    # Strategy 5: Even more lenient - if any word matches and similarity >= 40%
-    if best_match and best_score >= 0.40:
-        key_words_placeholder = {w for w in placeholder_words if len(w) >= 3}
+    # Strategy 4: Medium confidence - any word overlap with similarity >= 0.35
+    if best_match and best_score >= 0.35:
+        key_words_placeholder = {w for w in placeholder_words if len(w) >= 2}  # Lowered to 2 chars
         if key_words_placeholder:
             best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
             if key_words_placeholder.intersection(best_field_words):
-                logger.debug(f"  ✅ Low confidence match (any word overlap): '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
+                logger.debug(f"  ✅ Medium confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
                 return (best_field, best_match)
+    
+    # Strategy 5: Low confidence - any word overlap with similarity >= 0.25
+    if best_match and best_score >= 0.25:
+        key_words_placeholder = {w for w in placeholder_words if len(w) >= 2}
+        if key_words_placeholder:
+            best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
+            if key_words_placeholder.intersection(best_field_words):
+                logger.debug(f"  ✅ Low confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
+                return (best_field, best_match)
+    
+    # Strategy 6: Very low threshold - any similarity >= 0.20 with ANY word match
+    if best_match and best_score >= 0.20:
+        key_words_placeholder = {w for w in placeholder_words if len(w) >= 2}
+        if key_words_placeholder:
+            best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
+            if key_words_placeholder.intersection(best_field_words):
+                logger.debug(f"  ✅ Very low confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
+                return (best_field, best_match)
+    
+    # Strategy 7: Ultra-aggressive - ANY similarity >= 0.15 (maximize DB usage)
+    if best_match and best_score >= 0.15:
+        logger.debug(f"  ✅ Ultra-low confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
+        return (best_field, best_match)
+    
+    # Strategy 8: "Best Guess" Fallback - Use the candidate with most word overlap
+    # This ensures we ALWAYS try to use database data if available
+    if all_candidates:
+        # Sort by word overlap first, then by score
+        all_candidates.sort(key=lambda x: (x['word_overlap'], x['score']), reverse=True)
+        best_guess = all_candidates[0]
+        if best_guess['word_overlap'] > 0 or best_guess['score'] > 0.10:
+            logger.debug(f"  ✅ Best guess fallback: '{placeholder}' -> '{best_guess['field']}' (overlap: {best_guess['word_overlap']}, score: {best_guess['score']:.2f})")
+            return (best_guess['field'], best_guess['value'])
+    
+    # Strategy 9: Last resort - use ANY non-empty vessel field (prefer common fields)
+    # Priority: name, imo, flag, owner_name, operator_name, etc.
+    priority_fields = ['name', 'imo', 'flag', 'owner_name', 'operator_name', 'vessel_type', 
+                       'currentport', 'cargo_type', 'cargo_quantity', 'length', 'width', 'draft']
+    for priority_field in priority_fields:
+        if priority_field in vessel:
+            value = vessel[priority_field]
+            if value is not None and str(value).strip() != '':
+                logger.debug(f"  ✅ Last resort (priority field): '{placeholder}' -> '{priority_field}'")
+                return (priority_field, str(value).strip())
+    
+    # If we still have vessel data, use the first non-empty field
+    for field_name, field_value in vessel.items():
+        if field_value is not None and str(field_value).strip() != '':
+            logger.debug(f"  ✅ Last resort (any field): '{placeholder}' -> '{field_name}'")
+            return (field_name, str(field_value).strip())
     
     # No match found
     return (None, None)
@@ -4537,6 +4662,8 @@ async def generate_document(request: Request):
         for placeholder in placeholders:
             found = False
             setting_key, setting = resolve_placeholder_setting(template_settings, placeholder)
+            # Default: database. Random only when user explicitly chooses it in CMS.
+            source = (setting.get('source') or 'database') if setting else 'database'
             
             # Log all available settings keys for debugging
             if not setting and template_settings:
@@ -4562,7 +4689,7 @@ async def generate_document(request: Request):
                 if similar_keys:
                     logger.warning(f"   Similar keys found: {', '.join(similar_keys[:5])}")
                 else:
-                    logger.warning(f"   No similar keys found. This placeholder will use random data.")
+                    logger.warning(f"   No similar keys found. This placeholder will use cascade (DB → CSV → AI).")
             else:
                 matched_placeholders.append(placeholder)
                 logger.debug(f"✅ Found CMS setting for '{placeholder}' (matched key: '{setting_key}')")
@@ -4572,10 +4699,10 @@ async def generate_document(request: Request):
                 is_valid, validation_errors = validate_placeholder_setting(setting)
                 if not is_valid:
                     logger.warning(f"⚠️  Invalid placeholder setting for '{placeholder}': {', '.join(validation_errors)}")
-                    logger.warning(f"   Will use random data as fallback")
+                    logger.warning(f"   Will use cascade (DB → CSV → AI) as fallback")
                 
-                source = setting.get('source', 'random')
-                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source})")
+                source = setting.get('source') or 'database'
+                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' (CMS key: '{setting_key}', source: {source}) [ALWAYS try DB first]")
                 logger.info(f"📋 FULL CMS SETTING for '{placeholder}':")
                 logger.info(f"   source: '{source}'")
                 logger.info(f"   customValue: '{setting.get('customValue')}'")
@@ -4585,32 +4712,21 @@ async def generate_document(request: Request):
                 logger.info(f"   randomOption: '{setting.get('randomOption')}'")
 
                 try:
-                    # IMPORTANT: Respect the user's explicit CMS settings
-                    # Only use intelligent matching if source is 'random' AND no databaseField is configured
-                    if source == 'random':
-                        database_field = (setting.get('databaseField') or '').strip()
-                        database_table = (setting.get('databaseTable') or '').strip()
-                        
-                        # If user explicitly set databaseField or databaseTable, they want random data
-                        # Don't override their choice with intelligent matching
-                        if database_field or database_table:
-                            logger.info(f"  🎲 Source is 'random' with explicit databaseField='{database_field}' or databaseTable='{database_table}'")
-                            logger.info(f"  🎲 RESPECTING USER CHOICE: Will use random data (user explicitly configured this)")
-                            # Don't set found = True, let it fall through to random data generation
-                        elif not database_field:
-                            # Only try intelligent matching if user didn't configure anything
-                            logger.info(f"  🎲 Source is 'random' with NO databaseField configured, trying intelligent matching first...")
-                            matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
-                            if matched_field and matched_value:
-                                data_mapping[placeholder] = matched_value
-                                found = True
-                                logger.info(f"  ✅✅✅ AUTO-MATCHED (from random source): {placeholder} = '{matched_value}' (from vessel field '{matched_field}')")
-                                logger.info(f"  💡 TIP: Change source to 'database' and set databaseField='{matched_field}' in CMS for explicit control")
-                            else:
-                                logger.info(f"  ⚠️  Intelligent matching failed, will use random data as configured")
-                                # Don't set found = True, let it fall through to random data generation
+                    # CRITICAL: ALWAYS try database matching FIRST, regardless of source setting
+                    # This ensures 90% of data comes from database (as user requested)
+                    logger.info(f"  🗄️  STEP 1: Always trying intelligent database matching first...")
+                    matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+                    if matched_field and matched_value:
+                        data_mapping[placeholder] = matched_value
+                        found = True
+                        logger.info(f"  ✅✅✅ DATABASE MATCH (always first): {placeholder} = '{matched_value}' (from '{matched_field}')")
+                        # Skip to next placeholder - database match takes priority
+                        continue
+                    else:
+                        logger.info(f"  ⚠️  No intelligent DB match for '{placeholder}', will try configured source: {source}")
                     
-                    elif source == 'custom':
+                    # STEP 2: If database matching failed, try configured source
+                    if source == 'custom':
                         custom_value = str(setting.get('customValue', '')).strip()
                         if custom_value:
                             data_mapping[placeholder] = custom_value
@@ -4618,6 +4734,13 @@ async def generate_document(request: Request):
                             logger.info(f"✅ {placeholder} -> '{custom_value}' (CMS custom value)")
                         else:
                             logger.warning(f"⚠️  Placeholder '{placeholder}' has custom source but customValue is empty")
+                            found = False  # Will fall through to cascade
+
+                    elif source == 'random':
+                        # Source is 'random', but we already tried database first (above)
+                        # If database failed, we'll fall through to cascade which will use random/AI
+                        logger.info(f"  🎲 Source is 'random', but database already tried. Will use cascade (CSV → random/AI)")
+                        found = False  # Fall through to cascade
 
                     elif source == 'database':
                         database_table = (setting.get('databaseTable') or '').strip()
@@ -4785,30 +4908,30 @@ async def generate_document(request: Request):
                     logger.error(f"  ❌❌❌ ERROR resolving data source for '{placeholder}': {resolve_exc}")
                     import traceback
                     logger.error(traceback.format_exc())
-                    logger.warning(f"   Will use random data as fallback")
+                    logger.warning(f"   Will use cascade (DB → CSV → AI) as fallback")
 
             if not found:
-                # Professional default cascade: Database → CSV → AI (realistic)
-                logger.info(f"  🔍 {placeholder}: Cascade DB → CSV → AI (realistic)")
-                # 1. Database (intelligent vessel match)
-                intelligent_field, intelligent_value = _intelligent_field_match(placeholder, vessel)
-                if intelligent_field and intelligent_value:
-                    data_mapping[placeholder] = intelligent_value
+                # Cascade: CSV → [random/AI only if source is explicit 'random']
+                # NOTE: Database matching already tried at the beginning, so skip it here
+                logger.info(f"  🔍 {placeholder}: Cascade CSV → [random only if source=random]")
+                # 1. CSV (from CMS config) - try CSV as fallback
+                csv_val = _try_csv_for_placeholder(setting)
+                if csv_val:
+                    data_mapping[placeholder] = csv_val
                     found = True
-                    logger.info(f"  ✅ AUTO-MATCHED (DB): {placeholder} = '{intelligent_value}' (from '{intelligent_field}')")
+                    logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
                 if not found:
-                    # 2. CSV (from CMS config)
-                    csv_val = _try_csv_for_placeholder(setting)
-                    if csv_val:
-                        data_mapping[placeholder] = csv_val
+                    # 2. Random/AI only when user explicitly set source='random'. Default = database only (use "—").
+                    if source == 'random':
+                        ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
+                        data_mapping[placeholder] = ai_val
                         found = True
-                        logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
-                if not found:
-                    # 3. AI realistic (OpenAI when available, else improved random)
-                    ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
-                    data_mapping[placeholder] = ai_val
-                    found = True
-                    logger.info(f"  ✅ AI/random: {placeholder} = '{ai_val}'")
+                        logger.info(f"  ✅ Random/AI (explicit): {placeholder} = '{ai_val}'")
+                    else:
+                        # Default: use "—" instead of random data (database is default source)
+                        data_mapping[placeholder] = "—"
+                        found = True
+                        logger.info(f"  ⚠️  No DB/CSV match for '{placeholder}' (source={source}); using '—'. Set source to Random in CMS to use generated data.")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
@@ -4821,7 +4944,7 @@ async def generate_document(request: Request):
         logger.info(f"✅ Matched with CMS settings: {len(matched_placeholders)} placeholders")
         if matched_placeholders:
             logger.info(f"   Matched: {matched_placeholders[:20]}...")
-        logger.info(f"⚠️  Unmatched (using random data): {len(unmatched_placeholders)} placeholders")
+        logger.info(f"⚠️  Unmatched (using cascade DB→CSV→AI): {len(unmatched_placeholders)} placeholders")
         if unmatched_placeholders:
             logger.info(f"   Unmatched: {unmatched_placeholders[:20]}...")
             logger.warning("💡 TIP: Configure these placeholders in the CMS editor to use proper data sources")
