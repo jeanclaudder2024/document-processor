@@ -4588,7 +4588,21 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl:
         return f"{random.randint(1000, 50000):,} MT"
 
-    return f"Value-{random.randint(1000, 9999)}"
+    # Via / carrier / route
+    if 'via' in pl or 'carrier' in pl or 'route' in pl:
+        return random.choice(['MSC', 'Maersk', 'CMA CGM', 'Hapag-Lloyd', 'Evergreen', 'COSCO', 'ONE', 'NYK'])
+    # Position / title
+    if 'position' in pl or 'title' in pl or 'role' in pl:
+        return random.choice(['Operations Manager', 'Chartering Manager', 'Vessel Operator', 'Trader', 'Shipping Coordinator', 'Port Captain'])
+    # BIN / OKPO / code / id (generic)
+    if 'bin' in pl or 'okpo' in pl or ('code' in pl and 'via' not in pl) or ('id' in pl and 'imo' not in pl and 'vessel' not in pl):
+        return f"{random.choice(['BIN', 'OKPO', 'ID'])}-{random.randint(100000, 999999)}"
+    # Generic code/number
+    if 'number' in pl or 'no' in pl or 'num' in pl:
+        return f"REF-{random.randint(100000, 999999)}"
+
+    # No match: use em dash (professional) instead of "Value-XXXX"
+    return EMPTY_PLACEHOLDER
 
 
 def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
