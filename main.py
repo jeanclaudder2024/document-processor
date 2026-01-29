@@ -1468,27 +1468,32 @@ def _ai_analyze_and_map_placeholders(
     csv_str = ", ".join(csv_flat[:150]) if csv_flat else "(none)"
     ph_list = ", ".join(placeholders[:120])
 
-    prompt = f"""You are a maritime document expert. For each placeholder, choose the best source:
-- **database**: vessel/ship/port/company data. Use table.column from the list.
-- **csv**: data from uploaded CSV files. Use csv:csvId.field from the list.
+    prompt = f"""You are a maritime document expert. Analyse each placeholder and choose the best source.
+
+**Sources:**
+- **database**: vessel/ship/port/refinery/company data. Use table.column from the list.
+- **csv**: data from uploaded CSV files (buyers, sellers, contacts, etc.). Use csvId.field from the list.
 - **random**: no good match; we will generate realistic AI data at runtime.
 
-Database options (table.column): {db_str}
-CSV options (csv:csvId.field): {csv_str}
+**Database options (table.column):** {db_str}
 
-Placeholders: {ph_list}
+**CSV options (csvId.field):** {csv_str}
 
-Rules:
-- Prefer database (vessels, ports, etc.) when the placeholder clearly matches (e.g. vessel name, IMO, port).
-- Use csv only when the placeholder matches a CSV field (e.g. buyer company, seller address).
-- Use random when no database or CSV fit.
+**Placeholders to map:** {ph_list}
+
+**Rules (follow strictly):**
+1. **Buyer/seller data**: Placeholders that refer to BUYER or SELLER (name, company, email, address, phone, contact, etc.) MUST use **csv** when a matching CSV field exists. Example: BUYER_NAME, SELLER_COMPANY, BUYER_EMAIL → csv with buyer_name, seller_company, buyer_email, etc.
+2. **Vessel/ship data**: IMO, vessel name, flag, port, cargo, etc. → **database** (vessels, ports). Use table.column from the list.
+3. **Company/port/refinery** (not buyer/seller): Use **database** when a matching table.column exists.
+4. **Use csv** for any placeholder that clearly matches a CSV column (e.g. invoice party, beneficiary, bank details, contact person) when such CSV fields exist.
+5. **Use random** only when no database or CSV fit.
 
 Return a JSON object only. Each key is an exact placeholder string. Each value is one of:
 {{"source": "database", "table": "vessels", "column": "imo"}}
-{{"source": "csv", "csvId": "buyers_sellers", "csvField": "buyer_name"}}
+{{"source": "csv", "csvId": "<id>", "csvField": "<field>"}}
 {{"source": "random"}}
 
-Use exact placeholder strings as keys. Valid table.column and csvId.field only. No other text."""
+Use exact placeholder strings as keys. Only valid table.column and csvId.field from the lists above. No other text."""
 
     result: Dict[str, Dict] = {}
     try:
@@ -5381,21 +5386,19 @@ async def generate_document(request: Request):
                 matched_placeholders.append(placeholder)
                 logger.debug(f"✅ Found CMS setting for '{placeholder}' (matched key: '{setting_key}')")
 
-            # Preserve explicit (table, column): never overwrite with intelligent match.
-            # When user configured database_table + database_field, use those first; skip "intelligent match first".
-            has_explicit_db = False
-            if setting:
-                src = setting.get('source') or 'database'
-                dt = (setting.get('databaseTable') or '').strip()
-                df = (setting.get('databaseField') or '').strip()
-                if src == 'database' and dt and df:
-                    has_explicit_db = True
+            # Respect editor choice: only try "intelligent DB first" when source is database (or no setting).
+            # When user chose csv / custom / random, never override with DB – use their choice.
+            src = (setting.get('source') or 'database') if setting else 'database'
+            dt = (setting.get('databaseTable') or '').strip() if setting else ''
+            df = (setting.get('databaseField') or '').strip() if setting else ''
+            has_explicit_db = bool(setting and src == 'database' and dt and df)
+            run_intelligent_db_first = (not setting) or (src == 'database')
 
             if has_explicit_db:
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [explicit (table, column) configured; using those first]")
-            else:
-                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [ALWAYS try DB first]")
-                logger.info(f"  🗄️  STEP 1: Trying intelligent database matching first...")
+            elif run_intelligent_db_first:
+                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [source=database; trying intelligent DB match first]")
+                logger.info(f"  🗄️  STEP 1: Trying intelligent database matching...")
                 matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
                 if matched_field and matched_value:
                     data_mapping[placeholder] = _normalize_replacement_value(matched_value)
@@ -5403,6 +5406,8 @@ async def generate_document(request: Request):
                     logger.info(f"  ✅✅✅ DATABASE MATCH (intelligent): {placeholder} = '{matched_value}' (from '{matched_field}')")
                     continue
                 logger.info(f"  ⚠️  No intelligent DB match for '{placeholder}', will try configured source or cascade")
+            else:
+                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [source={src}; using configured source only, no DB override]")
 
             if setting:
                 # Validate setting structure
@@ -5433,9 +5438,8 @@ async def generate_document(request: Request):
                             found = False  # Will fall through to cascade
 
                     elif source == 'random':
-                        # Source is 'random', but we already tried database first (above)
-                        # If database failed, we'll fall through to cascade which will use random/AI
-                        logger.info(f"  🎲 Source is 'random', but database already tried. Will use cascade (CSV → random/AI)")
+                        # Use cascade: try CSV if configured, else random/AI. No DB override.
+                        logger.info(f"  🎲 Source is 'random'. Will use cascade (CSV if configured → random/AI)")
                         found = False  # Fall through to cascade
 
                     elif source == 'database':
@@ -5604,9 +5608,8 @@ async def generate_document(request: Request):
                     logger.warning(f"   Will use cascade (DB → CSV → AI) as fallback")
 
             if not found:
-                # Cascade: CSV → [random/AI only if source is explicit 'random']
-                # NOTE: Database matching already tried at the beginning, so skip it here
-                logger.info(f"  🔍 {placeholder}: Cascade CSV → [random only if source=random]")
+                # Cascade: CSV fallback → then always AI-generated realistic data (never leave empty)
+                logger.info(f"  🔍 {placeholder}: Cascade CSV → AI (realistic fallback)")
                 # 1. CSV (from CMS config) - try CSV as fallback
                 csv_val = _try_csv_for_placeholder(setting)
                 if csv_val:
@@ -5614,17 +5617,11 @@ async def generate_document(request: Request):
                     found = True
                     logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
                 if not found:
-                    # 2. Random/AI only when user explicitly set source='random'. Default = database only (use "—").
-                    if source == 'random':
-                        ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
-                        data_mapping[placeholder] = _normalize_replacement_value(ai_val)
-                        found = True
-                        logger.info(f"  ✅ Random/AI (explicit): {placeholder} = '{ai_val}'")
-                    else:
-                        # Default: use "—" instead of random data (database is default source)
-                        data_mapping[placeholder] = EMPTY_PLACEHOLDER
-                        found = True
-                        logger.info(f"  ⚠️  No DB/CSV match for '{placeholder}' (source={source}); using '—'. Set source to Random in CMS to use generated data.")
+                    # 2. Always generate realistic AI data when no match – never use "—"
+                    ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
+                    data_mapping[placeholder] = _normalize_replacement_value(ai_val)
+                    found = True
+                    logger.info(f"  ✅ AI (realistic fallback): {placeholder} = '{ai_val}'")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
