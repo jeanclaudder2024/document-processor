@@ -166,48 +166,22 @@ class TemplateEditor {
                 });
                 this.displayPlaceholders();
             } else {
-                const originalLoadedSettings = JSON.parse(JSON.stringify(loadedSettings));
                 this.currentSettings = { ...loadedSettings };
                 console.log('[loadTemplateById] 📋 Loaded stored settings:', this.currentSettings);
-                // Ensure all placeholders have source='database' by default; fix random/null/empty
+                // Only default to database when placeholder has no stored setting. Preserve explicit csv/random.
                 this.placeholders.forEach(ph => {
                     if (!this.currentSettings[ph]) {
-                        this.currentSettings[ph] = { source: 'database' };
+                        this.currentSettings[ph] = { source: 'database', databaseTable: '', databaseField: '', csvId: '', csvField: '', csvRow: 0, customValue: '', randomOption: 'ai' };
                         console.log(`🔧 Created new setting for '${ph}' with source='database'`);
                     } else {
-                        const raw = this.currentSettings[ph].source;
-                        if (!raw || raw === '' || raw === 'random' || raw === null || raw === undefined) {
+                        const s = this.currentSettings[ph].source;
+                        if (s === undefined || s === null || (typeof s === 'string' && !s.trim())) {
                             this.currentSettings[ph].source = 'database';
-                            console.log(`🔧 Fixed '${ph}': source -> 'database'`);
+                            console.log(`🔧 Defaulted '${ph}': source -> 'database' (was missing)`);
                         }
-                    }
-                });
-                Object.keys(this.currentSettings).forEach(ph => {
-                    const s = this.currentSettings[ph];
-                    if (!s.source || s.source === '' || s.source === 'random' || s.source === null || s.source === undefined) {
-                        s.source = 'database';
                     }
                 });
                 this.displayPlaceholders();
-                let settingsChanged = false;
-                this.placeholders.forEach(ph => {
-                    const setting = this.currentSettings[ph];
-                    const orig = originalLoadedSettings[ph];
-                    if (setting && setting.source === 'database' && orig && (orig.source === 'random' || !orig.source || orig.source === '')) {
-                        settingsChanged = true;
-                    }
-                });
-                if (settingsChanged && !sessionStorage.getItem(`settings_fixed_${templateId}`)) {
-                    console.log('[loadTemplateById] 💾 Auto-saving fixed settings...');
-                    setTimeout(async () => {
-                        try {
-                            await this.savePlaceholderSettings();
-                            sessionStorage.setItem(`settings_fixed_${templateId}`, 'true');
-                        } catch (e) {
-                            console.warn('[loadTemplateById] ⚠️ Auto-save failed:', e);
-                        }
-                    }, 1000);
-                }
             }
             console.log('[loadTemplateById] ✅ Final currentSettings:', this.currentSettings);
 
@@ -465,16 +439,7 @@ class TemplateEditor {
                 csvRow: 0, 
                 randomOption: 'ai' 
             };
-            
-            // CRITICAL: Force database if source is random, null, empty, or missing
-            if (!setting.source || setting.source === '' || setting.source === 'random' || setting.source === null || setting.source === undefined) {
-                setting = { ...setting, source: 'database' };
-                // Update currentSettings to persist the fix
-                if (!this.currentSettings[ph]) {
-                    this.currentSettings[ph] = {};
-                }
-                this.currentSettings[ph].source = 'database';
-            }
+            const src = (setting.source === undefined || setting.source === null || (typeof setting.source === 'string' && !setting.source.trim())) ? 'database' : String(setting.source);
             
             return `
                 <div class="placeholder-config" data-placeholder="${ph}">
@@ -482,15 +447,15 @@ class TemplateEditor {
                         <strong><code>${ph}</code></strong>
                         <select class="form-select form-select-sm" style="width: 150px;" 
                                 onchange="editor.handleSourceChange('${ph}', this.value)">
-                            <option value="database" ${(setting.source === 'database' || !setting.source || setting.source === '' || setting.source === 'random' || setting.source === null || setting.source === undefined) ? 'selected' : ''}>Database</option>
-                            <option value="random" ${(setting.source === 'random' && setting.source !== null && setting.source !== undefined && setting.source !== '') ? 'selected' : ''}>Random</option>
-                            <option value="custom" ${setting.source === 'custom' ? 'selected' : ''}>Custom</option>
-                            <option value="csv" ${setting.source === 'csv' ? 'selected' : ''}>CSV</option>
+                            <option value="database" ${src === 'database' ? 'selected' : ''}>Database</option>
+                            <option value="random" ${src === 'random' ? 'selected' : ''}>Random</option>
+                            <option value="custom" ${src === 'custom' ? 'selected' : ''}>Custom</option>
+                            <option value="csv" ${src === 'csv' ? 'selected' : ''}>CSV</option>
                         </select>
                     </div>
                     
                     <!-- Custom Value -->
-                    <div class="source-option ${setting.source === 'custom' ? 'active' : ''}" data-source="custom">
+                    <div class="source-option ${src === 'custom' ? 'active' : ''}" data-source="custom">
                         <label class="form-label small">Custom Value:</label>
                         <input type="text" class="form-control form-control-sm" 
                                value="${setting.customValue || ''}" 
@@ -499,7 +464,7 @@ class TemplateEditor {
                     </div>
                     
                     <!-- Database Source -->
-                    <div class="source-option ${(setting.source === 'database' || !setting.source || setting.source === '' || setting.source === 'random' || setting.source === null || setting.source === undefined) ? 'active' : ''}" data-source="database">
+                    <div class="source-option ${src === 'database' ? 'active' : ''}" data-source="database">
                         <label class="form-label small">Database Table:</label>
                         <select class="form-select form-select-sm mb-2" id="dbTable_${ph}"
                                 onchange="editor.handleDatabaseTableChange('${ph}', this.value)">
@@ -518,7 +483,7 @@ class TemplateEditor {
                     </div>
                     
                     <!-- CSV Source -->
-                    <div class="source-option ${setting.source === 'csv' ? 'active' : ''}" data-source="csv">
+                    <div class="source-option ${src === 'csv' ? 'active' : ''}" data-source="csv">
                         <label class="form-label small">CSV File:</label>
                         <select class="form-select form-select-sm mb-2" id="csvFile_${ph}"
                                 onchange="editor.handleCsvFileChange('${ph}', this.value)">
@@ -543,7 +508,7 @@ class TemplateEditor {
                     </div>
                     
                     <!-- Random Source -->
-                    <div class="source-option ${setting.source === 'random' ? 'active' : ''}" data-source="random">
+                    <div class="source-option ${src === 'random' ? 'active' : ''}" data-source="random">
                         <label class="form-label small">Random Mode:</label>
                         <select class="form-select form-select-sm" 
                                 onchange="editor.updateSetting('${ph}', 'randomOption', this.value)">
@@ -632,13 +597,20 @@ class TemplateEditor {
         const fieldSelect = document.getElementById(`csvField_${placeholder}`);
         if (!fieldSelect) return;
         
-        if (csvId && this.csvFields[csvId]) {
-            fieldSelect.innerHTML = '<option value="">-- Select field --</option>' +
-                this.csvFields[csvId].map(f => 
-                    `<option value="${f.name}" ${selectedField === f.name ? 'selected' : ''}>
-                        ${f.label || f.name} (${f.name})
-                    </option>`
-                ).join('');
+        if (csvId) {
+            if (!this.csvFields[csvId]) {
+                await this.loadCsvFields(csvId);
+            }
+            if (this.csvFields[csvId]) {
+                fieldSelect.innerHTML = '<option value="">-- Select field --</option>' +
+                    this.csvFields[csvId].map(f => 
+                        `<option value="${f.name}" ${selectedField === f.name ? 'selected' : ''}>
+                            ${f.label || f.name} (${f.name})
+                        </option>`
+                    ).join('');
+            } else {
+                fieldSelect.innerHTML = '<option value="">-- Select field --</option>';
+            }
         } else {
             fieldSelect.innerHTML = '<option value="">-- Select field --</option>';
         }
@@ -766,12 +738,13 @@ class TemplateEditor {
         }
 
         try {
-            // CRITICAL: Ensure all settings have source='database' by default (not random)
+            // Default to database only when source is missing or empty. Preserve explicit random/csv.
             Object.keys(this.currentSettings).forEach(ph => {
                 const setting = this.currentSettings[ph];
-                if (!setting.source || setting.source === '' || setting.source === 'random' || setting.source === null || setting.source === undefined) {
+                const s = setting.source;
+                if (s === undefined || s === null || (typeof s === 'string' && !s.trim())) {
                     setting.source = 'database';
-                    console.log(`🔧 Fixed placeholder '${ph}': source changed to 'database' before save`);
+                    console.log(`🔧 Defaulted placeholder '${ph}': source -> 'database' before save (was missing)`);
                 }
             });
             

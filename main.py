@@ -288,13 +288,14 @@ def fetch_template_placeholders(template_id: str,
             if not placeholder_key:
                 continue
                 
-            source = row.get('source') or 'database'
-            # CRITICAL: Convert 'random' to 'database' (database is default)
-            if source == 'random' or source == '' or source is None:
+            source = row.get('source')
+            if source is None or (isinstance(source, str) and not source.strip()):
                 source = 'database'
+            else:
+                source = str(source).strip()
             
             supabase_settings[placeholder_key] = {
-                'source': source,  # Always database by default, never random
+                'source': source,
                 'customValue': str(row.get('custom_value') or '').strip(),
                 'databaseTable': str(row.get('database_table') or '').strip(),
                 'databaseField': str(row.get('database_field') or '').strip(),
@@ -320,12 +321,12 @@ def fetch_template_placeholders(template_id: str,
     # Then, override with Supabase settings (higher priority)
     merged_settings.update(supabase_settings)
     
-    # CRITICAL: Normalize all sources to 'database' by default (never 'random')
+    # Default to 'database' only when source is missing or empty. Preserve explicit random/csv.
     for placeholder, setting in merged_settings.items():
         source = setting.get('source')
-        if not source or source == '' or source == 'random' or source is None:
+        if source is None or (isinstance(source, str) and not source.strip()):
             setting['source'] = 'database'
-            logger.debug(f"🔧 Normalized placeholder '{placeholder}' source to 'database' (was: '{source}')")
+            logger.debug(f"Normalized placeholder '{placeholder}' source to 'database' (was missing)")
     
     if merged_settings:
         logger.info(f"Merged {len(merged_settings)} placeholder settings (Supabase: {len(supabase_settings)}, Disk: {len(disk_result)})")
@@ -394,15 +395,16 @@ def upsert_template_placeholders(template_id: str,
     if SUPABASE_ENABLED and settings:
         rows = []
         for placeholder, cfg in settings.items():
-            source = cfg.get('source') or 'database'
-            # CRITICAL: Convert 'random' to 'database' (database is default)
-            if source == 'random' or source == '' or source is None:
+            source = cfg.get('source')
+            if source is None or (isinstance(source, str) and not source.strip()):
                 source = 'database'
+            else:
+                source = str(source).strip()
             
             rows.append({
                 'template_id': template_id,
                 'placeholder': placeholder,
-                'source': source,  # Always database by default, never random
+                'source': source,
                 'custom_value': cfg.get('customValue'),
                 'database_table': cfg.get('databaseTable') or cfg.get('database_table'),
                 'database_field': cfg.get('databaseField') or cfg.get('database_field'),
@@ -1108,9 +1110,9 @@ async def get_database_table_columns(table_name: str, request: Request):
                 
                 return {"success": True, "table": table_name, "columns": columns}
             else:
-                # Table exists but is empty, try to get schema info
-                # For now, return empty list
-                return {"success": True, "table": table_name, "columns": []}
+                # Table exists but is empty: use predefined columns so editor can still select fields
+                predefined_columns = _get_predefined_table_columns(table_name)
+                return {"success": True, "table": table_name, "columns": predefined_columns}
         except Exception as table_exc:
             logger.error(f"Error querying table {table_name}: {table_exc}")
             # Fallback to predefined column lists for known tables
@@ -1127,52 +1129,162 @@ async def get_database_table_columns(table_name: str, request: Request):
 
 
 def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
-    """Get predefined column list for known tables (fallback)"""
+    """Get predefined column list for known tables (fallback). Aligned with real DB schema (types.ts)."""
+
+    def col(n: str, lbl: str, t: str = 'text') -> Dict[str, str]:
+        return {'name': n, 'label': lbl, 'type': t}
+
     predefined = {
         'vessels': [
-            {'name': 'id', 'label': 'ID', 'type': 'integer'},
-            {'name': 'name', 'label': 'Vessel Name', 'type': 'text'},
-            {'name': 'imo', 'label': 'IMO Number', 'type': 'text'},
-            {'name': 'mmsi', 'label': 'MMSI', 'type': 'text'},
-            {'name': 'vessel_type', 'label': 'Vessel Type', 'type': 'text'},
-            {'name': 'flag', 'label': 'Flag', 'type': 'text'},
-            {'name': 'built', 'label': 'Year Built', 'type': 'integer'},
-            {'name': 'deadweight', 'label': 'Deadweight', 'type': 'numeric'},
-            {'name': 'cargo_capacity', 'label': 'Cargo Capacity', 'type': 'numeric'},
-            {'name': 'length', 'label': 'Length', 'type': 'numeric'},
-            {'name': 'width', 'label': 'Width', 'type': 'numeric'},
-            {'name': 'beam', 'label': 'Beam', 'type': 'numeric'},
-            {'name': 'draft', 'label': 'Draft', 'type': 'numeric'},
-            {'name': 'gross_tonnage', 'label': 'Gross Tonnage', 'type': 'numeric'},
-            {'name': 'owner_name', 'label': 'Owner Name', 'type': 'text'},
-            {'name': 'operator_name', 'label': 'Operator Name', 'type': 'text'},
-            {'name': 'callsign', 'label': 'Call Sign', 'type': 'text'},
+            col('id', 'ID', 'integer'),
+            col('name', 'Vessel Name'),
+            col('imo', 'IMO Number'),
+            col('mmsi', 'MMSI'),
+            col('vessel_type', 'Vessel Type'),
+            col('flag', 'Flag'),
+            col('built', 'Year Built', 'integer'),
+            col('deadweight', 'Deadweight', 'numeric'),
+            col('cargo_capacity', 'Cargo Capacity', 'numeric'),
+            col('cargo_capacity_bbl', 'Cargo Capacity (bbl)', 'numeric'),
+            col('length', 'Length', 'numeric'),
+            col('width', 'Width', 'numeric'),
+            col('beam', 'Beam'),
+            col('draft', 'Draft'),
+            col('draught', 'Draught', 'numeric'),
+            col('gross_tonnage', 'Gross Tonnage', 'numeric'),
+            col('owner_name', 'Owner Name'),
+            col('operator_name', 'Operator Name'),
+            col('callsign', 'Call Sign'),
+            col('currentport', 'Current Port'),
+            col('loading_port', 'Loading Port'),
+            col('discharge_port', 'Discharge Port'),
+            col('departure_port', 'Departure Port ID', 'integer'),
+            col('destination_port', 'Destination Port ID', 'integer'),
+            col('destination', 'Destination'),
+            col('eta', 'ETA'),
+            col('nav_status', 'Nav Status'),
+            col('status', 'Status'),
+            col('vesselstatus', 'Vessel Status'),
+            col('fuel_consumption', 'Fuel Consumption', 'numeric'),
+            col('engine_power', 'Engine Power', 'numeric'),
+            col('speed', 'Speed'),
+            col('service_speed', 'Service Speed'),
+            col('deal_value', 'Deal Value', 'numeric'),
+            col('dealvalue', 'Deal Value (text)'),
+            col('deal_status', 'Deal Status'),
+            col('deal_reference_id', 'Deal Reference ID'),
+            col('buyer_name', 'Buyer Name'),
+            col('seller_name', 'Seller Name'),
+            col('buyer_company_id', 'Buyer Company ID', 'integer'),
+            col('seller_company_id', 'Seller Company ID', 'integer'),
+            col('company_id', 'Company ID', 'integer'),
+            col('refinery_id', 'Refinery ID'),
+            col('price', 'Price', 'numeric'),
+            col('market_price', 'Market Price', 'numeric'),
+            col('indicative_price', 'Indicative Price', 'numeric'),
+            col('quantity', 'Quantity', 'numeric'),
+            col('cargo_quantity', 'Cargo Quantity', 'numeric'),
+            col('total_shipment_quantity', 'Total Shipment Quantity', 'numeric'),
+            col('cargo_type', 'Cargo Type'),
+            col('oil_type', 'Oil Type'),
+            col('oil_source', 'Oil Source'),
+            col('commodity_name', 'Commodity Name'),
+            col('commodity_category', 'Commodity Category'),
+            col('quality_specification', 'Quality Specification'),
+            col('current_region', 'Current Region'),
+            col('route_info', 'Route Info'),
+            col('route_distance', 'Route Distance', 'numeric'),
+            col('routedistance', 'Route Distance (text)'),
+            col('arrival_date', 'Arrival Date'),
+            col('departure_date', 'Departure Date'),
+            col('payment_method', 'Payment Method'),
+            col('payment_timing', 'Payment Timing'),
+            col('delivery_method', 'Delivery Method'),
+            col('delivery_terms', 'Delivery Terms'),
+            col('shipping_type', 'Shipping Type'),
+            col('contract_type', 'Contract Type'),
+            col('source_company', 'Source Company'),
+            col('source_refinery', 'Source Refinery'),
+            col('target_refinery', 'Target Refinery'),
+            col('voyage_status', 'Voyage Status'),
+            col('voyage_notes', 'Voyage Notes'),
+            col('crew_size', 'Crew Size', 'integer'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+            col('last_updated', 'Last Updated'),
         ],
         'ports': [
-            {'name': 'id', 'label': 'ID', 'type': 'integer'},
-            {'name': 'name', 'label': 'Port Name', 'type': 'text'},
-            {'name': 'country', 'label': 'Country', 'type': 'text'},
-            {'name': 'city', 'label': 'City', 'type': 'text'},
-            {'name': 'latitude', 'label': 'Latitude', 'type': 'numeric'},
-            {'name': 'longitude', 'label': 'Longitude', 'type': 'numeric'},
+            col('id', 'ID', 'integer'),
+            col('name', 'Port Name'),
+            col('country', 'Country'),
+            col('city', 'City'),
+            col('region', 'Region'),
+            col('lat', 'Latitude', 'numeric'),
+            col('lng', 'Longitude', 'numeric'),
+            col('address', 'Address'),
+            col('port_type', 'Port Type'),
+            col('type', 'Type'),
+            col('status', 'Status'),
+            col('description', 'Description'),
+            col('facilities', 'Facilities'),
+            col('services', 'Services'),
+            col('email', 'Email'),
+            col('phone', 'Phone'),
+            col('website', 'Website'),
+            col('operator', 'Operator'),
+            col('owner', 'Owner'),
+            col('port_authority', 'Port Authority'),
+            col('capacity', 'Capacity', 'numeric'),
+            col('timezone', 'Timezone'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+            col('last_updated', 'Last Updated'),
         ],
         'refineries': [
-            {'name': 'id', 'label': 'ID', 'type': 'uuid'},
-            {'name': 'name', 'label': 'Refinery Name', 'type': 'text'},
-            {'name': 'location', 'label': 'Location', 'type': 'text'},
-            {'name': 'capacity', 'label': 'Capacity', 'type': 'numeric'},
+            col('id', 'ID'),
+            col('name', 'Refinery Name'),
+            col('country', 'Country'),
+            col('city', 'City'),
+            col('region', 'Region'),
+            col('address', 'Address'),
+            col('capacity', 'Capacity', 'numeric'),
+            col('processing_capacity', 'Processing Capacity', 'numeric'),
+            col('production_capacity', 'Production Capacity', 'numeric'),
+            col('annual_throughput', 'Annual Throughput', 'numeric'),
+            col('description', 'Description'),
+            col('email', 'Email'),
+            col('phone', 'Phone'),
+            col('operator', 'Operator'),
+            col('owner', 'Owner'),
+            col('status', 'Status'),
+            col('created_at', 'Created At'),
+            col('last_updated', 'Last Updated'),
         ],
         'companies': [
-            {'name': 'id', 'label': 'ID', 'type': 'integer'},
-            {'name': 'name', 'label': 'Company Name', 'type': 'text'},
-            {'name': 'country', 'label': 'Country', 'type': 'text'},
-            {'name': 'type', 'label': 'Company Type', 'type': 'text'},
+            col('id', 'ID', 'integer'),
+            col('name', 'Company Name'),
+            col('company_type', 'Company Type'),
+            col('country', 'Country'),
+            col('city', 'City'),
+            col('address', 'Address'),
+            col('email', 'Email'),
+            col('phone', 'Phone'),
+            col('owner_name', 'Owner Name'),
+            col('industry', 'Industry'),
+            col('description', 'Description'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
         ],
         'brokers': [
-            {'name': 'id', 'label': 'ID', 'type': 'integer'},
-            {'name': 'name', 'label': 'Broker Name', 'type': 'text'},
-            {'name': 'email', 'label': 'Email', 'type': 'text'},
-            {'name': 'phone', 'label': 'Phone', 'type': 'text'},
+            col('id', 'ID'),
+            col('company_name', 'Company Name'),
+            col('contact_person', 'Contact Person'),
+            col('email', 'Email'),
+            col('phone', 'Phone'),
+            col('address', 'Address'),
+            col('status', 'Status'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
         ],
     }
     return predefined.get(table_name.lower(), [])
@@ -1186,6 +1298,23 @@ def _build_schema_for_mapping() -> Dict[str, List[str]]:
         cols = _get_predefined_table_columns(t)
         schema[t] = [c['name'] for c in cols]
     return schema
+
+
+def _build_csv_schema_for_mapping() -> Dict[str, List[str]]:
+    """Build {csv_id: [field1, field2, ...]} for available CSVs. Used by AI analysis on upload."""
+    out: Dict[str, List[str]] = {}
+    try:
+        for d in list_csv_datasets():
+            path = d.get("path") or os.path.join(DATA_DIR, d.get("filename", ""))
+            if not os.path.exists(path):
+                continue
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                reader = csv.DictReader(f)
+                names = list(reader.fieldnames or [])
+            out[d["id"]] = [n for n in names if n]
+    except Exception as e:
+        logger.warning(f"_build_csv_schema_for_mapping error: {e}")
+    return out
 
 
 # Rule-based placeholder -> (table, field) for upload-time mapping when OpenAI is unavailable.
@@ -1286,6 +1415,147 @@ Return a JSON object: {{ "placeholder1": "table.column", "placeholder2": "NONE",
             rule_based()
     else:
         rule_based()
+
+    return result
+
+
+def _ai_analyze_and_map_placeholders(
+    placeholders: List[str],
+    db_schema: Dict[str, List[str]],
+    csv_schema: Dict[str, List[str]],
+    doc_context: Optional[Dict[str, str]] = None,
+) -> Dict[str, Dict]:
+    """
+    AI analyzes placeholders and chooses source (database|csv|random) plus mapping per placeholder.
+    Returns {placeholder: {source, databaseTable, databaseField, csvId, csvField, csvRow, randomOption}}.
+    Uses rule-based database-only fallback on OpenAI error or invalid output.
+    """
+    doc_context = doc_context or {}
+
+    def rule_based_fallback() -> Dict[str, Dict]:
+        suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema)
+        out: Dict[str, Dict] = {}
+        for ph in placeholders:
+            cfg: Dict = {
+                'source': 'database',
+                'databaseTable': '',
+                'databaseField': '',
+                'csvId': '',
+                'csvField': '',
+                'csvRow': 0,
+                'randomOption': 'auto',
+            }
+            if ph in suggested:
+                t, col = suggested[ph]
+                cfg['databaseTable'] = t
+                cfg['databaseField'] = col
+            out[ph] = cfg
+        return out
+
+    if not (OPENAI_ENABLED and openai_client):
+        return rule_based_fallback()
+
+    db_flat: List[str] = []
+    for t, cols in (db_schema or {}).items():
+        for c in cols:
+            db_flat.append(f"{t}.{c}")
+    csv_flat: List[str] = []
+    for cid, fields in (csv_schema or {}).items():
+        for f in fields:
+            csv_flat.append(f"csv:{cid}.{f}")
+
+    db_str = ", ".join(db_flat[:250])
+    csv_str = ", ".join(csv_flat[:150]) if csv_flat else "(none)"
+    ph_list = ", ".join(placeholders[:120])
+
+    prompt = f"""You are a maritime document expert. For each placeholder, choose the best source:
+- **database**: vessel/ship/port/company data. Use table.column from the list.
+- **csv**: data from uploaded CSV files. Use csv:csvId.field from the list.
+- **random**: no good match; we will generate realistic AI data at runtime.
+
+Database options (table.column): {db_str}
+CSV options (csv:csvId.field): {csv_str}
+
+Placeholders: {ph_list}
+
+Rules:
+- Prefer database (vessels, ports, etc.) when the placeholder clearly matches (e.g. vessel name, IMO, port).
+- Use csv only when the placeholder matches a CSV field (e.g. buyer company, seller address).
+- Use random when no database or CSV fit.
+
+Return a JSON object only. Each key is an exact placeholder string. Each value is one of:
+{{"source": "database", "table": "vessels", "column": "imo"}}
+{{"source": "csv", "csvId": "buyers_sellers", "csvField": "buyer_name"}}
+{{"source": "random"}}
+
+Use exact placeholder strings as keys. Valid table.column and csvId.field only. No other text."""
+
+    result: Dict[str, Dict] = {}
+    try:
+        r = openai_client.chat.completions.create(
+            model='gpt-4o-mini',
+            messages=[{'role': 'user', 'content': prompt}],
+            max_tokens=4000,
+            temperature=0.1,
+        )
+        raw = (r.choices[0].message.content or '').strip()
+        json_match = re.search(r'\{[\s\S]*\}', raw)
+        if not json_match:
+            return rule_based_fallback()
+        try:
+            data = json.loads(json_match.group())
+        except json.JSONDecodeError as je:
+            logger.warning(f"AI analyze-and-map invalid JSON, using rule-based fallback: {je}")
+            return rule_based_fallback()
+    except Exception as e:
+        logger.warning(f"AI analyze-and-map failed, using rule-based fallback: {e}")
+        return rule_based_fallback()
+
+    for ph in placeholders:
+        cfg: Dict = {
+            'source': 'database',
+            'databaseTable': '',
+            'databaseField': '',
+            'csvId': '',
+            'csvField': '',
+            'csvRow': 0,
+            'randomOption': 'auto',
+        }
+        val = data.get(ph) if isinstance(data, dict) else None
+        if not isinstance(val, dict):
+            result[ph] = cfg
+            continue
+        src = (val.get('source') or '').strip().lower()
+        if src == 'random':
+            cfg['source'] = 'random'
+            cfg['randomOption'] = 'ai'
+            result[ph] = cfg
+            continue
+        if src == 'csv':
+            cid = (val.get('csvId') or '').strip()
+            fld = (val.get('csvField') or '').strip()
+            if cid in csv_schema and fld in (csv_schema.get(cid) or []):
+                cfg['source'] = 'csv'
+                cfg['csvId'] = cid
+                cfg['csvField'] = fld
+            else:
+                cfg['source'] = 'random'
+                cfg['randomOption'] = 'ai'
+            result[ph] = cfg
+            continue
+        if src == 'database':
+            t = (val.get('table') or '').strip().lower()
+            col = (val.get('column') or '').strip().lower()
+            if t in db_schema and col in (db_schema.get(t) or []):
+                cfg['source'] = 'database'
+                cfg['databaseTable'] = t
+                cfg['databaseField'] = col
+            else:
+                cfg['source'] = 'random'
+                cfg['randomOption'] = 'ai'
+            result[ph] = cfg
+            continue
+        result[ph] = cfg
 
     return result
 
@@ -2270,32 +2540,38 @@ async def upload_template(
                 warnings.append("Supabase sync failed; template available locally")
                 logger.error(f"Failed to store template in Supabase: {exc}")
 
-        # AI-generated mapping on upload: map each placeholder -> (table, column), persist.
+        # AI analysis on upload: choose source (database|csv|random) and mapping per placeholder, persist.
         mapped_count = 0
+        database_count = 0
+        csv_count = 0
+        random_count = 0
         if placeholders:
-            schema = _build_schema_for_mapping()
-            suggested = _ai_suggest_placeholder_mapping(placeholders, schema)
+            db_schema = _build_schema_for_mapping()
+            csv_schema = _build_csv_schema_for_mapping()
+            analyzed = _ai_analyze_and_map_placeholders(placeholders, db_schema, csv_schema)
             default_settings: Dict[str, Dict] = {}
             for ph in placeholders:
-                cfg: Dict = {
-                    'source': 'database',
-                    'customValue': '',
-                    'databaseTable': '',
-                    'databaseField': '',
-                    'csvId': '',
-                    'csvField': '',
-                    'csvRow': 0,
-                    'randomOption': 'auto',
-                }
-                if ph in suggested:
-                    t, col = suggested[ph]
-                    cfg['databaseTable'] = t
-                    cfg['databaseField'] = col
+                cfg = (analyzed.get(ph) or {}).copy()
+                cfg.setdefault('source', 'database')
+                cfg.setdefault('databaseTable', '')
+                cfg.setdefault('databaseField', '')
+                cfg.setdefault('csvId', '')
+                cfg.setdefault('csvField', '')
+                cfg.setdefault('csvRow', 0)
+                cfg.setdefault('randomOption', 'auto')
+                if 'customValue' not in cfg:
+                    cfg['customValue'] = ''
                 default_settings[ph] = cfg
+                if cfg.get('source') == 'database':
+                    database_count += 1
+                elif cfg.get('source') == 'csv':
+                    csv_count += 1
+                else:
+                    random_count += 1
+            mapped_count = database_count + csv_count + random_count
             tid = template_id or docx_filename
             upsert_template_placeholders(tid, default_settings, docx_filename)
-            mapped_count = len(suggested)
-            logger.info(f"Mapping created: {mapped_count}/{len(placeholders)} placeholders mapped (template {tid})")
+            logger.info(f"AI mapping created: db={database_count} csv={csv_count} random={random_count} (template {tid})")
 
         # Remove template from deleted list if it was previously deleted (re-upload scenario)
         unmark_template_as_deleted(docx_filename)
@@ -2331,6 +2607,10 @@ async def upload_template(
         if placeholders:
             response_payload["mapping_created"] = True
             response_payload["mapped_count"] = mapped_count
+            response_payload["ai_analysis"] = True
+            response_payload["database_count"] = database_count if placeholders else 0
+            response_payload["csv_count"] = csv_count if placeholders else 0
+            response_payload["random_count"] = random_count if placeholders else 0
         if warnings:
             response_payload["warnings"] = warnings
 
@@ -2638,12 +2918,12 @@ async def get_placeholder_settings(
             
             settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
             
-            # CRITICAL: Convert any 'random' sources to 'database' (database is default)
-            # This fixes existing templates that were created with random as default
+            # Preserve explicit 'random' and 'csv'. Only default to 'database' when source is missing or empty.
             for placeholder, setting in settings.items():
-                if setting.get('source') == 'random' or not setting.get('source') or setting.get('source') == '':
+                s = setting.get('source')
+                if s is None or (isinstance(s, str) and not s.strip()):
                     setting['source'] = 'database'
-                    logger.debug(f"🔧 Converted placeholder '{placeholder}' source from '{setting.get('source')}' to 'database'")
+                    logger.debug(f"🔧 Defaulted placeholder '{placeholder}' source to 'database' (was missing)")
             
             logger.info(f"✅ Loaded {len(settings)} placeholder settings for template {template_record.get('file_name')}")
             return {
@@ -2660,12 +2940,13 @@ async def get_placeholder_settings(
             aggregated: Dict[str, Dict[str, Dict]] = {}
             for row in response.data or []:
                 template_id = str(row['template_id'])
-                source = row.get('source') or 'database'
-                # CRITICAL: Convert 'random' to 'database' (database is default)
-                if source == 'random' or source == '' or source is None:
+                source = row.get('source')
+                if source is None or (isinstance(source, str) and not source.strip()):
                     source = 'database'
+                else:
+                    source = str(source).strip()
                 aggregated.setdefault(template_id, {})[row['placeholder']] = {
-                    'source': source,  # Always database by default, not random
+                    'source': source,
                     'customValue': row.get('custom_value') or '',
                     'databaseTable': row.get('database_table') or '',
                     'databaseField': row.get('database_field') or '',
@@ -2742,19 +3023,20 @@ async def save_placeholder_settings(request: Request):
 
             template_id = template_record['id']
 
-            # Normalise payload to Supabase schema then upsert
+            # Normalise payload to Supabase schema then upsert. Preserve explicit random/csv.
             sanitised_settings: Dict[str, Dict] = {}
             for placeholder, cfg in new_settings.items():
                 if not placeholder:
                     continue
-                # CRITICAL: Force database as default, never allow random/null/empty as default
-                source = cfg.get('source', 'database')
-                if not source or source == '' or source == 'random' or source is None:
+                source = cfg.get('source')
+                if source is None or (isinstance(source, str) and not source.strip()):
                     source = 'database'
-                    logger.info(f"🔧 Fixed placeholder '{placeholder}': source changed to 'database' (was: '{cfg.get('source')}')")
+                    logger.debug(f"Defaulted placeholder '{placeholder}' source to 'database' (was missing)")
+                else:
+                    source = str(source).strip()
                 
                 sanitised_settings[placeholder] = {
-                    'source': source,  # Always database by default
+                    'source': source,
                     'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
                     'databaseTable': str(cfg.get('databaseTable', '')).strip() if cfg.get('databaseTable') else '',
                     'databaseField': str(cfg.get('databaseField', '')).strip() if cfg.get('databaseField') else '',
@@ -3592,22 +3874,26 @@ def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
 # STEP 7: DOCUMENT GENERATION (with PDF export)
 # ============================================================================
 
-def get_data_from_table(table_name: str, lookup_field: str, lookup_value: str) -> Optional[Dict]:
+def get_data_from_table(table_name: str, lookup_field: str, lookup_value) -> Optional[Dict]:
     """
     Get data from any database table using a lookup field and value.
-    
+    lookup_value must not be None; pass int for numeric IDs (ports, companies), str for UUIDs (refineries, brokers).
+
     Args:
         table_name: Name of the table (e.g., 'vessels', 'ports', 'refineries')
         lookup_field: Field name to search by (e.g., 'imo', 'id', 'name')
-        lookup_value: Value to search for
-    
+        lookup_value: Value to search for (int or str; must not be None)
+
     Returns:
         Dictionary with table data or None if not found
     """
     if not supabase:
         logger.warning(f"Supabase not available, cannot fetch data from {table_name}")
         return None
-    
+    if lookup_value is None:
+        logger.warning("get_data_from_table: lookup_value is None, skipping fetch")
+        return None
+
     try:
         logger.info(f"Fetching data from {table_name} table: {lookup_field}={lookup_value}")
         response = supabase.table(table_name).select('*').eq(lookup_field, lookup_value).limit(1).execute()
@@ -4457,6 +4743,19 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
     return updated_text, total_replacements
 
 
+EMPTY_PLACEHOLDER = "—"
+
+
+def _normalize_replacement_value(val, _field_name: Optional[str] = None) -> str:
+    """Normalize a value for placeholder replacement. None/empty/'None'/'null' -> '—'."""
+    if val is None:
+        return EMPTY_PLACEHOLDER
+    s = str(val).strip()
+    if not s or s.lower() in ("none", "null"):
+        return EMPTY_PLACEHOLDER
+    return s
+
+
 def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
     """
     Replace placeholders in a DOCX file.
@@ -5068,19 +5367,27 @@ async def generate_document(request: Request):
                 matched_placeholders.append(placeholder)
                 logger.debug(f"✅ Found CMS setting for '{placeholder}' (matched key: '{setting_key}')")
 
-            # CRITICAL: ALWAYS try database matching FIRST for ALL placeholders
-            # This ensures 90% of data comes from database (as user requested)
-            # This runs whether or not there's a CMS setting
-            logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [ALWAYS try DB first]")
-            logger.info(f"  🗄️  STEP 1: Always trying intelligent database matching first...")
-            matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
-            if matched_field and matched_value:
-                data_mapping[placeholder] = matched_value
-                found = True
-                logger.info(f"  ✅✅✅ DATABASE MATCH (always first): {placeholder} = '{matched_value}' (from '{matched_field}')")
-                # Skip to next placeholder - database match takes priority
-                continue
+            # Preserve explicit (table, column): never overwrite with intelligent match.
+            # When user configured database_table + database_field, use those first; skip "intelligent match first".
+            has_explicit_db = False
+            if setting:
+                src = setting.get('source') or 'database'
+                dt = (setting.get('databaseTable') or '').strip()
+                df = (setting.get('databaseField') or '').strip()
+                if src == 'database' and dt and df:
+                    has_explicit_db = True
+
+            if has_explicit_db:
+                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [explicit (table, column) configured; using those first]")
             else:
+                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [ALWAYS try DB first]")
+                logger.info(f"  🗄️  STEP 1: Trying intelligent database matching first...")
+                matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+                if matched_field and matched_value:
+                    data_mapping[placeholder] = _normalize_replacement_value(matched_value)
+                    found = True
+                    logger.info(f"  ✅✅✅ DATABASE MATCH (intelligent): {placeholder} = '{matched_value}' (from '{matched_field}')")
+                    continue
                 logger.info(f"  ⚠️  No intelligent DB match for '{placeholder}', will try configured source or cascade")
 
             if setting:
@@ -5104,7 +5411,7 @@ async def generate_document(request: Request):
                     if source == 'custom':
                         custom_value = str(setting.get('customValue', '')).strip()
                         if custom_value:
-                            data_mapping[placeholder] = custom_value
+                            data_mapping[placeholder] = _normalize_replacement_value(custom_value)
                             found = True
                             logger.info(f"✅ {placeholder} -> '{custom_value}' (CMS custom value)")
                         else:
@@ -5139,30 +5446,27 @@ async def generate_document(request: Request):
                             lookup_value = None
                             
                             if database_table.lower() == 'ports':
-                                # Try to get port_id from vessel data
+                                # Vessel has departure_port, destination_port (numeric port IDs). Prefer departure, else destination.
                                 lookup_field = 'id'
-                                if 'departure_port' in vessel and vessel.get('departure_port'):
-                                    # If vessel has port name, we might need to look it up by name first
-                                    # For now, assume we have port_id
-                                    lookup_value = vessel.get('port_id') or vessel.get('departure_port_id')
-                                elif 'currentport' in vessel:
-                                    lookup_value = vessel.get('port_id')
+                                lookup_value = vessel.get('departure_port')
+                                if lookup_value is None:
+                                    lookup_value = vessel.get('destination_port')
                             elif database_table.lower() == 'refineries':
                                 lookup_field = 'id'
-                                lookup_value = vessel.get('refinery_id') or vessel.get('target_refinery_id')
+                                lookup_value = vessel.get('refinery_id')
                             elif database_table.lower() == 'companies':
                                 lookup_field = 'id'
-                                lookup_value = vessel.get('company_id') or vessel.get('owner_company_id')
+                                lookup_value = vessel.get('company_id') or vessel.get('buyer_company_id') or vessel.get('seller_company_id')
                             elif database_table.lower() == 'brokers':
+                                # Vessel often has no broker_id; we fall back to vessel data when missing.
                                 lookup_field = 'id'
                                 lookup_value = vessel.get('broker_id')
                             else:
-                                # Generic lookup - try 'id' field
                                 lookup_field = 'id'
                                 lookup_value = vessel.get(f'{database_table.lower()}_id')
                             
-                            if lookup_field and lookup_value:
-                                source_data = get_data_from_table(database_table, lookup_field, str(lookup_value))
+                            if lookup_field and lookup_value is not None:
+                                source_data = get_data_from_table(database_table, lookup_field, lookup_value)
                                 if not source_data:
                                     logger.warning(f"  ⚠️  Could not fetch data from {database_table} using {lookup_field}={lookup_value}")
                                     source_data = vessel  # Fallback to vessel data
@@ -5210,7 +5514,7 @@ async def generate_document(request: Request):
                                     logger.warning(f"  ⚠️  Intelligent fallback matching failed for '{placeholder}'")
 
                             if matched_field and matched_value:
-                                data_mapping[placeholder] = matched_value
+                                data_mapping[placeholder] = _normalize_replacement_value(matched_value)
                                 found = True
                                 table_info = f" from {database_table}" if database_table and database_table.lower() != 'vessels' else ""
                                 logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}'{table_info})")
@@ -5247,7 +5551,7 @@ async def generate_document(request: Request):
                                     if csv_field in csv_data:
                                         value = csv_data[csv_field]
                                         if value is not None and str(value).strip() != '':
-                                            data_mapping[placeholder] = str(value).strip()
+                                            data_mapping[placeholder] = _normalize_replacement_value(value)
                                             found = True
                                             logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{csv_field})")
                                         else:
@@ -5261,7 +5565,7 @@ async def generate_document(request: Request):
                                                 value = csv_data[key]
                                                 if value is not None and str(value).strip() != '':
                                                     matched_field = key
-                                                    data_mapping[placeholder] = str(value).strip()
+                                                    data_mapping[placeholder] = _normalize_replacement_value(value)
                                                     found = True
                                                     logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{matched_field} - case-insensitive match)")
                                                     break
@@ -5292,19 +5596,19 @@ async def generate_document(request: Request):
                 # 1. CSV (from CMS config) - try CSV as fallback
                 csv_val = _try_csv_for_placeholder(setting)
                 if csv_val:
-                    data_mapping[placeholder] = csv_val
+                    data_mapping[placeholder] = _normalize_replacement_value(csv_val)
                     found = True
                     logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
                 if not found:
                     # 2. Random/AI only when user explicitly set source='random'. Default = database only (use "—").
                     if source == 'random':
                         ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
-                        data_mapping[placeholder] = ai_val
+                        data_mapping[placeholder] = _normalize_replacement_value(ai_val)
                         found = True
                         logger.info(f"  ✅ Random/AI (explicit): {placeholder} = '{ai_val}'")
                     else:
                         # Default: use "—" instead of random data (database is default source)
-                        data_mapping[placeholder] = "—"
+                        data_mapping[placeholder] = EMPTY_PLACEHOLDER
                         found = True
                         logger.info(f"  ⚠️  No DB/CSV match for '{placeholder}' (source={source}); using '—'. Set source to Random in CMS to use generated data.")
             else:
