@@ -133,7 +133,8 @@ class TemplateEditor {
             this.currentTemplateId = templateData.template_id || templateId;
             this.currentTemplate = templateData;
             this.placeholders = templateData.placeholders || [];
-            
+            const settingsTemplateId = this.currentTemplateId;
+
             // Update UI
             document.getElementById('templateTitle').textContent = 
                 templateData.metadata?.display_name || templateData.title || templateData.name || 'Untitled Template';
@@ -148,11 +149,11 @@ class TemplateEditor {
             document.getElementById('templateFontSize').value = 
                 templateData.metadata?.font_size || templateData.font_size || '';
             
-            // Load placeholder settings
-            const settingsData = await this.apiJson(`/placeholder-settings?template_id=${encodeURIComponent(templateId)}`);
-            console.log('[loadTemplateById] 📥 Settings data received:', settingsData);
-            
-            const nested = settingsData && settingsData.settings && settingsData.settings[templateId];
+            // Load placeholder settings (use canonical template_id so we match AI mapping saved on upload)
+            const settingsData = await this.apiJson(`/placeholder-settings?template_id=${encodeURIComponent(settingsTemplateId)}`);
+            console.log('[loadTemplateById] 📥 Settings data received (template_id=' + settingsTemplateId + '):', settingsData);
+
+            const nested = settingsData && settingsData.settings && settingsData.settings[settingsTemplateId];
             const loadedSettings = nested || (settingsData && settingsData.settings) || {};
             const hasStoredSettings = settingsData && settingsData.settings && Object.keys(loadedSettings).length > 0;
 
@@ -167,7 +168,13 @@ class TemplateEditor {
                 this.displayPlaceholders();
             } else {
                 this.currentSettings = { ...loadedSettings };
-                console.log('[loadTemplateById] 📋 Loaded stored settings:', this.currentSettings);
+                console.log('[loadTemplateById] 📋 Loaded stored settings (AI mapping from upload):', this.currentSettings);
+                let db = 0, csv = 0, rnd = 0;
+                Object.values(this.currentSettings).forEach(s => {
+                    const src = (s && s.source) ? String(s.source) : 'database';
+                    if (src === 'database') db++; else if (src === 'csv') csv++; else rnd++;
+                });
+                console.log('[loadTemplateById] 📊 Source counts: database=' + db + ', csv=' + csv + ', random=' + rnd);
                 // Only default to database when placeholder has no stored setting. Preserve explicit csv/random.
                 this.placeholders.forEach(ph => {
                     if (!this.currentSettings[ph]) {

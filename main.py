@@ -4592,6 +4592,16 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         return f"{random.uniform(0.1, 99.9):.2f}%"
     if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl:
         return f"{random.randint(1000, 50000):,} MT"
+    if 'tonnage' in pl:
+        return f"{random.randint(5000, 120000):,}"
+    if 'capacity' in pl or 'pumping' in pl or 'm³' in pl or 'hr' in pl:
+        return f"{random.randint(500, 5000)} m³/hr" if 'pump' in pl or 'm³' in pl else f"{random.randint(1000, 50000):,}"
+
+    # Vessel / maritime specifics
+    if 'ism' in pl or 'manager' in pl:
+        return random.choice(['BP Ship Management', 'V.Ships', 'Anglo-Eastern', 'Synergy Marine', 'Fleet Management Ltd', 'Wilhelmsen Ship Management', 'Columbia Shipmanagement'])
+    if 'classification' in pl or 'class' in pl or 'society' in pl:
+        return random.choice(["Lloyd's Register", 'DNV', 'ABS', 'Bureau Veritas', 'ClassNK', 'RINA', 'KR'])
 
     # Via / carrier / route
     if 'via' in pl or 'carrier' in pl or 'route' in pl:
@@ -4606,8 +4616,12 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'number' in pl or 'no' in pl or 'num' in pl:
         return f"REF-{random.randint(100000, 999999)}"
 
-    # No match: use em dash (professional) instead of "Value-XXXX"
-    return EMPTY_PLACEHOLDER
+    # Catch-all: always return realistic data, never "Value-XXXX" or "—"
+    fallbacks = [
+        'As per contract', 'To be confirmed', 'See attached', 'TBN', 'N/A',
+        'Per agreement', 'As per specification', 'To be advised', 'Refer to annex',
+    ]
+    return random.choice(fallbacks)
 
 
 def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
