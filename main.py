@@ -768,6 +768,16 @@ def normalise_template_key(value: Optional[str]) -> str:
     return normalize_template_name(value, with_extension=False, for_key=True)
 
 
+def _normalize_for_match(value: Optional[str]) -> str:
+    """Normalize template name for fuzzy file matching (lower, no .docx, collapsed spaces)."""
+    if not value:
+        return ""
+    s = value.strip().lower()
+    if s.endswith(".docx"):
+        s = s[:-5].strip()
+    return " ".join(s.split())
+
+
 def ensure_docx_filename(value: str) -> str:
     """Ensure filename ends with .docx (deprecated - use normalize_template_name with with_extension=True)."""
     return normalize_template_name(value, with_extension=True, for_key=False)
@@ -2743,14 +2753,34 @@ async def delete_template(
                 except Exception as exc:
                     logger.warning(f"Failed to delete template file {file_variant}: {exc}")
         
-        # If template not found in Supabase and no local file, return 404
-        if not template_id and not deleted_local:
-            # Check if file exists with any variation
-            file_exists = any(os.path.exists(os.path.join(TEMPLATES_DIR, var)) for var in set(file_variations) if var)
-            if not file_exists:
-                raise HTTPException(status_code=404, detail=f"Template not found: {template_name}")
-        
-        if not deleted_local:
+        # If template not in DB and no file deleted yet: try matching by normalized name (list dir)
+        file_exists = any(os.path.exists(os.path.join(TEMPLATES_DIR, var)) for var in set(file_variations) if var)
+        if not template_id and not deleted_local and not file_exists:
+            try:
+                target_key = _normalize_for_match(template_name)
+                target_key_docx = _normalize_for_match(docx_name)
+                for f in os.listdir(TEMPLATES_DIR):
+                    if not f.lower().endswith(".docx"):
+                        continue
+                    p = os.path.join(TEMPLATES_DIR, f)
+                    if not os.path.isfile(p):
+                        continue
+                    k = _normalize_for_match(f)
+                    if k and (k == target_key or k == target_key_docx):
+                        try:
+                            os.remove(p)
+                            logger.info(f"Deleted local template file (normalized match): {f}")
+                            deleted_local = True
+                            break
+                        except Exception as exc:
+                            logger.warning(f"Failed to delete matched file {f}: {exc}")
+            except Exception as exc:
+                logger.warning(f"Dir-listing fallback for delete failed: {exc}")
+
+        # Never 404 on delete: always mark deleted + clean config so template disappears from list
+        if not deleted_local and not template_id:
+            logger.info(f"Template not found in DB or as file; marking deleted and cleaning config: {template_name}")
+        elif not deleted_local and template_id:
             logger.warning(f"No local template file found to delete for {docx_name} (but marked as deleted in tracking file)")
 
         # Clean up placeholder settings
@@ -2823,14 +2853,21 @@ async def delete_template(
         logger.info(f"Template deletion completed: {docx_name}")
         if supabase_deleted:
             logger.info(f"✓ Template successfully deleted from Supabase and local filesystem: {docx_name}")
-        elif SUPABASE_ENABLED and not supabase_deleted:
+        elif SUPABASE_ENABLED and not supabase_deleted and template_id:
             logger.warning(f"⚠ Template deleted locally but may not have been deleted from Supabase: {docx_name}")
 
+        forgotten = not template_id and not deleted_local
         response = {
-            "success": True, 
-            "message": f"Template {docx_name} deleted completely",
-            "deleted_from_supabase": supabase_deleted if SUPABASE_ENABLED else None
+            "success": True,
+            "message": (
+                f"Template {docx_name} marked as deleted and config cleaned (it was not in DB or as a file)."
+                if forgotten
+                else f"Template {docx_name} deleted completely"
+            ),
+            "deleted_from_supabase": supabase_deleted if SUPABASE_ENABLED else None,
         }
+        if forgotten:
+            response["forgotten"] = True
         if warnings:
             response["warnings"] = warnings
         return response
@@ -2857,6 +2894,99 @@ async def delete_template_api(
 ):
     """Delete template (same as /templates/{name}) for Nginx /api-prefixed requests."""
     return await delete_template(template_name, current_user)
+
+
+@app.post("/templates/forget")
+async def forget_template(
+    request: Request,
+    current_user: str = Depends(get_current_user),
+):
+    """Remove an orphan template by name: mark deleted, clean placeholder_settings, metadata, plans.
+    Use when a template is not in DB, causes problems, and normal delete fails."""
+    try:
+        body = await request.json()
+        name = (body.get("name") or body.get("template_name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Missing 'name' or 'template_name' in JSON body")
+
+        docx_name = ensure_docx_filename(name)
+        removed_settings = False
+        removed_meta = False
+
+        placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+        if placeholder_settings:
+            if docx_name in placeholder_settings:
+                placeholder_settings.pop(docx_name, None)
+                removed_settings = True
+            else:
+                nk = normalise_template_key(docx_name)
+                for key in list(placeholder_settings.keys()):
+                    if normalise_template_key(key) == nk:
+                        placeholder_settings.pop(key, None)
+                        removed_settings = True
+                        break
+            if removed_settings:
+                write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
+
+        metadata = load_template_metadata()
+        if metadata:
+            if docx_name in metadata:
+                metadata.pop(docx_name, None)
+                removed_meta = True
+            else:
+                nk = normalise_template_key(docx_name)
+                for key in list(metadata.keys()):
+                    if normalise_template_key(key) == nk:
+                        metadata.pop(key, None)
+                        removed_meta = True
+                        break
+            if removed_meta:
+                save_template_metadata(metadata)
+
+        plans = read_json_file(PLANS_PATH, {})
+        plan_updated = False
+        if isinstance(plans, dict) and plans:
+            no_ext = docx_name.replace(".docx", "")
+            for _plan_tier, plan_data in plans.items():
+                if not isinstance(plan_data, dict) or "can_download" not in plan_data:
+                    continue
+                can = plan_data.get("can_download", [])
+                if not isinstance(can, list):
+                    continue
+                orig = len(can)
+                can = [t for t in can if t and ensure_docx_filename(t) != docx_name and t != no_ext]
+                if len(can) != orig:
+                    plan_data["can_download"] = can
+                    plan_updated = True
+            if plan_updated:
+                write_json_atomic(PLANS_PATH, plans)
+
+        for v in [docx_name, name, docx_name.lower(), docx_name.upper()]:
+            if v:
+                mark_template_as_deleted(v)
+
+        logger.info(f"Forget template completed: {name} (placeholder_settings={removed_settings}, metadata={removed_meta}, plans={plan_updated})")
+        return {
+            "success": True,
+            "message": f"Template '{name}' forgotten (marked deleted, config cleaned)",
+            "removed_from_placeholder_settings": removed_settings,
+            "removed_from_metadata": removed_meta,
+            "plans_updated": plan_updated,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error forgetting template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/templates/forget")
+async def forget_template_api(
+    request: Request,
+    current_user: str = Depends(get_current_user),
+):
+    """Forget template (same as POST /templates/forget) for Nginx /api prefix."""
+    return await forget_template(request, current_user)
 
 
 @app.get("/api/database-tables")
