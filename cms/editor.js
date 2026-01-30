@@ -829,8 +829,12 @@ class TemplateEditor {
     }
 }
 
-// Global instance
+// Global instance (expose on window for onclick handlers)
 const editor = new TemplateEditor();
+if (typeof window !== 'undefined') {
+    window.editor = editor;
+    window.aiScanPlaceholders = function () { return editor.aiScanPlaceholders(); };
+}
 
 
 
