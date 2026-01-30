@@ -2896,6 +2896,47 @@ async def delete_template_api(
     return await delete_template(template_name, current_user)
 
 
+@app.post("/templates/{template_id}/ai-scan-placeholders")
+async def ai_scan_placeholders(template_id: str):
+    """AI scan all placeholders for a template, map to database/CSV/random, return settings.
+    Used by CMS editor 'AI Scan' button. No auth required (CMS editor)."""
+    try:
+        template_record = resolve_template_record(template_id)
+        if not template_record:
+            raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
+        placeholders = list(template_record.get("placeholders") or [])
+        if not placeholders:
+            return {"success": True, "settings": {}, "message": "No placeholders to scan"}
+        db_schema = _build_schema_for_mapping()
+        csv_schema = _build_csv_schema_for_mapping()
+        analyzed = _ai_analyze_and_map_placeholders(placeholders, db_schema, csv_schema)
+        settings: Dict[str, Dict] = {}
+        for ph in placeholders:
+            cfg = (analyzed.get(ph) or {}).copy()
+            cfg.setdefault("source", "database")
+            cfg.setdefault("databaseTable", "")
+            cfg.setdefault("databaseField", "")
+            cfg.setdefault("csvId", "")
+            cfg.setdefault("csvField", "")
+            cfg.setdefault("csvRow", 0)
+            cfg.setdefault("randomOption", "auto")
+            cfg.setdefault("customValue", "")
+            settings[ph] = cfg
+        logger.info(f"AI scan placeholders for template {template_id}: {len(settings)} mapped")
+        return {"success": True, "settings": settings}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI scan placeholders error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/templates/{template_id}/ai-scan-placeholders")
+async def ai_scan_placeholders_api(template_id: str):
+    """AI scan placeholders (same as POST /templates/{id}/ai-scan-placeholders) for Nginx /api prefix."""
+    return await ai_scan_placeholders(template_id)
+
+
 @app.post("/templates/forget")
 async def forget_template(
     request: Request,

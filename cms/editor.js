@@ -432,8 +432,13 @@ class TemplateEditor {
         
         if (this.placeholders.length === 0) {
             container.innerHTML = '<div class="alert alert-info">No placeholders found in this template.</div>';
+            const aiBtn = document.getElementById('aiScanBtn');
+            if (aiBtn) { aiBtn.disabled = true; aiBtn.title = 'No placeholders to scan'; }
             return;
         }
+
+        const aiBtn = document.getElementById('aiScanBtn');
+        if (aiBtn) { aiBtn.disabled = false; aiBtn.title = 'AI scans all placeholders and maps them correctly (database/CSV/random)'; }
 
         container.innerHTML = this.placeholders.map(ph => {
             let setting = this.currentSettings[ph] || { 
@@ -643,6 +648,42 @@ class TemplateEditor {
         });
     }
 
+    async aiScanPlaceholders() {
+        if (!this.currentTemplateId) {
+            alert('No template selected');
+            return;
+        }
+        if (!this.placeholders || this.placeholders.length === 0) {
+            alert('No placeholders to scan');
+            return;
+        }
+        const btn = document.getElementById('aiScanBtn');
+        if (!btn) return;
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Scanning...';
+        try {
+            const data = await this.apiJson(`/templates/${encodeURIComponent(this.currentTemplateId)}/ai-scan-placeholders`, {
+                method: 'POST',
+                body: JSON.stringify({})
+            });
+            if (!data || !data.settings) {
+                alert('AI scan failed: no settings returned');
+                return;
+            }
+            this.currentSettings = { ...data.settings };
+            this.displayPlaceholders();
+            await this.savePlaceholderSettings(true);
+            alert(`AI Scan complete. ${Object.keys(this.currentSettings).length} placeholders mapped and saved.`);
+        } catch (e) {
+            console.error('AI scan error:', e);
+            alert('AI Scan failed: ' + (e.message || 'Unknown error'));
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+        }
+    }
+
     async saveTemplateSettings() {
         if (!this.currentTemplateId) {
             alert('No template selected');
@@ -738,7 +779,7 @@ class TemplateEditor {
         }
     }
 
-    async savePlaceholderSettings() {
+    async savePlaceholderSettings(quiet = false) {
         if (!this.currentTemplateId) {
             alert('No template selected');
             return;
@@ -770,14 +811,15 @@ class TemplateEditor {
 
             if (data && data.success) {
                 console.log('✅ Settings saved successfully!', data);
-                alert(`Placeholder settings saved successfully! (${data.saved_count || Object.keys(this.currentSettings).length} settings)`);
+                if (!quiet) alert(`Placeholder settings saved successfully! (${data.saved_count || Object.keys(this.currentSettings).length} settings)`);
             } else {
                 console.error('❌ Save failed:', data);
-                alert('Failed to save placeholder settings: Invalid response');
+                if (!quiet) alert('Failed to save placeholder settings: Invalid response');
             }
         } catch (error) {
             console.error('❌ Error saving settings:', error);
-            alert(`Failed to save placeholder settings: ${error.message}`);
+            if (!quiet) alert(`Failed to save placeholder settings: ${error.message}`);
+            throw error;
         }
     }
 
