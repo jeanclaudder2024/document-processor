@@ -152,7 +152,7 @@
                 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
                     <h5 class="mb-0"><i class="fas fa-tags me-2"></i>Placeholder Configuration</h5>
                     <div class="d-flex align-items-center gap-2">
-                        <button type="button" class="btn btn-success btn-sm" id="aiScanBtn" onclick="(typeof aiScanPlaceholders==='function'?aiScanPlaceholders:function(){alert('AI Scan unavailable. Refresh the page to load the latest editor.');})()" title="AI scans all placeholders and maps them correctly (database/CSV/random)">
+                        <button type="button" class="btn btn-success btn-sm" id="aiScanBtn" onclick="aiScanPlaceholders()" title="AI scans all placeholders and maps them correctly (database/CSV/random)">
                             <i class="fas fa-magic me-1"></i> AI Scan
                         </button>
                         <input type="text" class="form-control form-control-sm d-inline-block" id="searchPlaceholders" 
@@ -171,6 +171,15 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="editor.js"></script>
+    <script src="editor.js?v=2"></script>
+    <script>
+      (function() {
+        window.aiScanPlaceholders = function() {
+          if (typeof window.editor !== 'undefined' && typeof window.editor.aiScanPlaceholders === 'function')
+            return window.editor.aiScanPlaceholders();
+          alert('AI Scan unavailable. Refresh the page to load the latest editor.');
+        };
+      })();
+    </script>
 </body>
 </html>

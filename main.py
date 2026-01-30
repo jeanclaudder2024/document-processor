@@ -4831,25 +4831,66 @@ def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
     return None
 
 
+def _sanitize_ai_replacement(text: str) -> str:
+    """Strip explanatory prefixes and reject log-like output. Return clean value or empty string."""
+    if not text or not isinstance(text, str):
+        return ""
+    s = text.strip().strip('"\'').replace("\r\n", "\n").replace("\r", "\n")
+    # First line only (avoid multi-line explanations)
+    first = s.split("\n")[0].strip()
+    if not first:
+        return ""
+    # Remove common prefixes (case-insensitive), repeat until clean
+    prefixes = (
+        "here is the value:", "the value is", "answer:", "generated value:",
+        "value:", "the generated value is", "the value:", "result:",
+        "output:", "generated:", "here's the value:", "it is ", "it's ",
+        "return only", "only the value", "just the value", "the answer is ",
+    )
+    for _ in range(5):
+        lower = first.lower()
+        hit = False
+        for p in prefixes:
+            if lower.startswith(p):
+                first = first[len(p):].strip().lstrip(":-.")
+                hit = True
+                break
+        if not hit:
+            break
+    if not first or len(first) > 300:
+        return ""
+    # Reject log-like / debug output (avoid putting logger text into documents)
+    lower = first.lower()
+    if lower.startswith(("info:", "debug:", "warning:", "error:", "traceback", "exception")):
+        return ""
+    if "mapping:" in lower or "-> '" in lower or "placeholder '" in lower or "logger." in lower:
+        return ""
+    for bad in ("✅", "⚠️", "❌", "📋", "🔍"):
+        if bad in first:
+            return ""
+    return first[:300]
+
+
 def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str = None) -> str:
     """AI-generated realistic data (OpenAI when available), else improved random. Maritime/oil context."""
     if OPENAI_ENABLED and openai_client:
         try:
             imo = (vessel or {}).get('imo') or vessel_imo or 'N/A'
             prompt = (
-                f"Generate a single realistic value for the placeholder '{placeholder}' "
+                f"Generate ONE realistic value for placeholder '{placeholder}' "
                 f"in maritime/oil shipping. Vessel IMO: {imo}. "
-                f"Return ONLY the value, no quotes, no explanation, no extra text."
+                f"Reply with ONLY the value, no quotes, no explanation, no punctuation after."
             )
             r = openai_client.chat.completions.create(
                 model='gpt-4o-mini',
                 messages=[{'role': 'user', 'content': prompt}],
                 max_tokens=80,
-                temperature=0.7,
+                temperature=0.3,
             )
-            text = (r.choices[0].message.content or '').strip().strip('"\'')
-            if text:
-                return text[:500]
+            raw = (r.choices[0].message.content or '').strip()
+            out = _sanitize_ai_replacement(raw)
+            if out:
+                return out
         except Exception as e:
             logger.warning(f"OpenAI fallback for '{placeholder}': {e}")
     return generate_realistic_random_data(placeholder, vessel_imo)
@@ -4962,12 +5003,19 @@ EMPTY_PLACEHOLDER = "—"
 
 
 def _normalize_replacement_value(val, _field_name: Optional[str] = None) -> str:
-    """Normalize a value for placeholder replacement. None/empty/'None'/'null' -> '—'."""
+    """Normalize a value for placeholder replacement. None/empty/'None'/'null' -> '—'.
+    Reject log-like strings (e.g. 'Mapping:', '-> ', emoji) so they never appear in documents."""
     if val is None:
         return EMPTY_PLACEHOLDER
     s = str(val).strip()
     if not s or s.lower() in ("none", "null"):
         return EMPTY_PLACEHOLDER
+    lower = s.lower()
+    if "mapping:" in lower or "-> '" in lower or "placeholder '" in lower:
+        return EMPTY_PLACEHOLDER
+    for bad in ("✅", "⚠️", "❌", "📋", "🔍"):
+        if bad in s:
+            return EMPTY_PLACEHOLDER
     return s
 
 
