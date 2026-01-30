@@ -17,7 +17,7 @@ import io
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import quote
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Body, Header
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -2232,12 +2232,14 @@ async def get_template(template_name: str, current_user: str = Depends(get_curre
 
 @app.post("/templates/{template_id}/metadata")
 async def update_template_metadata(
+    request: Request,
     template_id: str,
-    payload: Dict = Body(...),
     current_user: str = Depends(get_current_user)
 ):
     """Update template metadata (display name, description, fonts, plan assignments)."""
     try:
+        body = await request.json()
+        payload = body if isinstance(body, dict) else {}
         display_name = (payload.get('display_name') or payload.get('name') or "").strip()
         description = (payload.get('description') or "").strip()
         font_family = (payload.get('font_family') or "").strip() or None
@@ -2574,9 +2576,18 @@ async def upload_template(
                 else:
                     random_count += 1
             mapped_count = database_count + csv_count + random_count
-            tid = template_id or docx_filename
-            upsert_template_placeholders(tid, default_settings, docx_filename)
-            logger.info(f"AI mapping created: db={database_count} csv={csv_count} random={random_count} (template {tid})")
+            # Supabase template_placeholders uses UUID FK; only upsert when we have template_id.
+            if template_id:
+                upsert_template_placeholders(str(template_id), default_settings, docx_filename)
+                logger.info(f"AI mapping created: db={database_count} csv={csv_count} random={random_count} (template_id={template_id})")
+            else:
+                # No template_id (e.g. Supabase sync failed): persist to disk only so editor can still load.
+                placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
+                key = ensure_docx_filename(docx_filename)
+                placeholder_settings[key] = default_settings
+                write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
+                logger.warning(f"AI mapping saved to disk only (no template_id): db={database_count} csv={csv_count} random={random_count} key={key}")
+                warnings.append("AI mapping saved to disk only (no Supabase template_id). Open editor by template name to see mappings.")
 
         # Remove template from deleted list if it was previously deleted (re-upload scenario)
         unmark_template_as_deleted(docx_filename)
@@ -5794,4 +5805,5 @@ if __name__ == "__main__":
     logger.info("Starting Document Processing API v2.0...")
     logger.info(f"Templates directory: {TEMPLATES_DIR}")
     logger.info(f"Storage directory: {STORAGE_DIR}")
+    logger.info("AI upload mapping: enabled (database/csv/random per placeholder, disk fallback if no template_id)")
     uvicorn.run(app, host="0.0.0.0", port=8000)
