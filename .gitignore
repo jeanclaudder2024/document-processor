@@ -53,3 +53,8 @@ tmp/
 # Test outputs
 test_output*.pdf
 test_processed*.docx
+
+# Replit
+.cache/
+.local/
+.upm/
