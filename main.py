@@ -5447,6 +5447,9 @@ def _is_value_wrong_for_placeholder(placeholder: str, value: str) -> bool:
             return True
         if 'role' in pl and 'number' not in pl:
             return True
+        # Position/designation/signatory - never accept pure number
+        if 'position' in pl or 'designation' in pl or ('signatory' in pl and 'position' in pl):
+            return True
         # Registration number: "25" too short, likely ID; "6948.0" has decimal - suspicious
         if 'registration' in pl and 'number' in pl:
             if len(s) <= 3 or '.' in s:
@@ -5473,6 +5476,21 @@ def _is_value_wrong_for_placeholder(placeholder: str, value: str) -> bool:
         return True
     # Quality spec in exclusivity/mandate field
     if ('exclusivity' in pl or 'mandate' in pl) and ('°' in s or 'sulfur' in s.lower()):
+        return True
+    # Quality spec in type/location/storage fields
+    if ('type' in pl or 'location' in pl and 'type' not in pl or 'storage' in pl and 'type' in pl) and ('°' in s or 'api gravity' in s.lower() or 'sulfur' in s.lower() or 'astm' in s.lower()):
+        return True
+    # Reference/document number fields - reject decimals and very short numbers
+    if ('reference' in pl or 'document' in pl) and 'number' not in pl:
+        if re.match(r'^\d+\.?\d*$', s):
+            return True
+    # Percentage/tolerance - reject non-numeric text
+    if ('percentage' in pl or 'tolerance' in pl) and 'price' not in pl:
+        # Should be a number or number with %
+        if not re.search(r'\d', s):
+            return True
+    # SWIFT/BIC codes - reject pure numbers or very short strings
+    if ('swift' in pl or 'bic' in pl) and (re.match(r'^\d+\.?\d*$', s) or len(s) < 6):
         return True
     return False
 
