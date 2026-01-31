@@ -45,6 +45,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 # =============================================================================
 # PREFIX-TO-TABLE MAPPING (CRITICAL FOR PLACEHOLDER REPLACEMENT)
 # =============================================================================
+# Supports 10 core tables with 455+ official placeholders
 PREFIX_TABLE_MAPPING = {
     "vessel_": {"table": "vessels", "id_type": "integer"},
     "port_": {"table": "ports", "id_type": "integer"},
@@ -60,6 +61,23 @@ PREFIX_TABLE_MAPPING = {
     "buyer_bank_": {"table": "buyer_company_bank_accounts", "id_type": "uuid"},
     "seller_bank_": {"table": "seller_company_bank_accounts", "id_type": "uuid"},
     "company_bank_": {"table": "company_bank_accounts", "id_type": "uuid"},
+}
+
+# =============================================================================
+# FIELD ALIASES - Maps placeholder field names to actual DB column names
+# Only needed when placeholder field name differs from database column name
+# Format: normalized_field_name -> actual_db_column_name
+# =============================================================================
+FIELD_ALIASES = {
+    "swift": "swift_code",
+    "accountname": "account_name",
+    "accountnumber": "account_number",
+    "bankname": "bank_name",
+    "bankaddress": "bank_address",
+    "beneficiaryaddress": "beneficiary_address",
+    "companyname": "name",
+    "fullname": "full_name",
+    "tradename": "trade_name",
 }
 
 # =============================================================================
@@ -596,22 +614,8 @@ def build_replacement_mapping(data: Dict[str, Optional[Dict]], placeholders: Lis
                     break
             
             if not found:
-                # Special handling for common field aliases
-                alias_mapping = {
-                    "swift": "swift_code",
-                    "iban": "iban",
-                    "accountname": "account_name",
-                    "accountnumber": "account_number",
-                    "bankname": "bank_name",
-                    "bankaddress": "bank_address",
-                    "beneficiaryaddress": "beneficiary_address",
-                    "companyname": "name",
-                    "fullname": "full_name",
-                    "tradename": "trade_name",
-                }
-                
-                if normalized_field in alias_mapping:
-                    alias = alias_mapping[normalized_field]
+                if normalized_field in FIELD_ALIASES:
+                    alias = FIELD_ALIASES[normalized_field]
                     if alias in entity_data:
                         mapping[placeholder] = format_value(entity_data[alias])
                         print(f"Mapped (alias): {placeholder} -> {mapping[placeholder][:50]}...")
