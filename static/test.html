@@ -311,6 +311,15 @@
             }
         });
 
+        function formatError(err) {
+            if (typeof err === 'string') return err;
+            if (err.error) return err.error;
+            if (err.detail) return typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+            if (err.details) return Array.isArray(err.details) ? err.details.join(', ') : String(err.details);
+            if (err.message) return err.message;
+            return JSON.stringify(err);
+        }
+
         async function processDocument() {
             const results = document.getElementById('results');
             const download = document.getElementById('download-container');
@@ -339,36 +348,45 @@
             formData.append('output_format', format);
 
             try {
-                const res = await fetch(`${API_BASE}/process-document`, {
+                const res = await fetch(`${API_BASE}/process-document-upload`, {
                     method: 'POST',
                     body: formData
                 });
 
-                if (res.ok) {
-                    const contentType = res.headers.get('content-type');
-                    if (contentType && contentType.includes('application/json')) {
-                        const data = await res.json();
+                const contentType = res.headers.get('content-type') || '';
+                
+                if (contentType.includes('application/json')) {
+                    const data = await res.json();
+                    if (res.ok && data.success !== false) {
                         results.className = 'results success';
                         results.textContent = JSON.stringify(data, null, 2);
                     } else {
-                        const blob = await res.blob();
-                        const url = URL.createObjectURL(blob);
-                        const ext = format === 'pdf' ? 'pdf' : 'docx';
-                        const filename = `processed_${uploadedFile.name.replace('.docx', '')}.${ext}`;
-                        
-                        results.className = 'results success';
-                        results.textContent = `Success! Document processed.\n\nFile: ${filename}\nSize: ${(blob.size / 1024).toFixed(2)} KB\nFormat: ${format.toUpperCase()}`;
-                        
-                        download.innerHTML = `<a href="${url}" download="${filename}" class="download-link">Download Processed Document</a>`;
+                        results.className = 'results error';
+                        results.textContent = `Error ${res.status}: ${formatError(data)}`;
                     }
+                } else if (res.ok) {
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const ext = format === 'pdf' ? 'pdf' : 'docx';
+                    const filename = `processed_${uploadedFile.name.replace('.docx', '')}.${ext}`;
+                    
+                    results.className = 'results success';
+                    results.textContent = `Success! Document processed.\n\nFile: ${filename}\nSize: ${(blob.size / 1024).toFixed(2)} KB\nFormat: ${format.toUpperCase()}`;
+                    
+                    download.innerHTML = `<a href="${url}" download="${filename}" class="download-link">Download Processed Document</a>`;
                 } else {
-                    const err = await res.json();
+                    const text = await res.text();
                     results.className = 'results error';
-                    results.textContent = `Error ${res.status}: ${err.detail || JSON.stringify(err)}`;
+                    try {
+                        const errData = JSON.parse(text);
+                        results.textContent = `Error ${res.status}: ${formatError(errData)}`;
+                    } catch {
+                        results.textContent = `Error ${res.status}: ${text || 'Unknown error'}`;
+                    }
                 }
             } catch (e) {
                 results.className = 'results error';
-                results.textContent = `Network Error: ${e.message}`;
+                results.textContent = `Network Error: ${e.message || String(e)}`;
             }
         }
 
@@ -392,18 +410,31 @@
                     method: 'POST',
                     body: formData
                 });
-                const data = await res.json();
                 
-                if (res.ok) {
-                    results.className = 'results success';
-                    results.textContent = JSON.stringify(data, null, 2);
+                const contentType = res.headers.get('content-type') || '';
+                
+                if (contentType.includes('application/json')) {
+                    const data = await res.json();
+                    if (res.ok && data.success !== false) {
+                        results.className = 'results success';
+                        results.textContent = JSON.stringify(data, null, 2);
+                    } else {
+                        results.className = 'results error';
+                        results.textContent = `Error: ${formatError(data)}`;
+                    }
                 } else {
+                    const text = await res.text();
                     results.className = 'results error';
-                    results.textContent = `Error: ${data.detail || JSON.stringify(data)}`;
+                    try {
+                        const errData = JSON.parse(text);
+                        results.textContent = `Error: ${formatError(errData)}`;
+                    } catch {
+                        results.textContent = `Error: ${text || 'Unknown error'}`;
+                    }
                 }
             } catch (e) {
                 results.className = 'results error';
-                results.textContent = `Network Error: ${e.message}`;
+                results.textContent = `Network Error: ${e.message || String(e)}`;
             }
         }
 

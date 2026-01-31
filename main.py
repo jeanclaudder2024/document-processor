@@ -9,10 +9,12 @@ import uuid
 import shutil
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any, Union
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, HTMLResponse, FileResponse
+from fastapi.responses import Response, HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
+import traceback
 from pydantic import BaseModel
 from supabase import create_client, Client
 from docx import Document
@@ -31,6 +33,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global exception handlers for consistent JSON error responses
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTP exceptions with JSON response"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": str(exc.detail),
+            "status_code": exc.status_code
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors with JSON response"""
+    errors = []
+    for error in exc.errors():
+        field = ".".join(str(loc) for loc in error.get("loc", []))
+        msg = error.get("msg", "Validation error")
+        errors.append(f"{field}: {msg}")
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "error": "Validation error",
+            "details": errors
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle all other exceptions with JSON response"""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": "Internal server error",
+            "details": str(exc)
+        }
+    )
 
 # Supabase client - uses service_role key from environment for full database access
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
@@ -1139,17 +1184,121 @@ async def upload_template(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-@app.post("/analyze-template")
-async def analyze_template(template_name: str = Form(...)):
-    """Analyze a template and return required IDs based on placeholders"""
+@app.post("/process-document-upload")
+async def process_document_upload(
+    file: UploadFile = File(...),
+    vessel_id: Optional[int] = Form(None),
+    buyer_id: Optional[str] = Form(None),
+    seller_id: Optional[str] = Form(None),
+    product_id: Optional[str] = Form(None),
+    refinery_id: Optional[str] = Form(None),
+    broker_id: Optional[str] = Form(None),
+    departure_port_id: Optional[int] = Form(None),
+    destination_port_id: Optional[int] = Form(None),
+    output_format: str = Form("docx")
+):
+    """Process an uploaded document template with form data"""
+    temp_path = None
+    output_path = None
+    
     try:
-        template_path = os.path.join(TEMPLATES_DIR, template_name)
-        if not os.path.exists(template_path):
-            template_path = os.path.join(TEMPLATES_DIR, f"{template_name}.docx")
-            if not os.path.exists(template_path):
-                raise HTTPException(status_code=404, detail=f"Template not found: {template_name}")
+        if not file.filename.endswith('.docx'):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Only .docx files are supported"}
+            )
         
-        doc = Document(template_path)
+        temp_path = os.path.join(TEMP_DIR, f"process_{uuid.uuid4().hex}_{file.filename}")
+        with open(temp_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        request = DocumentProcessRequest(
+            template_name=file.filename,
+            vessel_id=vessel_id,
+            buyer_id=buyer_id,
+            seller_id=seller_id,
+            product_id=product_id,
+            refinery_id=refinery_id,
+            broker_id=broker_id,
+            departure_port_id=departure_port_id,
+            destination_port_id=destination_port_id,
+            output_format=output_format
+        )
+        
+        data = fetch_document_data(request)
+        
+        doc = Document(temp_path)
+        full_text = ""
+        for paragraph in doc.paragraphs:
+            full_text += paragraph.text + "\n"
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    full_text += cell.text + "\n"
+        
+        placeholders = find_placeholders(full_text)
+        print(f"\nProcessing uploaded file: {file.filename}")
+        print(f"Found {len(placeholders)} placeholders")
+        
+        replacement_stats = {"replaced": 0, "not_found": 0, "empty": 0}
+        
+        for placeholder in placeholders:
+            normalized = normalize_placeholder(placeholder)
+            value = get_placeholder_value(normalized, data)
+            
+            if value is not None and value != "":
+                replace_placeholder_in_doc(doc, placeholder, str(value))
+                replacement_stats["replaced"] += 1
+            else:
+                replacement_stats["not_found"] += 1
+        
+        output_filename = f"processed_{uuid.uuid4().hex}_{file.filename}"
+        output_path = os.path.join(TEMP_DIR, output_filename)
+        doc.save(output_path)
+        
+        with open(output_path, "rb") as f:
+            doc_content = f.read()
+        
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        download_filename = f"processed_{file.filename}"
+        
+        return Response(
+            content=doc_content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Processing failed: {str(e)}"}
+        )
+    finally:
+        for path in [temp_path, output_path]:
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except:
+                    pass
+
+@app.post("/analyze-template")
+async def analyze_template(file: UploadFile = File(...)):
+    """Analyze an uploaded template and return required IDs based on placeholders"""
+    temp_path = None
+    try:
+        if not file.filename.endswith('.docx'):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Only .docx files are supported"}
+            )
+        
+        temp_path = os.path.join(TEMP_DIR, f"analyze_{uuid.uuid4().hex}_{file.filename}")
+        with open(temp_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        doc = Document(temp_path)
         full_text = ""
         for paragraph in doc.paragraphs:
             full_text += paragraph.text + "\n"
@@ -1160,7 +1309,6 @@ async def analyze_template(template_name: str = Form(...)):
         
         placeholders = find_placeholders(full_text)
         
-        # Analyze required IDs
         required_ids = set()
         prefix_to_id = {
             "vessel_": "vessel_id",
@@ -1187,23 +1335,30 @@ async def analyze_template(template_name: str = Form(...)):
                 if prefix in prefix_to_id:
                     required_ids.add(prefix_to_id[prefix])
         
-        return {
+        return JSONResponse(content={
             "success": True,
-            "template_name": template_name,
+            "template_name": file.filename,
             "total_placeholders": len(placeholders),
             "placeholders": placeholders,
             "prefix_analysis": prefix_counts,
             "required_payload_ids": list(required_ids),
             "example_payload": {
-                "template_name": template_name,
+                "template_name": file.filename,
                 **{id_name.split(" ")[0]: "<provide_id>" for id_name in required_ids}
             }
-        }
+        })
         
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Analysis failed: {str(e)}"}
+        )
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
 
 if __name__ == "__main__":
     import uvicorn
