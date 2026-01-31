@@ -5167,9 +5167,15 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'bin' in pl or 'okpo' in pl:
         return f"{random.randint(100000000, 999999999)}"
 
-    # Legal / contract
-    if 'arbitration' in pl or 'governing' in pl or 'law' in pl:
-        return random.choice(['Singapore', 'London', 'Dubai', 'Geneva'])
+    # Legal / contract - BEFORE generic checks
+    if 'dispute' in pl or 'arbitration' in pl:
+        if 'venue' in pl or 'seat' in pl or 'place' in pl:
+            return random.choice(['Singapore', 'London', 'Dubai', 'Geneva'])
+        return random.choice(['ICC Arbitration', 'LCIA London', 'Singapore Arbitration', 'SIAC'])
+    if 'governing' in pl or ('law' in pl and 'country' not in pl):
+        return random.choice(['Singapore Law', 'English Law', 'UAE Law', 'Swiss Law'])
+    if 'jurisdiction' in pl:
+        return random.choice(['Singapore', 'England and Wales', 'Dubai', 'Geneva'])
     if 'registration' in pl and 'number' in pl:
         return f"REG-{random.randint(100000, 999999)}"
 
@@ -5248,23 +5254,46 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'number' in pl or 'no' in pl or 'code' in pl or 'ref' in pl or 'id' in pl:
         return f"REF-{random.randint(100000, 999999)}"
     
-    # Final catch-all: analyze placeholder words and make best guess
-    # Extract key words from placeholder
+    # Final catch-all: analyze placeholder words and generate truly related data
     words = re.findall(r'[a-z]+', pl)
     if words:
         # Check for specific keywords and generate appropriate data
         for word in words:
-            if word in ['duration', 'period', 'validity']:
+            if word in ['duration', 'period', 'validity', 'term']:
                 return f"{random.randint(30, 180)} days"
-            if word in ['method', 'mode', 'type', 'kind']:
-                return random.choice(['Standard', 'Express', 'As specified'])
-            if word in ['officer', 'contact', 'representative']:
-                return random.choice(['John Smith', 'Operations Manager'])
+            if word in ['method', 'mode', 'delivery', 'shipment']:
+                return random.choice(['FOB', 'CIF', 'CFR'])
+            if word in ['officer', 'contact', 'representative', 'person']:
+                return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan'])
             if word in ['status', 'state', 'condition']:
-                return random.choice(['Active', 'Confirmed', 'Pending'])
+                return 'Confirmed'
+            if word in ['currency', 'denomination']:
+                return 'USD'
+            if word in ['language']:
+                return 'English'
+            if word in ['law', 'jurisdiction']:
+                return random.choice(['Singapore', 'English Law', 'UAE Law'])
+            if word in ['dispute', 'arbitration']:
+                return random.choice(['Singapore Arbitration', 'LCIA London', 'ICC Paris'])
     
-    # Ultimate fallback: Use placeholder name as hint for realistic generation
-    return f"As per contract ({placeholder[:30]})"
+    # Analyze placeholder structure
+    if 'contract' in pl or 'agreement' in pl:
+        return 'As per contract terms'
+    if 'standard' in pl or 'specification' in pl:
+        return 'As per industry standards'
+    if 'approval' in pl or 'authorization' in pl:
+        return 'Authorized'
+    if 'required' in pl or 'mandatory' in pl:
+        return 'Yes'
+    
+    # Ultimate fallback: generate based on placeholder type hint
+    # Prefer realistic value over generic text
+    return random.choice([
+        'As per contract',
+        'Standard',
+        'Confirmed',
+        f"REF-{random.randint(100000, 999999)}"
+    ])
 
 
 def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
