@@ -1301,8 +1301,8 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
 
 
 def _build_schema_for_mapping() -> Dict[str, List[str]]:
-    """Build {table: [col1, col2, ...]} for vessels, ports, refineries, companies, brokers."""
-    tables = ['vessels', 'ports', 'refineries', 'companies', 'brokers']
+    """Build {table: [col1, col2, ...]} for vessels, ports, refineries, companies. Brokers excluded."""
+    tables = ['vessels', 'ports', 'refineries', 'companies']
     schema: Dict[str, List[str]] = {}
     for t in tables:
         cols = _get_predefined_table_columns(t)
@@ -1388,7 +1388,7 @@ Placeholders to map: {ph_list}
 Rules:
 - Prefer "vessels" for ship/vessel/IMO/owner/operator/dimensions/flag/cargo.
 - Use "ports" for port names, countries, cities.
-- Use "companies" or "brokers" for company/broker names, emails, phones when vessel fields don't fit.
+- Use "companies" for company names, emails, phones when vessel fields don't fit. Do NOT use brokers table.
 - Return valid table.column only; if no good match, return NONE for that placeholder.
 
 Return a JSON object: {{ "placeholder1": "table.column", "placeholder2": "NONE", ... }}. Use exact placeholder strings as keys. No other text."""
@@ -1491,10 +1491,16 @@ def _ai_analyze_and_map_placeholders(
 
 **Placeholders to map:** {ph_list}
 
+**Lookup order (follow strictly):**
+1. **Vessels first**: IMO, vessel name, flag, owner, dimensions, cargo, port, etc. -> vessels table.
+2. **Other tables**: Port names, company names, refinery -> ports, companies, refineries. (Do NOT use brokers table.)
+3. **CSV**: Buyer/seller/contact/beneficiary/invoice party -> csv with matching column.
+4. **Random**: ONLY when no database or CSV column fits. We will generate realistic AI data at runtime.
+
 **Rules (follow strictly):**
 1. **Buyer/seller data**: Placeholders that refer to BUYER or SELLER (name, company, email, address, phone, contact, etc.) MUST use **csv** when a matching CSV field exists. Example: BUYER_NAME, SELLER_COMPANY, BUYER_EMAIL → csv with buyer_name, seller_company, buyer_email, etc.
-2. **Vessel/ship data**: IMO, vessel name, flag, port, cargo, etc. → **database** (vessels, ports). Use table.column from the list.
-3. **Company/port/refinery** (not buyer/seller): Use **database** when a matching table.column exists.
+2. **Vessel/ship data**: IMO, vessel name, flag, port, cargo, etc. -> **database** (vessels, ports). Use table.column from the list.
+3. **Company/port/refinery** (not buyer/seller): Use **database** when a matching table.column exists. NEVER use brokers table.
 4. **Use csv** for any placeholder that clearly matches a CSV column (e.g. invoice party, beneficiary, bank details, contact person) when such CSV fields exist.
 5. **Use random** only when no database or CSV fit.
 
@@ -4713,6 +4719,68 @@ def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
     # No match found - vessel data is empty
     return (None, None)
 
+
+def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tuple:
+    """
+    Search vessels first, then ports/companies/refineries via vessel FKs. Brokers excluded.
+    Returns (matched_field_name, matched_value) or (None, None).
+    """
+    if not vessel:
+        return (None, None)
+
+    # Step 1: Search vessel dict first
+    matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+    if matched_field and matched_value:
+        return (matched_field, matched_value)
+
+    # Step 2: Build merged "related data" dict from ports, companies, refineries (no brokers)
+    merged: Dict[str, any] = dict(vessel)
+    try:
+        # Ports: departure_port, destination_port (may be IDs)
+        for port_key, prefix in [('departure_port', 'departure_port_'), ('destination_port', 'destination_port_'),
+                                 ('loading_port', 'loading_port_')]:
+            port_id = vessel.get(port_key)
+            if port_id is not None:
+                port_data = get_data_from_table('ports', 'id', port_id)
+                if port_data:
+                    for k, v in port_data.items():
+                        if v is not None and str(v).strip():
+                            merged[f"{prefix}{k}"] = v
+                    merged[f"{prefix}name"] = port_data.get('name') or merged.get(f"{prefix}name")
+        # Loading port often same as departure - add alias if missing
+        if 'loading_port_name' not in merged and 'departure_port_name' in merged:
+            merged['loading_port_name'] = merged['departure_port_name']
+        # Generic port_name for "Port" / "Port Name" placeholders
+        if 'port_name' not in merged and merged.get('departure_port_name'):
+            merged['port_name'] = merged['departure_port_name']
+        # Company
+        company_id = vessel.get('company_id') or vessel.get('buyer_company_id') or vessel.get('seller_company_id')
+        if company_id is not None:
+            company_data = get_data_from_table('companies', 'id', company_id)
+            if company_data:
+                for k, v in company_data.items():
+                    if v is not None and str(v).strip():
+                        merged[f"company_{k}"] = v
+        # Refinery
+        refinery_id = vessel.get('refinery_id')
+        if refinery_id is not None:
+            refinery_data = get_data_from_table('refineries', 'id', refinery_id)
+            if refinery_data:
+                for k, v in refinery_data.items():
+                    if v is not None and str(v).strip():
+                        merged[f"refinery_{k}"] = v
+    except Exception as e:
+        logger.debug(f"Building related data for multi-table match: {e}")
+
+    # Step 3: Run matching against merged dict (exclude vessel keys we already tried)
+    if len(merged) > len(vessel):
+        matched_field, matched_value = _intelligent_field_match(placeholder, merged)
+        if matched_field and matched_value:
+            return (matched_field, matched_value)
+
+    return (None, None)
+
+
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
     """Generate realistic random data for placeholders (maritime/oil shipping context)."""
     import random
@@ -4831,6 +4899,62 @@ def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
     return None
 
 
+def _smart_csv_search(placeholder: str) -> Optional[str]:
+    """Search all CSVs for a column matching the placeholder. Returns value from first matching row or None."""
+    def _normalize_for_column(s: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', (s or '').lower()).replace(' ', '_')
+
+    ph_norm = _normalize_for_column(placeholder)
+    ph_words = set(re.findall(r'[a-z]+', ph_norm))
+    if not ph_norm:
+        return None
+
+    for dataset in list_csv_datasets():
+        path = dataset.get("path") or os.path.join(DATA_DIR, dataset.get("filename", ""))
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                if not rows:
+                    continue
+                fieldnames = list(reader.fieldnames or rows[0].keys() or [])
+            cols_norm = {_normalize_for_column(c): c for c in fieldnames if c}
+
+            # Exact match
+            if ph_norm in cols_norm:
+                col = cols_norm[ph_norm]
+                v = rows[0].get(col)
+                if v is not None and str(v).strip():
+                    return str(v).strip()
+
+            # Case-insensitive
+            ph_lower = placeholder.lower().replace(' ', '_').replace('-', '_')
+            for c in fieldnames:
+                if c and c.lower().replace(' ', '_') == ph_lower:
+                    v = rows[0].get(c)
+                    if v is not None and str(v).strip():
+                        return str(v).strip()
+
+            # Partial/word overlap
+            best_col = None
+            best_score = 0
+            for c_norm, c_orig in cols_norm.items():
+                c_words = set(re.findall(r'[a-z]+', c_norm))
+                overlap = len(ph_words & c_words) / max(len(ph_words), 1)
+                if overlap > best_score and overlap >= 0.5:
+                    best_score = overlap
+                    best_col = c_orig
+            if best_col:
+                v = rows[0].get(best_col)
+                if v is not None and str(v).strip():
+                    return str(v).strip()
+        except Exception as e:
+            logger.debug(f"_smart_csv_search error for {dataset.get('id', '')}: {e}")
+    return None
+
+
 def _sanitize_ai_replacement(text: str) -> str:
     """Strip explanatory prefixes and reject log-like output. Return clean value or empty string."""
     if not text or not isinstance(text, str):
@@ -4876,9 +5000,21 @@ def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str =
     if OPENAI_ENABLED and openai_client:
         try:
             imo = (vessel or {}).get('imo') or vessel_imo or 'N/A'
+            pl_lower = (placeholder or '').lower()
+            hints = []
+            if 'date' in pl_lower or 'time' in pl_lower: hints.append('date')
+            if 'email' in pl_lower or 'mail' in pl_lower: hints.append('email')
+            if 'company' in pl_lower or 'firm' in pl_lower: hints.append('company name')
+            if 'port' in pl_lower or 'harbor' in pl_lower: hints.append('port name')
+            if 'quantity' in pl_lower or 'amount' in pl_lower or 'qty' in pl_lower: hints.append('quantity/number')
+            if 'phone' in pl_lower or 'tel' in pl_lower: hints.append('phone')
+            if 'address' in pl_lower: hints.append('address')
+            if 'name' in pl_lower and 'company' not in pl_lower: hints.append('person/entity name')
+            hint_str = ', '.join(hints) if hints else 'general value'
             prompt = (
                 f"Generate ONE realistic value for placeholder '{placeholder}' "
-                f"in maritime/oil shipping. Vessel IMO: {imo}. "
+                f"in maritime/oil shipping. The placeholder suggests: {hint_str}. "
+                f"Vessel IMO: {imo}. "
                 f"Reply with ONLY the value, no quotes, no explanation, no punctuation after."
             )
             r = openai_client.chat.completions.create(
@@ -5642,8 +5778,8 @@ async def generate_document(request: Request):
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [explicit (table, column) configured; using those first]")
             elif run_intelligent_db_first:
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [source=database; trying intelligent DB match first]")
-                logger.info(f"  🗄️  STEP 1: Trying intelligent database matching...")
-                matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
+                logger.info(f"  🗄️  STEP 1: Trying intelligent database matching (vessels → ports → companies → refineries)...")
+                matched_field, matched_value = _intelligent_field_match_multi_table(placeholder, vessel)
                 if matched_field and matched_value:
                     data_mapping[placeholder] = _normalize_replacement_value(matched_value)
                     found = True
@@ -5698,8 +5834,13 @@ async def generate_document(request: Request):
                         matched_value = None
                         source_data = vessel  # Default to vessel data
 
+                        # If database_table is brokers, skip DB lookup and fall through to cascade
+                        if database_table and database_table.lower() == 'brokers':
+                            logger.info(f"  ⚠️  Brokers table excluded from mapping; will use cascade (CSV → AI)")
+                            found = False
+                            source_data = None  # Skip matching block
                         # If database_table is specified and it's not 'vessels', fetch data from that table
-                        if database_table and database_table.lower() != 'vessels':
+                        elif database_table and database_table.lower() != 'vessels':
                             logger.info(f"  🔍 Fetching data from table '{database_table}'...")
                             
                             # Determine lookup field and value based on table
@@ -5719,10 +5860,6 @@ async def generate_document(request: Request):
                             elif database_table.lower() == 'companies':
                                 lookup_field = 'id'
                                 lookup_value = vessel.get('company_id') or vessel.get('buyer_company_id') or vessel.get('seller_company_id')
-                            elif database_table.lower() == 'brokers':
-                                # Vessel often has no broker_id; we fall back to vessel data when missing.
-                                lookup_field = 'id'
-                                lookup_value = vessel.get('broker_id')
                             else:
                                 lookup_field = 'id'
                                 lookup_value = vessel.get(f'{database_table.lower()}_id')
@@ -5740,7 +5877,7 @@ async def generate_document(request: Request):
                             logger.info(f"  📋 Using vessel data (table: {database_table or 'vessels'})")
                             logger.info(f"  📋 Available fields: {list(vessel.keys())[:20]}...")
 
-                        if source_data:
+                        if source_data is not None and source_data:
                             if database_field:
                                 # Try exact match first
                                 if database_field in source_data:
@@ -5852,16 +5989,19 @@ async def generate_document(request: Request):
                     logger.warning(f"   Will use cascade (DB → CSV → AI) as fallback")
 
             if not found:
-                # Cascade: CSV fallback → then always AI-generated realistic data (never leave empty)
-                logger.info(f"  🔍 {placeholder}: Cascade CSV → AI (realistic fallback)")
-                # 1. CSV (from CMS config) - try CSV as fallback
+                # Cascade: CSV (CMS config) → smart CSV search → AI-generated realistic data
+                logger.info(f"  🔍 {placeholder}: Cascade CSV → Smart CSV → AI (realistic fallback)")
+                # 1. CSV (from CMS config) - try configured CSV first
                 csv_val = _try_csv_for_placeholder(setting)
+                if not csv_val:
+                    # 2. Smart CSV search - search all CSVs for matching column
+                    csv_val = _smart_csv_search(placeholder)
                 if csv_val:
                     data_mapping[placeholder] = _normalize_replacement_value(csv_val)
                     found = True
                     logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
                 if not found:
-                    # 2. Always generate realistic AI data when no match – never use "—"
+                    # 3. Always generate realistic AI data when no match – never use "—"
                     ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
                     data_mapping[placeholder] = _normalize_replacement_value(ai_val)
                     found = True
