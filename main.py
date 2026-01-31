@@ -392,10 +392,87 @@ def format_value(value: Any) -> str:
 # PREFIX-BASED PLACEHOLDER REPLACEMENT (Task 6)
 # =============================================================================
 
+_LEGACY_PLACEHOLDER_MAPPING_RAW = {
+    "imo_number": ("vessel", "imo"),
+    "flag_state": ("vessel", "flag"),
+    "vessel_type": ("vessel", "vessel_type"),
+    "call_sign": ("vessel", "call_sign"),
+    "year_built": ("vessel", "year_built"),
+    "vessel_owner": ("vessel", "owner"),
+    "length_overall": ("vessel", "length_overall"),
+    "vessel_operator": ("vessel", "operator"),
+    "beam": ("vessel", "beam"),
+    "ism_manager": ("vessel", "ism_manager"),
+    "draft": ("vessel", "draft"),
+    "registry_port": ("vessel", "registry_port"),
+    "gross_tonnage": ("vessel", "gross_tonnage"),
+    "deadweight": ("vessel", "deadweight"),
+    "net_tonnage": ("vessel", "net_tonnage"),
+    "cargo_capacity": ("vessel", "cargo_capacity"),
+    "class_society": ("vessel", "class_society"),
+    "cargo_tanks": ("vessel", "cargo_tanks"),
+    "engine_type": ("vessel", "engine_type"),
+    "pumping_capacity": ("vessel", "pumping_capacity"),
+    "speed": ("vessel", "speed"),
+    "company_name": ("company", "name"),
+    "refinery_name": ("refinery", "name"),
+    "principal_buyer_name": ("buyer", "name"),
+    "principal_buyer_designation": ("buyer", "designation"),
+    "principal_buyer_company": ("buyer", "company_name"),
+    "buyer_logistics_name": ("buyer", "logistics_name"),
+    "buyer_logistics_company": ("buyer", "logistics_company"),
+    "buyer_logistics_designation": ("buyer", "logistics_designation"),
+    "buyer_company_name": ("buyer", "company_name"),
+    "buyer_company_name2": ("buyer", "company_name"),
+    "buyer_attention": ("buyer", "attention"),
+    "buyer_attention2": ("buyer", "attention"),
+    "buyer_designations2": ("buyer", "designation"),
+    "buyer_telfax": ("buyer", "phone"),
+    "buyer_email": ("buyer", "email"),
+    "buyer_passport_no": ("buyer", "passport_no"),
+    "buyer_bin": ("buyer", "bin"),
+    "seller_name": ("seller", "name"),
+    "seller_designation": ("seller", "designation"),
+    "seller_company": ("seller", "company_name"),
+    "seller_signature": ("seller", "signature"),
+    "seller_address": ("seller", "address"),
+    "seller_address2": ("seller", "address2"),
+    "seller_refinery": ("seller", "refinery"),
+    "seller_company_reg": ("seller", "company_reg"),
+    "seller_representative": ("seller", "representative"),
+    "seller_passport_no": ("seller", "passport_no"),
+    "seller_company_no": ("seller", "company_no"),
+    "seller_emails": ("seller", "email"),
+    "product_description": ("product", "description"),
+    "country_of_origin": ("product", "country_of_origin"),
+    "quantity": ("deal", "quantity"),
+    "price": ("deal", "price"),
+    "total_product_value": ("deal", "total_value"),
+    "delivery_port": ("destination_port", "name"),
+    "address": ("company", "address"),
+    "bin": ("company", "bin"),
+    "okpo": ("company", "okpo"),
+    "tel": ("company", "phone"),
+    "email": ("company", "email"),
+    "to": ("buyer", "company_name"),
+    "designations": ("buyer", "designation"),
+    "via": ("broker", "name"),
+    "position": ("deal", "position"),
+    "commercial_invoice_no": ("deal", "invoice_no"),
+    "issued_date": ("deal", "issued_date"),
+    "validity": ("deal", "validity"),
+}
+
+# Create normalized lookup for legacy mappings (removes underscores, dashes, lowercase)
+LEGACY_PLACEHOLDER_MAPPING = {
+    normalize_placeholder(k): v for k, v in _LEGACY_PLACEHOLDER_MAPPING_RAW.items()
+}
+
 def build_replacement_mapping(data: Dict[str, Optional[Dict]], placeholders: List[str]) -> Dict[str, str]:
     """
     Build a mapping from placeholders to their replacement values.
     Uses strict prefix-based matching to prevent cross-entity contamination.
+    Also supports legacy placeholder names for backward compatibility.
     """
     mapping = {}
     
@@ -418,6 +495,31 @@ def build_replacement_mapping(data: Dict[str, Optional[Dict]], placeholders: Lis
     }
     
     for placeholder in placeholders:
+        normalized_placeholder = normalize_placeholder(placeholder)
+        
+        # FIRST: Check legacy mapping for backward compatibility
+        if normalized_placeholder in LEGACY_PLACEHOLDER_MAPPING:
+            data_key, field_name = LEGACY_PLACEHOLDER_MAPPING[normalized_placeholder]
+            entity_data = data.get(data_key)
+            if entity_data is not None:
+                if field_name in entity_data:
+                    mapping[placeholder] = format_value(entity_data[field_name])
+                    print(f"Mapped (legacy): {placeholder} -> {mapping[placeholder][:50] if len(mapping[placeholder]) > 50 else mapping[placeholder]}...")
+                    continue
+                else:
+                    for key, value in entity_data.items():
+                        if normalize_placeholder(key) == normalize_placeholder(field_name):
+                            mapping[placeholder] = format_value(value)
+                            print(f"Mapped (legacy normalized): {placeholder} -> {mapping[placeholder][:50] if len(mapping[placeholder]) > 50 else mapping[placeholder]}...")
+                            break
+                    else:
+                        print(f"Warning: Legacy field '{field_name}' not found in {data_key}")
+                    continue
+            else:
+                print(f"Warning: No data for legacy placeholder '{placeholder}' (entity: {data_key})")
+                continue
+        
+        # SECOND: Try prefix-based matching
         prefix = identify_prefix(placeholder)
         
         if not prefix:
