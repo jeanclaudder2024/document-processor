@@ -1,0 +1,151 @@
+I need you to update and fix the backend of my Document Processor API (FastAPI, Python) to fully integrate with an existing Supabase database used by PetroDealHub.
+
+The API must correctly detect and replace Word document placeholders using explicit IDs provided in the request payload, not by guessing or partial matching.
+
+1. Database Context
+
+Supabase URL: https://ozjhdxvwqbzcvcywhwjg.supabase.co
+
+The database contains 125 tables, with 12 core document-related tables
+
+IDs are mixed:
+
+INTEGER: vessels, ports, companies
+
+UUID: buyer_companies, seller_companies, refineries, oil_products, broker_profiles, bank accounts, deals
+
+Important:
+The API must NOT auto-sync or scan all tables.
+It must fetch data only for tables whose IDs are explicitly provided in the request payload.
+
+2. Required Backend Architecture Changes
+A. Payload-Driven Data Fetching
+
+Update the document processing flow so that:
+
+The request payload may include:
+
+{
+  "vessel_id": 12,
+  "buyer_id": "uuid",
+  "seller_id": "uuid",
+  "product_id": "uuid",
+  "refinery_id": "uuid",
+  "buyer_bank_id": "uuid",
+  "seller_bank_id": "uuid",
+  "departure_port_id": 45,
+  "destination_port_id": 78,
+  "broker_id": "uuid",
+  "deal_id": "uuid"
+}
+
+
+For each ID present:
+
+Query the correct table
+
+Fetch exactly one record
+
+Store it in a structured dictionary (e.g. data["buyer"], data["product"])
+
+3. Prefix-Based Placeholder Mapping (MANDATORY)
+
+Implement strict prefix logic based on the following mapping:
+
+Prefix	Table
+vessel_	vessels
+port_	ports
+departure_port_	ports
+destination_port_	ports
+company_	companies
+buyer_	buyer_companies
+seller_	seller_companies
+refinery_	refineries
+product_	oil_products
+broker_	broker_profiles
+buyer_bank_	buyer_company_bank_accounts
+seller_bank_	seller_company_bank_accounts
+
+The system must never mix prefixes or data sources.
+
+4. Placeholder Detection Rules
+
+Detect placeholders in Word documents using these formats:
+
+{{placeholder}}
+{placeholder}
+[[placeholder]]
+%placeholder%
+<placeholder>
+
+
+Normalize placeholders by:
+
+Lowercasing
+
+Removing spaces, dashes, underscores
+
+Example:
+
+{{Buyer Bank Swift}} → buyerbankswift
+{{buyer_bank_swift}} → buyerbankswift
+
+5. Placeholder Replacement Logic
+
+For each detected placeholder:
+
+Identify its prefix (e.g. buyer_bank_)
+
+Match it to the correct dataset already fetched
+
+Replace it only if the matching data exists
+
+If the value is:
+
+NULL → replace with empty string
+
+array → join with commas
+
+Never generate random data if an ID was provided
+
+Fallback generation is allowed only if no ID exists in the payload
+
+6. Bank Account Logic (Critical)
+
+If buyer_bank_id or seller_bank_id is provided:
+
+Fetch that exact record
+
+Otherwise:
+
+Fetch the bank account where is_primary = true
+
+7. Code Quality & Safety
+
+Prevent KeyErrors when placeholders exist but IDs were not sent
+
+Do not overwrite placeholders from another table
+
+Make the system scalable to 500+ placeholders
+
+Keep logic modular (fetch_*, replace_placeholders)
+
+8. Final Goal
+
+When a Word template is uploaded:
+
+90%+ of placeholders must be replaced directly from Supabase
+
+All replaced data must come from the same records (same IDs)
+
+No cross-entity contamination (buyer data never appears in seller fields)
+
+Please refactor the backend accordingly and confirm when:
+
+Multi-table fetching is ID-based
+
+Placeholder replacement is prefix-safe
+
+The API is ready for production document generation
+
+This API is used for commercial maritime documents, so correctness and data integrity are mandatory.

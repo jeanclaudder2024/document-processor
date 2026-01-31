@@ -1,0 +1,1358 @@
+
+
+# PetroDealHub Complete Database Schema Documentation
+## For FastAPI Document Processor Integration on Replit
+
+---
+
+## 1. Supabase Connection Details
+
+```
+SUPABASE_URL: https://ozjhdxvwqbzcvcywhwjg.supabase.co
+SUPABASE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q
+```
+
+---
+
+## 2. Complete Database Tables for Document Processor
+
+### Total Tables in Database: 125 tables
+### Core Document-Relevant Tables: 12 tables
+
+---
+
+## 3. Full Table Schemas with All Columns
+
+### TABLE 1: vessels
+**Primary Key:** `id` (integer, auto-increment)
+**Total Columns: 97**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | integer | NO | Primary key |
+| name | varchar | NO | Vessel name |
+| mmsi | varchar | YES | Maritime Mobile Service Identity |
+| imo | varchar | YES | IMO number |
+| vessel_type | varchar | YES | Type of vessel |
+| flag | varchar | YES | Flag country |
+| built | integer | YES | Year built |
+| deadweight | integer | YES | Deadweight tonnage |
+| cargo_capacity | integer | YES | Cargo capacity |
+| current_lat | numeric | YES | Current latitude |
+| current_lng | numeric | YES | Current longitude |
+| speed | varchar | YES | Current speed |
+| status | varchar | YES | Vessel status |
+| departure_port | integer | YES | FK to ports.id |
+| destination_port | integer | YES | FK to ports.id |
+| departure_date | timestamp | YES | Departure date |
+| arrival_date | timestamp | YES | Arrival date |
+| eta | timestamp | YES | Estimated time of arrival |
+| company_id | integer | YES | FK to companies.id |
+| cargo_type | varchar | YES | Type of cargo |
+| cargo_quantity | integer | YES | Cargo quantity |
+| oil_source | varchar | YES | Oil source |
+| route_info | text | YES | Route information |
+| metadata | jsonb | YES | Additional metadata |
+| created_at | timestamptz | YES | Created timestamp |
+| updated_at | timestamptz | YES | Updated timestamp |
+| departure_lat | numeric | YES | Departure latitude |
+| departure_lng | numeric | YES | Departure longitude |
+| destination_lat | numeric | YES | Destination latitude |
+| destination_lng | numeric | YES | Destination longitude |
+| buyer_name | text | YES | Buyer name |
+| seller_name | text | YES | Seller name |
+| owner_name | text | YES | Owner name |
+| operator_name | text | YES | Operator name |
+| last_updated | timestamp | YES | Last updated |
+| current_region | text | YES | Current region |
+| oil_type | text | YES | Oil type |
+| quantity | numeric | YES | Quantity |
+| deal_value | numeric | YES | Deal value |
+| loading_port | text | YES | Loading port name |
+| price | numeric | YES | Price |
+| market_price | numeric | YES | Market price |
+| source_company | text | YES | Source company |
+| target_refinery | text | YES | Target refinery |
+| shipping_type | text | YES | Shipping type |
+| route_distance | numeric | YES | Route distance |
+| callsign | text | YES | Call sign |
+| course | integer | YES | Course heading |
+| nav_status | text | YES | Navigation status |
+| draught | numeric | YES | Vessel draught |
+| length | numeric | YES | Vessel length |
+| width | numeric | YES | Vessel width |
+| engine_power | integer | YES | Engine power |
+| fuel_consumption | numeric | YES | Fuel consumption |
+| crew_size | integer | YES | Crew size |
+| gross_tonnage | integer | YES | Gross tonnage |
+| beam | text | YES | Beam width |
+| draft | text | YES | Draft depth |
+| destination | text | YES | Destination name |
+| discharge_port | text | YES | Discharge port |
+| hs_code | text | YES | HS Code |
+| commodity_name | text | YES | Commodity name |
+| commodity_category | text | YES | Commodity category |
+| quality_specification | text | YES | Quality specs |
+| min_quantity | numeric | YES | Minimum quantity |
+| max_quantity | numeric | YES | Maximum quantity |
+| quantity_unit | text | YES | Quantity unit |
+| indicative_price | numeric | YES | Indicative price |
+| price_basis | text | YES | Price basis |
+| price_notes | text | YES | Price notes |
+| benchmark_reference | text | YES | Benchmark reference |
+| delivery_terms | text | YES | Delivery terms |
+| delivery_method | text | YES | Delivery method |
+| payment_method | text | YES | Payment method |
+| payment_timing | text | YES | Payment timing |
+| payment_notes | text | YES | Payment notes |
+| contract_type | text | YES | Contract type |
+| sanctions_status | text | YES | Sanctions status |
+| voyage_status | text | YES | Voyage status |
+| voyage_notes | text | YES | Voyage notes |
+| deal_status | text | YES | Deal status |
+| deal_reference_id | text | YES | Deal reference ID |
+| cargo_origin_country | text | YES | Cargo origin country |
+| source_refinery | text | YES | Source refinery |
+| cargo_capacity_bbl | numeric | YES | Cargo capacity in barrels |
+| service_speed | numeric | YES | Service speed |
+| total_shipment_quantity | numeric | YES | Total shipment quantity |
+| buyer_company_id | integer | YES | FK to companies.id |
+| seller_company_id | integer | YES | FK to companies.id |
+| commodity_source_company_id | integer | YES | FK to companies.id |
+| refinery_id | uuid | YES | FK to refineries.id |
+| ai_autofill_source | text | YES | AI autofill source |
+
+---
+
+### TABLE 2: ports
+**Primary Key:** `id` (integer, auto-increment)
+**Total Columns: 56**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | integer | NO | Primary key |
+| name | text | YES | Port name |
+| country | text | YES | Country |
+| region | text | YES | Region |
+| port_type | text | YES | Port type |
+| description | text | YES | Description |
+| facilities | text | YES | Facilities |
+| type | text | YES | Type |
+| status | text | YES | Status |
+| city | text | YES | City |
+| timezone | text | YES | Timezone |
+| port_authority | text | YES | Port authority |
+| operator | text | YES | Operator |
+| owner | text | YES | Owner |
+| email | text | YES | Email |
+| phone | text | YES | Phone |
+| website | text | YES | Website |
+| address | text | YES | Address |
+| postal_code | text | YES | Postal code |
+| operating_hours | text | YES | Operating hours |
+| services | text | YES | Services |
+| cargo_types | text | YES | Cargo types |
+| security_level | text | YES | Security level |
+| environmental_certifications | text | YES | Environmental certs |
+| tug_assistance | boolean | YES | Tug assistance |
+| lat | numeric | YES | Latitude |
+| lng | numeric | YES | Longitude |
+| capacity | bigint | YES | Capacity |
+| created_at | timestamptz | YES | Created |
+| updated_at | timestamptz | YES | Updated |
+| last_updated | timestamptz | YES | Last updated |
+| annual_throughput | bigint | YES | Annual throughput |
+| max_vessel_length | numeric | YES | Max vessel length |
+| max_vessel_beam | numeric | YES | Max vessel beam |
+| max_draught | numeric | YES | Max draught |
+| max_deadweight | bigint | YES | Max deadweight |
+| berth_count | integer | YES | Berth count |
+| terminal_count | integer | YES | Terminal count |
+| channel_depth | numeric | YES | Channel depth |
+| berth_depth | numeric | YES | Berth depth |
+| anchorage_depth | numeric | YES | Anchorage depth |
+| pilotage_required | boolean | YES | Pilotage required |
+| established | integer | YES | Established year |
+| total_cargo | bigint | YES | Total cargo |
+| vessel_count | integer | YES | Vessel count |
+| port_charges | numeric | YES | Port charges |
+| tidal_range | numeric | YES | Tidal range |
+| average_wait_time | numeric | YES | Average wait time |
+| airport_distance | numeric | YES | Airport distance |
+| road_connection | boolean | YES | Road connection |
+| rail_connection | boolean | YES | Rail connection |
+| free_trade_zone | boolean | YES | Free trade zone |
+| customs_office | boolean | YES | Customs office |
+| quarantine_station | boolean | YES | Quarantine station |
+| photo | text | YES | Photo URL |
+| nearby_ports | text | YES | Nearby ports |
+| connected_refineries | text | YES | Connected refineries |
+| currency | text | YES | Currency |
+
+---
+
+### TABLE 3: companies (Real Companies)
+**Primary Key:** `id` (integer, auto-increment)
+**Total Columns: 47**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | integer | NO | Primary key |
+| name | text | NO | Company name |
+| created_at | timestamptz | YES | Created |
+| updated_at | timestamptz | YES | Updated |
+| company_type | text | NO | Company type (default: 'real') |
+| description | text | YES | Description |
+| website | text | YES | Website |
+| email | text | YES | Email |
+| phone | text | YES | Phone |
+| address | text | YES | Address |
+| country | text | YES | Country |
+| city | text | YES | City |
+| industry | text | YES | Industry |
+| employees_count | integer | YES | Employee count |
+| annual_revenue | numeric | YES | Annual revenue |
+| founded_year | integer | YES | Founded year |
+| is_verified | boolean | YES | Is verified |
+| logo_url | text | YES | Logo URL |
+| owner_name | text | YES | Owner name |
+| ceo_name | text | YES | CEO name |
+| headquarters_address | text | YES | Headquarters address |
+| trade_name | text | YES | Trade name |
+| company_objective | text | YES | Company objective |
+| director_photo_url | text | YES | Director photo URL |
+| signatory_signature_url | text | YES | Signature URL |
+| official_email | text | YES | Official email |
+| operations_email | text | YES | Operations email |
+| registration_number | text | YES | Registration number |
+| registration_country | text | YES | Registration country |
+| legal_address | text | YES | Legal address |
+| representative_name | text | YES | Representative name |
+| representative_title | text | YES | Representative title |
+| passport_number | text | YES | Passport number |
+| passport_country | text | YES | Passport country |
+| representative_email | text | YES | Representative email |
+| is_refinery_owner | boolean | YES | Is refinery owner |
+| refinery_name | text | YES | Refinery name |
+| refinery_location | text | YES | Refinery location |
+| refinery_capacity_bpd | integer | YES | Refinery capacity BPD |
+| products_supplied | text[] | YES | Products supplied |
+| loading_ports | text[] | YES | Loading ports |
+| kyc_status | text | YES | KYC status |
+| sanctions_status | text | YES | Sanctions status |
+| country_risk | text | YES | Country risk |
+| compliance_notes | text | YES | Compliance notes |
+| primary_activity | text | YES | Primary activity |
+| trading_regions | text[] | YES | Trading regions |
+
+---
+
+### TABLE 4: buyer_companies
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 37**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| name | text | NO | Company name |
+| trade_name | text | YES | Trade name |
+| logo_url | text | YES | Logo URL |
+| director_photo_url | text | YES | Director photo URL |
+| signatory_signature_url | text | YES | Signature URL |
+| description | text | YES | Description |
+| company_objective | text | YES | Company objective |
+| website | text | YES | Website |
+| email | text | YES | Email |
+| official_email | text | YES | Official email |
+| operations_email | text | YES | Operations email |
+| phone | text | YES | Phone |
+| address | text | YES | Address |
+| country | text | YES | Country |
+| city | text | YES | City |
+| industry | text | YES | Industry |
+| employees_count | integer | YES | Employee count |
+| annual_revenue | numeric | YES | Annual revenue |
+| founded_year | integer | YES | Founded year |
+| is_verified | boolean | YES | Is verified |
+| primary_activity | text | YES | Primary activity |
+| trading_regions | text[] | YES | Trading regions |
+| registration_number | text | YES | Registration number |
+| registration_country | text | YES | Registration country |
+| legal_address | text | YES | Legal address |
+| representative_name | text | YES | Representative name |
+| representative_title | text | YES | Representative title |
+| passport_number | text | YES | Passport number |
+| passport_country | text | YES | Passport country |
+| representative_email | text | YES | Representative email |
+| kyc_status | text | YES | KYC status |
+| sanctions_status | text | YES | Sanctions status |
+| country_risk | text | YES | Country risk |
+| compliance_notes | text | YES | Compliance notes |
+| created_at | timestamptz | NO | Created |
+| updated_at | timestamptz | NO | Updated |
+
+---
+
+### TABLE 5: seller_companies
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 45**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| name | text | NO | Company name |
+| trade_name | text | YES | Trade name |
+| logo_url | text | YES | Logo URL |
+| director_photo_url | text | YES | Director photo URL |
+| signatory_signature_url | text | YES | Signature URL |
+| description | text | YES | Description |
+| company_objective | text | YES | Company objective |
+| website | text | YES | Website |
+| email | text | YES | Email |
+| official_email | text | YES | Official email |
+| operations_email | text | YES | Operations email |
+| phone | text | YES | Phone |
+| address | text | YES | Address |
+| country | text | YES | Country |
+| city | text | YES | City |
+| industry | text | YES | Industry |
+| employees_count | integer | YES | Employee count |
+| annual_revenue | numeric | YES | Annual revenue |
+| founded_year | integer | YES | Founded year |
+| is_verified | boolean | YES | Is verified |
+| primary_activity | text | YES | Primary activity |
+| trading_regions | text[] | YES | Trading regions |
+| registration_number | text | YES | Registration number |
+| registration_country | text | YES | Registration country |
+| legal_address | text | YES | Legal address |
+| representative_name | text | YES | Representative name |
+| representative_title | text | YES | Representative title |
+| passport_number | text | YES | Passport number |
+| passport_country | text | YES | Passport country |
+| representative_email | text | YES | Representative email |
+| is_refinery_owner | boolean | YES | Is refinery owner |
+| refinery_name | text | YES | Refinery name |
+| refinery_location | text | YES | Refinery location |
+| refinery_capacity_bpd | integer | YES | Refinery capacity BPD |
+| products_supplied | text[] | YES | Products supplied |
+| loading_ports | text[] | YES | Loading ports |
+| kyc_status | text | YES | KYC status |
+| sanctions_status | text | YES | Sanctions status |
+| country_risk | text | YES | Country risk |
+| compliance_notes | text | YES | Compliance notes |
+| created_at | timestamptz | NO | Created |
+| updated_at | timestamptz | NO | Updated |
+
+---
+
+### TABLE 6: refineries
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 56**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| name | text | YES | Refinery name |
+| country | text | YES | Country |
+| region | text | YES | Region |
+| lat | numeric | YES | Latitude |
+| lng | numeric | YES | Longitude |
+| capacity | bigint | YES | Capacity |
+| products | text | YES | Products |
+| description | text | YES | Description |
+| processing_capacity | bigint | YES | Processing capacity |
+| created_at | timestamptz | NO | Created |
+| updated_at | timestamptz | NO | Updated |
+| type | text | YES | Type |
+| status | text | YES | Status |
+| last_updated | timestamptz | YES | Last updated |
+| operator | text | YES | Operator |
+| owner | text | YES | Owner |
+| year_built | integer | YES | Year built |
+| last_maintenance | date | YES | Last maintenance |
+| next_maintenance | date | YES | Next maintenance |
+| complexity | text | YES | Complexity |
+| email | text | YES | Email |
+| phone | text | YES | Phone |
+| website | text | YES | Website |
+| address | text | YES | Address |
+| technical_specs | text | YES | Technical specs |
+| photo | text | YES | Photo URL |
+| city | text | YES | City |
+| utilization | numeric | YES | Utilization |
+| active_vessels | integer | YES | Active vessels |
+| crude_oil_sources | text | YES | Crude oil sources |
+| processing_units | text | YES | Processing units |
+| storage_capacity | bigint | YES | Storage capacity |
+| pipeline_connections | text | YES | Pipeline connections |
+| shipping_terminals | text | YES | Shipping terminals |
+| rail_connections | text | YES | Rail connections |
+| environmental_certifications | text | YES | Env certifications |
+| fuel_types | text | YES | Fuel types |
+| refinery_complexity | text | YES | Refinery complexity |
+| daily_throughput | bigint | YES | Daily throughput |
+| annual_revenue | numeric | YES | Annual revenue |
+| employees_count | integer | YES | Employee count |
+| established_year | integer | YES | Established year |
+| parent_company | text | YES | Parent company |
+| safety_rating | text | YES | Safety rating |
+| environmental_rating | text | YES | Environmental rating |
+| production_capacity | bigint | YES | Production capacity |
+| maintenance_schedule | text | YES | Maintenance schedule |
+| certifications | text | YES | Certifications |
+| compliance_status | text | YES | Compliance status |
+| market_position | text | YES | Market position |
+| strategic_partnerships | text | YES | Strategic partnerships |
+| expansion_plans | text | YES | Expansion plans |
+| technology_upgrades | text | YES | Technology upgrades |
+| operational_efficiency | numeric | YES | Operational efficiency |
+| supply_chain_partners | text | YES | Supply chain partners |
+| distribution_network | text | YES | Distribution network |
+
+---
+
+### TABLE 7: oil_products
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 55**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| product_code | text | YES | Product code |
+| commodity_name | text | NO | Commodity name |
+| commodity_type | text | YES | Commodity type |
+| grade | text | YES | Grade |
+| sulphur_content_ppm | integer | YES | Sulphur content PPM |
+| origin | text | YES | Origin |
+| origin_country | text | YES | Origin country |
+| destination_ports | text[] | YES | Destination ports |
+| loading_ports | text[] | YES | Loading ports |
+| discharge_ports | text[] | YES | Discharge ports |
+| quantity_min_mt | numeric | YES | Min quantity MT |
+| quantity_max_mt | numeric | YES | Max quantity MT |
+| quantity_unit | text | YES | Quantity unit |
+| contract_type | text | YES | Contract type |
+| contract_duration_months | integer | YES | Contract duration |
+| option_months | integer | YES | Option months |
+| delivery_terms | text | YES | Delivery terms |
+| incoterms | text | YES | Incoterms |
+| price_type | text | YES | Price type |
+| price_basis | text | YES | Price basis |
+| price_reference | text | YES | Price reference |
+| premium_discount | numeric | YES | Premium/discount |
+| currency | text | YES | Currency |
+| payment_terms | text | YES | Payment terms |
+| payment_condition | text | YES | Payment condition |
+| payment_days | integer | YES | Payment days |
+| density_kg_m3 | numeric | YES | Density kg/m3 |
+| flash_point_min_c | numeric | YES | Flash point min C |
+| viscosity_cst | numeric | YES | Viscosity cSt |
+| cetane_number_min | numeric | YES | Cetane number min |
+| cloud_point_c | numeric | YES | Cloud point C |
+| pour_point_c | numeric | YES | Pour point C |
+| water_content_max_ppm | numeric | YES | Water content max |
+| ash_content_max | numeric | YES | Ash content max |
+| carbon_residue_max | numeric | YES | Carbon residue max |
+| distillation_range | text | YES | Distillation range |
+| color_max | numeric | YES | Color max |
+| oxidation_stability | numeric | YES | Oxidation stability |
+| lubricity_um | numeric | YES | Lubricity um |
+| fame_content_max | numeric | YES | FAME content max |
+| test_method | text | YES | Test method |
+| lab_name | text | YES | Lab name |
+| lab_certificate_url | text | YES | Lab certificate URL |
+| analysis_date | date | YES | Analysis date |
+| q88_document_url | text | YES | Q88 document URL |
+| msds_url | text | YES | MSDS URL |
+| coa_url | text | YES | COA URL |
+| refinery_id | uuid | YES | FK to refineries.id |
+| supplier_company_id | uuid | YES | FK to seller_companies.id |
+| is_active | boolean | YES | Is active |
+| status | text | YES | Status |
+| notes | text | YES | Notes |
+| created_by | uuid | YES | Created by user |
+| created_at | timestamptz | NO | Created |
+| updated_at | timestamptz | NO | Updated |
+
+---
+
+### TABLE 8: broker_profiles
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 36**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| user_id | uuid | NO | User ID |
+| membership_id | uuid | NO | Membership ID |
+| full_name | text | NO | Full name |
+| company_name | text | YES | Company name |
+| phone | text | NO | Phone |
+| address | text | YES | Address |
+| country | text | YES | Country |
+| city | text | YES | City |
+| license_number | text | YES | License number |
+| years_experience | integer | YES | Years experience |
+| specializations | text[] | YES | Specializations |
+| id_document_url | text | YES | ID document URL |
+| additional_documents | text[] | YES | Additional documents |
+| bio | text | YES | Bio |
+| profile_image_url | text | YES | Profile image URL |
+| verification_notes | text | YES | Verification notes |
+| verified_at | timestamptz | YES | Verified at |
+| verified_by | uuid | YES | Verified by |
+| created_at | timestamptz | NO | Created |
+| updated_at | timestamptz | NO | Updated |
+| email | text | YES | Email |
+| website | text | YES | Website |
+| linkedin_url | text | YES | LinkedIn URL |
+| twitter_url | text | YES | Twitter URL |
+| languages | text[] | YES | Languages |
+| certifications | text[] | YES | Certifications |
+| education | text | YES | Education |
+| trading_volume | text | YES | Trading volume |
+| commission_rate | numeric | YES | Commission rate |
+| preferred_regions | text[] | YES | Preferred regions |
+| company_size | text | YES | Company size |
+| company_type | text | YES | Company type |
+| business_registration | text | YES | Business registration |
+| tax_id | text | YES | Tax ID |
+| passport_document_url | text | YES | Passport document URL |
+
+---
+
+### TABLE 9: broker_deals
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 35**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| broker_id | uuid | NO | FK to broker_profiles.id |
+| vessel_id | integer | YES | FK to vessels.id |
+| deal_type | text | NO | Deal type |
+| cargo_type | text | YES | Cargo type |
+| quantity | numeric | YES | Quantity |
+| price_per_unit | numeric | YES | Price per unit |
+| total_value | numeric | YES | Total value |
+| currency | text | YES | Currency |
+| source_port | text | YES | Source port |
+| destination_port | text | YES | Destination port |
+| deal_date | date | YES | Deal date |
+| delivery_date | date | YES | Delivery date |
+| terms_conditions | text | YES | Terms & conditions |
+| status | text | YES | Status |
+| admin_notes | text | YES | Admin notes |
+| steps_completed | integer | YES | Steps completed |
+| total_steps | integer | YES | Total steps |
+| commission_rate | numeric | YES | Commission rate |
+| commission_amount | numeric | YES | Commission amount |
+| approved_by | uuid | YES | Approved by |
+| approved_at | timestamptz | YES | Approved at |
+| created_at | timestamptz | NO | Created |
+| updated_at | timestamptz | NO | Updated |
+| selected_company_id | uuid | YES | Selected company ID |
+| seller_company_name | text | YES | Seller company name |
+| buyer_company_name | text | YES | Buyer company name |
+| broker_role | text | YES | Broker role |
+| commission_status | text | YES | Commission status |
+| price_basis | text | YES | Price basis |
+| pricing_formula | text | YES | Pricing formula |
+| payment_method | text | YES | Payment method |
+| laycan_start | date | YES | Laycan start |
+| laycan_end | date | YES | Laycan end |
+| deal_validity | timestamptz | YES | Deal validity |
+
+---
+
+### TABLE 10: buyer_company_bank_accounts
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 13**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| company_id | uuid | NO | FK to buyer_companies.id |
+| bank_name | text | NO | Bank name |
+| bank_address | text | YES | Bank address |
+| account_name | text | NO | Account name |
+| account_number | text | YES | Account number |
+| iban | text | YES | IBAN |
+| swift_code | text | YES | SWIFT code |
+| beneficiary_address | text | YES | Beneficiary address |
+| currency | text | YES | Currency |
+| is_primary | boolean | YES | Is primary account |
+| created_at | timestamptz | NO | Created |
+| updated_at | timestamptz | NO | Updated |
+
+---
+
+### TABLE 11: seller_company_bank_accounts
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 13**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| company_id | uuid | NO | FK to seller_companies.id |
+| bank_name | text | NO | Bank name |
+| bank_address | text | YES | Bank address |
+| account_name | text | NO | Account name |
+| account_number | text | YES | Account number |
+| iban | text | YES | IBAN |
+| swift_code | text | YES | SWIFT code |
+| beneficiary_address | text | YES | Beneficiary address |
+| currency | text | YES | Currency |
+| is_primary | boolean | YES | Is primary account |
+| created_at | timestamptz | NO | Created |
+| updated_at | timestamptz | NO | Updated |
+
+---
+
+### TABLE 12: company_bank_accounts (for Real Companies)
+**Primary Key:** `id` (uuid, auto-generated)
+**Total Columns: 13**
+
+| Column Name | Data Type | Nullable | Description |
+|-------------|-----------|----------|-------------|
+| id | uuid | NO | Primary key |
+| company_id | integer | NO | FK to companies.id |
+| bank_name | text | NO | Bank name |
+| bank_address | text | NO | Bank address |
+| account_name | text | NO | Account name |
+| account_number | text | NO | Account number |
+| iban | text | NO | IBAN |
+| swift_code | text | NO | SWIFT code |
+| beneficiary_address | text | NO | Beneficiary address |
+| currency | text | YES | Currency |
+| is_primary | boolean | YES | Is primary account |
+| created_at | timestamptz | YES | Created |
+| updated_at | timestamptz | YES | Updated |
+
+---
+
+## 4. Relationship Mapping (Foreign Keys)
+
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│                        VESSEL RELATIONSHIPS                           │
+├──────────────────────────────────────────────────────────────────────┤
+│ vessels.company_id           → companies.id                          │
+│ vessels.buyer_company_id     → companies.id                          │
+│ vessels.seller_company_id    → companies.id                          │
+│ vessels.commodity_source_company_id → companies.id                   │
+│ vessels.departure_port       → ports.id                              │
+│ vessels.destination_port     → ports.id                              │
+│ vessels.refinery_id          → refineries.id                         │
+├──────────────────────────────────────────────────────────────────────┤
+│                        DEAL RELATIONSHIPS                             │
+├──────────────────────────────────────────────────────────────────────┤
+│ broker_deals.broker_id       → broker_profiles.id                    │
+│ broker_deals.vessel_id       → vessels.id                            │
+│ broker_deals.selected_company_id → broker_deal_companies.id          │
+├──────────────────────────────────────────────────────────────────────┤
+│                      BANK ACCOUNT RELATIONSHIPS                       │
+├──────────────────────────────────────────────────────────────────────┤
+│ buyer_company_bank_accounts.company_id  → buyer_companies.id         │
+│ seller_company_bank_accounts.company_id → seller_companies.id        │
+│ company_bank_accounts.company_id        → companies.id               │
+├──────────────────────────────────────────────────────────────────────┤
+│                      PRODUCT RELATIONSHIPS                            │
+├──────────────────────────────────────────────────────────────────────┤
+│ oil_products.refinery_id          → refineries.id                    │
+│ oil_products.supplier_company_id  → seller_companies.id              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 5. Official Placeholder List (ALL Placeholders by Table)
+
+### TABLE: vessels (97 placeholders)
+
+```text
+{{vessel_id}}
+{{vessel_name}}
+{{vessel_mmsi}}
+{{vessel_imo}}
+{{vessel_type}}
+{{vessel_flag}}
+{{vessel_built}}
+{{vessel_deadweight}}
+{{vessel_cargo_capacity}}
+{{vessel_current_lat}}
+{{vessel_current_lng}}
+{{vessel_speed}}
+{{vessel_status}}
+{{vessel_departure_port}}
+{{vessel_destination_port}}
+{{vessel_departure_date}}
+{{vessel_arrival_date}}
+{{vessel_eta}}
+{{vessel_company_id}}
+{{vessel_cargo_type}}
+{{vessel_cargo_quantity}}
+{{vessel_oil_source}}
+{{vessel_route_info}}
+{{vessel_buyer_name}}
+{{vessel_seller_name}}
+{{vessel_owner_name}}
+{{vessel_operator_name}}
+{{vessel_current_region}}
+{{vessel_oil_type}}
+{{vessel_quantity}}
+{{vessel_deal_value}}
+{{vessel_loading_port}}
+{{vessel_price}}
+{{vessel_market_price}}
+{{vessel_source_company}}
+{{vessel_target_refinery}}
+{{vessel_shipping_type}}
+{{vessel_route_distance}}
+{{vessel_callsign}}
+{{vessel_course}}
+{{vessel_nav_status}}
+{{vessel_draught}}
+{{vessel_length}}
+{{vessel_width}}
+{{vessel_engine_power}}
+{{vessel_fuel_consumption}}
+{{vessel_crew_size}}
+{{vessel_gross_tonnage}}
+{{vessel_beam}}
+{{vessel_draft}}
+{{vessel_destination}}
+{{vessel_discharge_port}}
+{{vessel_hs_code}}
+{{vessel_commodity_name}}
+{{vessel_commodity_category}}
+{{vessel_quality_specification}}
+{{vessel_min_quantity}}
+{{vessel_max_quantity}}
+{{vessel_quantity_unit}}
+{{vessel_indicative_price}}
+{{vessel_price_basis}}
+{{vessel_price_notes}}
+{{vessel_benchmark_reference}}
+{{vessel_delivery_terms}}
+{{vessel_delivery_method}}
+{{vessel_payment_method}}
+{{vessel_payment_timing}}
+{{vessel_payment_notes}}
+{{vessel_contract_type}}
+{{vessel_sanctions_status}}
+{{vessel_voyage_status}}
+{{vessel_voyage_notes}}
+{{vessel_deal_status}}
+{{vessel_deal_reference_id}}
+{{vessel_cargo_origin_country}}
+{{vessel_source_refinery}}
+{{vessel_cargo_capacity_bbl}}
+{{vessel_service_speed}}
+{{vessel_total_shipment_quantity}}
+```
+
+### TABLE: ports (56 placeholders)
+
+```text
+{{port_id}}
+{{port_name}}
+{{port_country}}
+{{port_region}}
+{{port_type}}
+{{port_description}}
+{{port_facilities}}
+{{port_status}}
+{{port_city}}
+{{port_timezone}}
+{{port_authority}}
+{{port_operator}}
+{{port_owner}}
+{{port_email}}
+{{port_phone}}
+{{port_website}}
+{{port_address}}
+{{port_postal_code}}
+{{port_operating_hours}}
+{{port_services}}
+{{port_cargo_types}}
+{{port_security_level}}
+{{port_environmental_certifications}}
+{{port_tug_assistance}}
+{{port_lat}}
+{{port_lng}}
+{{port_capacity}}
+{{port_annual_throughput}}
+{{port_max_vessel_length}}
+{{port_max_vessel_beam}}
+{{port_max_draught}}
+{{port_max_deadweight}}
+{{port_berth_count}}
+{{port_terminal_count}}
+{{port_channel_depth}}
+{{port_berth_depth}}
+{{port_anchorage_depth}}
+{{port_pilotage_required}}
+{{port_established}}
+{{port_total_cargo}}
+{{port_vessel_count}}
+{{port_charges}}
+{{port_tidal_range}}
+{{port_average_wait_time}}
+{{port_airport_distance}}
+{{port_road_connection}}
+{{port_rail_connection}}
+{{port_free_trade_zone}}
+{{port_customs_office}}
+{{port_quarantine_station}}
+{{port_photo}}
+{{port_nearby_ports}}
+{{port_connected_refineries}}
+{{port_currency}}
+```
+
+### TABLE: companies (47 placeholders)
+
+```text
+{{company_id}}
+{{company_name}}
+{{company_type}}
+{{company_description}}
+{{company_website}}
+{{company_email}}
+{{company_phone}}
+{{company_address}}
+{{company_country}}
+{{company_city}}
+{{company_industry}}
+{{company_employees_count}}
+{{company_annual_revenue}}
+{{company_founded_year}}
+{{company_is_verified}}
+{{company_logo_url}}
+{{company_owner_name}}
+{{company_ceo_name}}
+{{company_headquarters_address}}
+{{company_trade_name}}
+{{company_objective}}
+{{company_director_photo_url}}
+{{company_signatory_signature_url}}
+{{company_official_email}}
+{{company_operations_email}}
+{{company_registration_number}}
+{{company_registration_country}}
+{{company_legal_address}}
+{{company_representative_name}}
+{{company_representative_title}}
+{{company_passport_number}}
+{{company_passport_country}}
+{{company_representative_email}}
+{{company_is_refinery_owner}}
+{{company_refinery_name}}
+{{company_refinery_location}}
+{{company_refinery_capacity_bpd}}
+{{company_products_supplied}}
+{{company_loading_ports}}
+{{company_kyc_status}}
+{{company_sanctions_status}}
+{{company_country_risk}}
+{{company_compliance_notes}}
+{{company_primary_activity}}
+{{company_trading_regions}}
+```
+
+### TABLE: buyer_companies (37 placeholders)
+
+```text
+{{buyer_id}}
+{{buyer_name}}
+{{buyer_trade_name}}
+{{buyer_logo_url}}
+{{buyer_director_photo_url}}
+{{buyer_signatory_signature_url}}
+{{buyer_description}}
+{{buyer_company_objective}}
+{{buyer_website}}
+{{buyer_email}}
+{{buyer_official_email}}
+{{buyer_operations_email}}
+{{buyer_phone}}
+{{buyer_address}}
+{{buyer_country}}
+{{buyer_city}}
+{{buyer_industry}}
+{{buyer_employees_count}}
+{{buyer_annual_revenue}}
+{{buyer_founded_year}}
+{{buyer_is_verified}}
+{{buyer_primary_activity}}
+{{buyer_trading_regions}}
+{{buyer_registration_number}}
+{{buyer_registration_country}}
+{{buyer_legal_address}}
+{{buyer_representative_name}}
+{{buyer_representative_title}}
+{{buyer_passport_number}}
+{{buyer_passport_country}}
+{{buyer_representative_email}}
+{{buyer_kyc_status}}
+{{buyer_sanctions_status}}
+{{buyer_country_risk}}
+{{buyer_compliance_notes}}
+```
+
+### TABLE: seller_companies (45 placeholders)
+
+```text
+{{seller_id}}
+{{seller_name}}
+{{seller_trade_name}}
+{{seller_logo_url}}
+{{seller_director_photo_url}}
+{{seller_signatory_signature_url}}
+{{seller_description}}
+{{seller_company_objective}}
+{{seller_website}}
+{{seller_email}}
+{{seller_official_email}}
+{{seller_operations_email}}
+{{seller_phone}}
+{{seller_address}}
+{{seller_country}}
+{{seller_city}}
+{{seller_industry}}
+{{seller_employees_count}}
+{{seller_annual_revenue}}
+{{seller_founded_year}}
+{{seller_is_verified}}
+{{seller_primary_activity}}
+{{seller_trading_regions}}
+{{seller_registration_number}}
+{{seller_registration_country}}
+{{seller_legal_address}}
+{{seller_representative_name}}
+{{seller_representative_title}}
+{{seller_passport_number}}
+{{seller_passport_country}}
+{{seller_representative_email}}
+{{seller_is_refinery_owner}}
+{{seller_refinery_name}}
+{{seller_refinery_location}}
+{{seller_refinery_capacity_bpd}}
+{{seller_products_supplied}}
+{{seller_loading_ports}}
+{{seller_kyc_status}}
+{{seller_sanctions_status}}
+{{seller_country_risk}}
+{{seller_compliance_notes}}
+```
+
+### TABLE: refineries (56 placeholders)
+
+```text
+{{refinery_id}}
+{{refinery_name}}
+{{refinery_country}}
+{{refinery_region}}
+{{refinery_lat}}
+{{refinery_lng}}
+{{refinery_capacity}}
+{{refinery_products}}
+{{refinery_description}}
+{{refinery_processing_capacity}}
+{{refinery_type}}
+{{refinery_status}}
+{{refinery_operator}}
+{{refinery_owner}}
+{{refinery_year_built}}
+{{refinery_last_maintenance}}
+{{refinery_next_maintenance}}
+{{refinery_complexity}}
+{{refinery_email}}
+{{refinery_phone}}
+{{refinery_website}}
+{{refinery_address}}
+{{refinery_technical_specs}}
+{{refinery_photo}}
+{{refinery_city}}
+{{refinery_utilization}}
+{{refinery_active_vessels}}
+{{refinery_crude_oil_sources}}
+{{refinery_processing_units}}
+{{refinery_storage_capacity}}
+{{refinery_pipeline_connections}}
+{{refinery_shipping_terminals}}
+{{refinery_rail_connections}}
+{{refinery_environmental_certifications}}
+{{refinery_fuel_types}}
+{{refinery_complexity_level}}
+{{refinery_daily_throughput}}
+{{refinery_annual_revenue}}
+{{refinery_employees_count}}
+{{refinery_established_year}}
+{{refinery_parent_company}}
+{{refinery_safety_rating}}
+{{refinery_environmental_rating}}
+{{refinery_production_capacity}}
+{{refinery_maintenance_schedule}}
+{{refinery_certifications}}
+{{refinery_compliance_status}}
+{{refinery_market_position}}
+{{refinery_strategic_partnerships}}
+{{refinery_expansion_plans}}
+{{refinery_technology_upgrades}}
+{{refinery_operational_efficiency}}
+{{refinery_supply_chain_partners}}
+{{refinery_distribution_network}}
+```
+
+### TABLE: oil_products (55 placeholders)
+
+```text
+{{product_id}}
+{{product_code}}
+{{product_commodity_name}}
+{{product_commodity_type}}
+{{product_grade}}
+{{product_sulphur_content_ppm}}
+{{product_origin}}
+{{product_origin_country}}
+{{product_destination_ports}}
+{{product_loading_ports}}
+{{product_discharge_ports}}
+{{product_quantity_min_mt}}
+{{product_quantity_max_mt}}
+{{product_quantity_unit}}
+{{product_contract_type}}
+{{product_contract_duration_months}}
+{{product_option_months}}
+{{product_delivery_terms}}
+{{product_incoterms}}
+{{product_price_type}}
+{{product_price_basis}}
+{{product_price_reference}}
+{{product_premium_discount}}
+{{product_currency}}
+{{product_payment_terms}}
+{{product_payment_condition}}
+{{product_payment_days}}
+{{product_density_kg_m3}}
+{{product_flash_point_min_c}}
+{{product_viscosity_cst}}
+{{product_cetane_number_min}}
+{{product_cloud_point_c}}
+{{product_pour_point_c}}
+{{product_water_content_max_ppm}}
+{{product_ash_content_max}}
+{{product_carbon_residue_max}}
+{{product_distillation_range}}
+{{product_color_max}}
+{{product_oxidation_stability}}
+{{product_lubricity_um}}
+{{product_fame_content_max}}
+{{product_test_method}}
+{{product_lab_name}}
+{{product_lab_certificate_url}}
+{{product_analysis_date}}
+{{product_q88_document_url}}
+{{product_msds_url}}
+{{product_coa_url}}
+{{product_is_active}}
+{{product_status}}
+{{product_notes}}
+```
+
+### TABLE: broker_profiles (36 placeholders)
+
+```text
+{{broker_id}}
+{{broker_user_id}}
+{{broker_membership_id}}
+{{broker_full_name}}
+{{broker_company_name}}
+{{broker_phone}}
+{{broker_address}}
+{{broker_country}}
+{{broker_city}}
+{{broker_license_number}}
+{{broker_years_experience}}
+{{broker_specializations}}
+{{broker_id_document_url}}
+{{broker_additional_documents}}
+{{broker_bio}}
+{{broker_profile_image_url}}
+{{broker_verification_notes}}
+{{broker_verified_at}}
+{{broker_email}}
+{{broker_website}}
+{{broker_linkedin_url}}
+{{broker_twitter_url}}
+{{broker_languages}}
+{{broker_certifications}}
+{{broker_education}}
+{{broker_trading_volume}}
+{{broker_commission_rate}}
+{{broker_preferred_regions}}
+{{broker_company_size}}
+{{broker_company_type}}
+{{broker_business_registration}}
+{{broker_tax_id}}
+{{broker_passport_document_url}}
+```
+
+### TABLE: buyer_bank (13 placeholders)
+
+```text
+{{buyer_bank_id}}
+{{buyer_bank_name}}
+{{buyer_bank_address}}
+{{buyer_bank_account_name}}
+{{buyer_bank_account_number}}
+{{buyer_bank_iban}}
+{{buyer_bank_swift}}
+{{buyer_bank_beneficiary_address}}
+{{buyer_bank_currency}}
+{{buyer_bank_is_primary}}
+```
+
+### TABLE: seller_bank (13 placeholders)
+
+```text
+{{seller_bank_id}}
+{{seller_bank_name}}
+{{seller_bank_address}}
+{{seller_bank_account_name}}
+{{seller_bank_account_number}}
+{{seller_bank_iban}}
+{{seller_bank_swift}}
+{{seller_bank_beneficiary_address}}
+{{seller_bank_currency}}
+{{seller_bank_is_primary}}
+```
+
+---
+
+## 6. Prefix-to-Table Mapping
+
+| Prefix | Database Table | ID Type |
+|--------|----------------|---------|
+| `vessel_` | vessels | integer |
+| `port_` | ports | integer |
+| `company_` | companies | integer |
+| `buyer_` | buyer_companies | uuid |
+| `seller_` | seller_companies | uuid |
+| `refinery_` | refineries | uuid |
+| `product_` | oil_products | uuid |
+| `broker_` | broker_profiles | uuid |
+| `deal_` | broker_deals | uuid |
+| `buyer_bank_` | buyer_company_bank_accounts | uuid |
+| `seller_bank_` | seller_company_bank_accounts | uuid |
+| `company_bank_` | company_bank_accounts | uuid |
+
+---
+
+## 7. Example Real Payload for Document Generation
+
+### Full Payload Structure
+
+```json
+{
+  "template_name": "oil_sale_agreement.docx",
+  "vessel_id": 12,
+  "departure_port_id": 45,
+  "destination_port_id": 78,
+  "buyer_id": "550e8400-e29b-41d4-a716-446655440001",
+  "seller_id": "550e8400-e29b-41d4-a716-446655440002",
+  "product_id": "550e8400-e29b-41d4-a716-446655440003",
+  "refinery_id": "550e8400-e29b-41d4-a716-446655440004",
+  "broker_id": "550e8400-e29b-41d4-a716-446655440005",
+  "deal_id": "550e8400-e29b-41d4-a716-446655440006",
+  "buyer_bank_id": "550e8400-e29b-41d4-a716-446655440007",
+  "seller_bank_id": "550e8400-e29b-41d4-a716-446655440008",
+  "company_id": 25,
+  "output_format": "pdf"
+}
+```
+
+### Minimal Payload (Vessel-Only Document)
+
+```json
+{
+  "template_name": "vessel_certificate.docx",
+  "vessel_id": 12,
+  "output_format": "pdf"
+}
+```
+
+### Deal Document Payload
+
+```json
+{
+  "template_name": "sales_purchase_agreement.docx",
+  "vessel_id": 12,
+  "buyer_id": "550e8400-e29b-41d4-a716-446655440001",
+  "seller_id": "550e8400-e29b-41d4-a716-446655440002",
+  "product_id": "550e8400-e29b-41d4-a716-446655440003",
+  "buyer_bank_id": "550e8400-e29b-41d4-a716-446655440007",
+  "seller_bank_id": "550e8400-e29b-41d4-a716-446655440008",
+  "deal_id": "550e8400-e29b-41d4-a716-446655440006",
+  "output_format": "pdf"
+}
+```
+
+---
+
+## 8. Python FastAPI Data Fetching Examples
+
+### Supabase Client Setup
+
+```python
+from supabase import create_client, Client
+import os
+
+SUPABASE_URL = "https://ozjhdxvwqbzcvcywhwjg.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q"
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+```
+
+### Fetch Vessel by ID
+
+```python
+def fetch_vessel(vessel_id: int) -> dict:
+    response = supabase.table("vessels").select("*").eq("id", vessel_id).single().execute()
+    return response.data
+```
+
+### Fetch Buyer Company with Bank Account
+
+```python
+def fetch_buyer_with_bank(buyer_id: str) -> dict:
+    # Fetch buyer company
+    buyer = supabase.table("buyer_companies").select("*").eq("id", buyer_id).single().execute()
+    
+    # Fetch primary bank account
+    bank = supabase.table("buyer_company_bank_accounts").select("*").eq("company_id", buyer_id).eq("is_primary", True).single().execute()
+    
+    return {
+        "buyer": buyer.data,
+        "bank": bank.data
+    }
+```
+
+### Full Document Data Fetcher
+
+```python
+def fetch_document_data(payload: dict) -> dict:
+    data = {}
+    
+    if payload.get("vessel_id"):
+        data["vessel"] = fetch_vessel(payload["vessel_id"])
+    
+    if payload.get("buyer_id"):
+        buyer_data = fetch_buyer_with_bank(payload["buyer_id"])
+        data["buyer"] = buyer_data["buyer"]
+        data["buyer_bank"] = buyer_data["bank"]
+    
+    if payload.get("seller_id"):
+        seller = supabase.table("seller_companies").select("*").eq("id", payload["seller_id"]).single().execute()
+        data["seller"] = seller.data
+        
+        bank = supabase.table("seller_company_bank_accounts").select("*").eq("company_id", payload["seller_id"]).eq("is_primary", True).single().execute()
+        data["seller_bank"] = bank.data
+    
+    if payload.get("refinery_id"):
+        refinery = supabase.table("refineries").select("*").eq("id", payload["refinery_id"]).single().execute()
+        data["refinery"] = refinery.data
+    
+    if payload.get("product_id"):
+        product = supabase.table("oil_products").select("*").eq("id", payload["product_id"]).single().execute()
+        data["product"] = product.data
+    
+    if payload.get("departure_port_id"):
+        port = supabase.table("ports").select("*").eq("id", payload["departure_port_id"]).single().execute()
+        data["departure_port"] = port.data
+    
+    if payload.get("destination_port_id"):
+        port = supabase.table("ports").select("*").eq("id", payload["destination_port_id"]).single().execute()
+        data["destination_port"] = port.data
+    
+    if payload.get("broker_id"):
+        broker = supabase.table("broker_profiles").select("*").eq("id", payload["broker_id"]).single().execute()
+        data["broker"] = broker.data
+    
+    return data
+```
+
+### Placeholder Replacement Function
+
+```python
+def replace_placeholders(template_content: str, data: dict) -> str:
+    """Replace all placeholders with actual data"""
+    
+    # Define prefix mappings
+    prefix_map = {
+        "vessel": "vessel",
+        "port": "port",
+        "departure_port": "departure_port",
+        "destination_port": "destination_port",
+        "company": "company",
+        "buyer": "buyer",
+        "seller": "seller",
+        "refinery": "refinery",
+        "product": "product",
+        "broker": "broker",
+        "buyer_bank": "buyer_bank",
+        "seller_bank": "seller_bank"
+    }
+    
+    content = template_content
+    
+    for prefix, data_key in prefix_map.items():
+        if data_key in data and data[data_key]:
+            entity_data = data[data_key]
+            for field, value in entity_data.items():
+                placeholder = f"{{{{{prefix}_{field}}}}}"
+                content = content.replace(placeholder, str(value) if value else "")
+    
+    return content
+```
+
+---
+
+## 9. Summary Statistics
+
+| Table | Total Columns | Placeholder Count |
+|-------|---------------|-------------------|
+| vessels | 97 | 97 |
+| ports | 56 | 56 |
+| companies | 47 | 47 |
+| buyer_companies | 37 | 37 |
+| seller_companies | 45 | 45 |
+| refineries | 56 | 56 |
+| oil_products | 55 | 55 |
+| broker_profiles | 36 | 36 |
+| buyer_company_bank_accounts | 13 | 13 |
+| seller_company_bank_accounts | 13 | 13 |
+| company_bank_accounts | 13 | 13 |
+| broker_deals | 35 | 35 |
+| **TOTAL** | **503** | **503** |
+
+---
+
+## 10. Important Notes for Replit Integration
+
+1. **ID Types Matter**: 
+   - `vessels`, `ports`, `companies` use INTEGER IDs
+   - All other tables use UUID IDs
+
+2. **No Auto-Sync**: The Document Processor will NOT auto-sync tables. Each request must include explicit IDs.
+
+3. **Data Consistency**: All placeholders in a document will be replaced using data from the same database records (same IDs).
+
+4. **Bank Account Priority**: Always fetch the bank account with `is_primary = true` first.
+
+5. **Null Handling**: Replace null values with empty strings or "N/A" based on your document requirements.
+
+6. **Array Fields**: Fields like `trading_regions`, `products_supplied`, `loading_ports` are PostgreSQL arrays - join them with commas for display.
+
