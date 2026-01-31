@@ -1,7 +1,7 @@
 # Document Processor API
 
 ## Overview
-A FastAPI-based document processing service that automatically fills Word document templates with vessel data from Supabase database.
+A FastAPI-based document processing service for PetroDealHub that automatically fills Word document templates with data from Supabase database. Uses payload-driven architecture with explicit IDs for all 12 core tables.
 
 ## Project Structure
 - `main.py` - Main FastAPI application with all endpoints and document processing logic
@@ -10,54 +10,80 @@ A FastAPI-based document processing service that automatically fills Word docume
 - `requirements.txt` - Python dependencies
 
 ## Key Features
-- Word Document Processing with placeholder replacement
-- Vessel Data Integration via Supabase
-- PDF Conversion support
-- REST API for React frontend integration
+- **Payload-Driven Data Fetching**: Explicit IDs in request (no auto-sync)
+- **Prefix-Based Placeholder Mapping**: 12 prefixes for data isolation
+- **Legacy Placeholder Support**: Backward compatibility for existing templates
+- **Mixed ID Types**: Handles INTEGER (vessels, ports, companies) and UUID (buyers, sellers, products, etc.)
+- **Bank Account Logic**: Primary bank fallback when specific bank_id not provided
+- **PDF Conversion**: Optional PDF output via LibreOffice
 
 ## API Endpoints
-- `GET /health` - Health check
+- `GET /health` - Health check (version, templates count)
 - `GET /` - Root endpoint (returns running status)
 - `GET /templates` - List available templates
 - `GET /vessels` - List vessels from database
-- `GET /vessel/{imo}` - Get specific vessel by IMO
-- `POST /process-document` - Process document with vessel data
+- `GET /buyers` - List buyers from database
+- `GET /sellers` - List sellers from database
+- `POST /process-document` - Process document with entity data
+- `POST /analyze-template` - Analyze template placeholders and required IDs
 - `POST /upload-template` - Upload new template
 
+## Processing Document Request Format
+```json
+{
+  "template_name": "Commercial_Invoice_Batys_Final.docx",
+  "vessel_id": 5,
+  "buyer_id": "uuid-here",
+  "seller_id": "uuid-here",
+  "product_id": "uuid-here",
+  "refinery_id": "uuid-here",
+  "broker_id": "uuid-here",
+  "buyer_bank_id": "uuid-here",
+  "seller_bank_id": "uuid-here",
+  "departure_port_id": 123,
+  "destination_port_id": 456,
+  "company_id": 789,
+  "deal_id": "uuid-here",
+  "output_format": "pdf"
+}
+```
+
+## Prefix-to-Table Mapping
+| Prefix | Table | ID Type |
+|--------|-------|---------|
+| vessel_ | vessels | INTEGER |
+| buyer_ | buyers | UUID |
+| seller_ | sellers | UUID |
+| product_ | products | UUID |
+| refinery_ | refineries | UUID |
+| broker_ | brokers | UUID |
+| buyer_bank_ | bank_accounts | UUID |
+| seller_bank_ | bank_accounts | UUID |
+| departure_port_ | ports | INTEGER |
+| destination_port_ | ports | INTEGER |
+| company_ | companies | INTEGER |
+| deal_ | deals | UUID |
+
+## Legacy Placeholder Support
+The system supports legacy placeholder names from existing templates:
+- `imo_number` → vessel.imo
+- `flag_state` → vessel.flag
+- `vessel_type` → vessel.vessel_type
+- `Principal_Buyer_Name` → buyer.name
+- `Seller_Company` → seller.company_name
+- And 50+ more mappings in `LEGACY_PLACEHOLDER_MAPPING`
+
 ## Running the Application
-The server runs on port 5000 using uvicorn:
 ```bash
 python main.py
 ```
-
-## Database Table Structure & Linked Placeholders
-The system is linked to a Supabase database. Here are the tables and the specific placeholders they provide:
-
-### 1. `vessels` (The Core Table)
-Provides all general vessel data.
-- **Linked Placeholders**: `{{name}}`, `{{imo}}`, `{{flag}}`, `{{vessel_type}}`, `{{deadweight}}`, `{{mmsi}}`, `{{year_built}}`, `{{call_sign}}`, `{{gross_tonnage}}`.
-
-### 2. `ports` (Loading & Destination)
-Provides location and port details. The system maps these using the prefixes `loading_port_` and `destination_port_`.
-- **Loading Port Placeholders**: `{{loading_port_name}}`, `{{loading_port_country}}`, `{{loading_port_code}}`.
-- **Destination Port Placeholders**: `{{destination_port_name}}`, `{{destination_port_country}}`, `{{destination_port_code}}`.
-
-### 3. `companies` (Owner & Operator)
-Provides business and contact information. The system maps these using the prefixes `owner_` and `operator_`.
-- **Owner Placeholders**: `{{owner_name}}`, `{{owner_address}}`, `{{owner_email}}`, `{{owner_phone}}`, `{{owner_registration}}`.
-- **Operator Placeholders**: `{{operator_name}}`, `{{operator_address}}`, `{{operator_email}}`, `{{operator_phone}}`.
-
-### 4. `refineries` (Production Site)
-Provides data about the refinery where products originate.
-- **Linked Placeholders**: `{{refinery_name}}`, `{{refinery_location}}`, `{{refinery_capacity}}`, `{{refinery_contact}}`.
-
-## How to Link Other Tables
-To link additional tables like `buyer_companies`, `products`, or `real_companies`, the following steps are required in the code:
-1.  **Update `get_vessel_data`**: Add a new query for the table (e.g., `supabase.table('products').select('*').eq('id', ...)`).
-2.  **Add Foreign Keys**: Ensure the `vessels` table has a column that links to the new table (e.g., `product_id`).
-3.  **Map Fields**: Loop through the results and add them to the `vessel_data` dictionary with a clear prefix (e.g., `product_name`).
+Server runs on port 5000 using uvicorn.
 
 ## Recent Changes
 - 2026-01-31: Initial Replit setup, configured to run on port 5000
-- 2026-01-31: Added detailed database table and placeholder mapping documentation
-- 2026-01-31: Documented current placeholder counts and names per table
+- 2026-01-31: Refactored to payload-driven architecture with explicit IDs
+- 2026-01-31: Implemented 12 modular fetch functions (fetch_vessel, fetch_buyer, etc.)
+- 2026-01-31: Added strict prefix-based placeholder mapping system
+- 2026-01-31: Added legacy placeholder support for backward compatibility
+- 2026-01-31: Created /analyze-template endpoint for template analysis
+- 2026-01-31: Bank account logic with is_primary fallback
