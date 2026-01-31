@@ -603,26 +603,32 @@ def build_replacement_mapping(data: Dict[str, Optional[Dict]], placeholders: Lis
             mapping[placeholder] = format_value(entity_data[field])
             print(f"Mapped: {placeholder} -> {mapping[placeholder][:50]}...")
         else:
-            # Try normalized field matching
-            normalized_field = normalize_placeholder(field)
-            found = False
-            for key, value in entity_data.items():
-                if normalize_placeholder(key) == normalized_field:
-                    mapping[placeholder] = format_value(value)
-                    print(f"Mapped (normalized): {placeholder} -> {mapping[placeholder][:50]}...")
-                    found = True
-                    break
-            
-            if not found:
-                if normalized_field in FIELD_ALIASES:
-                    alias = FIELD_ALIASES[normalized_field]
-                    if alias in entity_data:
-                        mapping[placeholder] = format_value(entity_data[alias])
-                        print(f"Mapped (alias): {placeholder} -> {mapping[placeholder][:50]}...")
+            # Try with entity prefix prepended (e.g., "type" -> "vessel_type" for vessel entity)
+            prefixed_field = f"{data_key}_{field}" if not field.startswith(data_key) else field
+            if prefixed_field in entity_data:
+                mapping[placeholder] = format_value(entity_data[prefixed_field])
+                print(f"Mapped (prefixed): {placeholder} -> {mapping[placeholder][:50]}...")
+            else:
+                # Try normalized field matching
+                normalized_field = normalize_placeholder(field)
+                found = False
+                for key, value in entity_data.items():
+                    if normalize_placeholder(key) == normalized_field:
+                        mapping[placeholder] = format_value(value)
+                        print(f"Mapped (normalized): {placeholder} -> {mapping[placeholder][:50]}...")
+                        found = True
+                        break
+                
+                if not found:
+                    if normalized_field in FIELD_ALIASES:
+                        alias = FIELD_ALIASES[normalized_field]
+                        if alias in entity_data:
+                            mapping[placeholder] = format_value(entity_data[alias])
+                            print(f"Mapped (alias): {placeholder} -> {mapping[placeholder][:50]}...")
+                        else:
+                            print(f"Warning: Field '{field}' not found in {data_key}")
                     else:
                         print(f"Warning: Field '{field}' not found in {data_key}")
-                else:
-                    print(f"Warning: Field '{field}' not found in {data_key}")
     
     return mapping
 
@@ -865,6 +871,50 @@ async def get_brokers():
         return {"success": True, "brokers": response.data, "count": len(response.data)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch brokers: {str(e)}")
+
+@app.get("/placeholder-schema")
+async def get_placeholder_schema():
+    """
+    Get the official placeholder schema showing all available placeholders by entity.
+    Returns prefix → table mapping and sample column names for each table.
+    """
+    try:
+        schema = {
+            "total_entities": len(PREFIX_TABLE_MAPPING),
+            "entities": {}
+        }
+        
+        for prefix, config in PREFIX_TABLE_MAPPING.items():
+            table_name = config["table"]
+            id_type = config["id_type"]
+            
+            try:
+                response = supabase.table(table_name).select('*').limit(1).execute()
+                columns = []
+                if response.data:
+                    columns = list(response.data[0].keys())
+                
+                placeholders = [f"{prefix}{col}" for col in columns if col != 'id']
+                
+                schema["entities"][prefix.rstrip('_')] = {
+                    "prefix": prefix,
+                    "table": table_name,
+                    "id_type": id_type,
+                    "placeholder_count": len(placeholders),
+                    "sample_placeholders": placeholders[:10],
+                    "all_columns": columns
+                }
+            except Exception as e:
+                schema["entities"][prefix.rstrip('_')] = {
+                    "prefix": prefix,
+                    "table": table_name,
+                    "id_type": id_type,
+                    "error": str(e)
+                }
+        
+        return {"success": True, "schema": schema}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get schema: {str(e)}")
 
 # =============================================================================
 # MAIN DOCUMENT PROCESSING ENDPOINT (Task 7)
