@@ -1241,21 +1241,13 @@ async def process_document_upload(
         print(f"\nProcessing uploaded file: {file.filename}")
         print(f"Found {len(placeholders)} placeholders")
         
-        replacement_stats = {"replaced": 0, "not_found": 0, "empty": 0}
+        mapping = build_replacement_mapping(data, placeholders)
+        print(f"Built mapping for {len(mapping)} placeholders")
         
-        for placeholder in placeholders:
-            normalized = normalize_placeholder(placeholder)
-            value = get_placeholder_value(normalized, data)
-            
-            if value is not None and value != "":
-                replace_placeholder_in_doc(doc, placeholder, str(value))
-                replacement_stats["replaced"] += 1
-            else:
-                replacement_stats["not_found"] += 1
+        replacement_rate = (len(mapping) / len(placeholders) * 100) if placeholders else 0
+        print(f"Replacement rate: {replacement_rate:.1f}%")
         
-        output_filename = f"processed_{uuid.uuid4().hex}_{file.filename}"
-        output_path = os.path.join(TEMP_DIR, output_filename)
-        doc.save(output_path)
+        output_path = replace_placeholders_in_docx(temp_path, mapping)
         
         with open(output_path, "rb") as f:
             doc_content = f.read()
