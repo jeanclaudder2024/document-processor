@@ -34,3 +34,23 @@ When a document is requested for a specific vessel (identified by IMO):
 1. **Upload**: Put your `.docx` template in the system.
 2. **Request**: Call the `/process-document` endpoint with the Vessel IMO and Template Name.
 3. **Download**: Receive a perfectly filled, professional PDF document ready for use.
+
+## Placeholder & Matching Logic
+The system uses a sophisticated matching engine to connect Word documents to the database:
+
+### 1. Detection Patterns
+The system automatically detects placeholders in your Word documents using several formats:
+- `{{variable}}`, `{variable}`, `[variable]`, `[[variable]]`, `%variable%`, `<variable>`, `__variable__`, `##variable##`
+
+### 2. Normalization Engine
+To ensure high compatibility, the system "normalizes" both the placeholders in your Word document and the column names in the database by:
+- Converting to lowercase
+- Removing all spaces, underscores, and hyphens
+- *Example:* `{{Vessel Name}}` and `vessel_name` both become `vesselname`, allowing them to match perfectly.
+
+### 3. Smart Fallbacks
+If a placeholder in your document doesn't exist in the database, the system doesn't leave it blank. It analyzes the variable name and generates realistic data:
+- **Names**: Generates professional person or company names.
+- **Banks**: Generates realistic SWIFT codes and bank addresses.
+- **Dates**: Generates context-aware dates (like ETAs or current dates).
+- **Contacts**: Generates valid-format emails and phone numbers.
