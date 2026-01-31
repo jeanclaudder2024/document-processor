@@ -32,9 +32,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Supabase client
-SUPABASE_URL = "https://ozjhdxvwqbzcvcywhwjg.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q"
+# Supabase client - uses service_role key from environment for full database access
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+if not SUPABASE_KEY:
+    raise ValueError("SUPABASE_SERVICE_ROLE_KEY environment variable is required")
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Directories
