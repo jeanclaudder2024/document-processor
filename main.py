@@ -4938,25 +4938,62 @@ def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tupl
                     for k, v in port_data.items():
                         if v is not None and str(v).strip():
                             merged[f"{prefix}{k}"] = v
-                    merged[f"{prefix}name"] = port_data.get('name') or merged.get(f"{prefix}name")
-        # Loading port often same as departure - add alias if missing
+                    # Add specific aliases for port name
+                    port_name = port_data.get('name')
+                    if port_name:
+                        merged[f"{prefix}name"] = port_name
+                        # Add more aliases for common placeholder patterns
+                        if 'loading' in prefix:
+                            merged['loading_port'] = port_name
+                            merged['port_of_loading'] = port_name
+                        elif 'discharge' in prefix or 'destination' in prefix:
+                            merged['discharge_port'] = port_name
+                            merged['port_of_discharge'] = port_name
+                            merged['delivery_port'] = port_name
+        # Generic port aliases
         if 'loading_port_name' not in merged and 'departure_port_name' in merged:
             merged['loading_port_name'] = merged['departure_port_name']
-        # Generic port_name, port_loading, port_discharge for template placeholders
         if 'port_name' not in merged and merged.get('departure_port_name'):
             merged['port_name'] = merged['departure_port_name']
         if 'port_loading' not in merged and merged.get('loading_port_name'):
             merged['port_loading'] = merged['loading_port_name']
         if 'port_discharge' not in merged and merged.get('discharge_port_name'):
             merged['port_discharge'] = merged['discharge_port_name']
-        # Company
+        # Company - add with multiple aliases for better matching
         company_id = vessel.get('company_id') or vessel.get('buyer_company_id') or vessel.get('seller_company_id')
         if company_id is not None:
             company_data = get_data_from_table('companies', 'id', company_id)
             if company_data:
                 for k, v in company_data.items():
                     if v is not None and str(v).strip():
+                        # Add with company_ prefix
                         merged[f"company_{k}"] = v
+                        # Also add seller_ and buyer_ aliases for ATSC/Invoice templates
+                        merged[f"seller_{k}"] = v
+                        merged[f"buyer_{k}"] = v
+                        # Add specific aliases for common company fields
+                        if k == 'name':
+                            merged['seller_company_name'] = v
+                            merged['buyer_company_name'] = v
+                            merged['company_name'] = v
+                        elif k == 'country':
+                            merged['seller_country'] = v
+                            merged['buyer_country'] = v
+                            merged['registration_country'] = v
+                            merged['seller_registration_country'] = v
+                            merged['buyer_registration_country'] = v
+                        elif k == 'address':
+                            merged['seller_address'] = v
+                            merged['buyer_address'] = v
+                            merged['legal_address'] = v
+                            merged['seller_legal_address'] = v
+                            merged['buyer_legal_address'] = v
+                        elif k == 'email':
+                            merged['seller_email'] = v
+                            merged['buyer_email'] = v
+                        elif k == 'phone':
+                            merged['seller_phone'] = v
+                            merged['buyer_phone'] = v
         # Refinery
         refinery_id = vessel.get('refinery_id')
         if refinery_id is not None:
