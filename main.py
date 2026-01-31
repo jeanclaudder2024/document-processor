@@ -4852,6 +4852,47 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
 
     pl = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
 
+    # ATSC-specific (Authority to Sell Cargo)
+    if 'atsc' in pl and 'reference' in pl:
+        return f"ATSC-{datetime.now().year}-{random.randint(10000, 99999)}"
+    if 'mandate' in pl and 'exclusivity' in pl:
+        return random.choice(['Exclusive', 'Non-Exclusive'])
+    if 'mandated' in pl and 'role' in pl:
+        return 'Mandated Seller'
+    if 'confidentiality' in pl and 'survival' in pl:
+        return str(random.randint(2, 5))
+    if 'force' in pl and 'majeure' in pl and 'day' in pl:
+        return str(random.choice([30, 45, 60]))
+    if 'exclusivity' in pl and 'expir' in pl:
+        from datetime import timedelta
+        return (datetime.now() + timedelta(days=random.randint(30, 180))).strftime('%Y-%m-%d')
+    if 'geographic' in pl or 'buyer' in pl and 'group' in pl and 'limit' in pl:
+        return random.choice(['None', 'Middle East', 'Asia Pacific', 'Europe'])
+    if 'quantity' in pl and 'unit' in pl:
+        return random.choice(['MT', 'BBL', 'm³'])
+    if 'storage' in pl and 'location' in pl:
+        if 'type' in pl:
+            return random.choice(['Tank', 'Terminal', 'Floating Storage'])
+        return random.choice(['Ras Tanura Terminal', 'Fujairah Storage', 'Rotterdam Tank Farm'])
+    if 'tsr' in pl or 'coq' in pl and 'number' in pl:
+        return f"TSR-{random.randint(100000, 999999)}" if 'tsr' in pl else f"COQ-{random.randint(100000, 999999)}"
+    if 'reference' in pl and 'document' in pl:
+        return f"TSR No. TSR-{random.randint(10000, 99999)}, COQ No. COQ-{random.randint(10000, 99999)}"
+    if 'indicative' in pl and 'price' in pl:
+        return f"{random.randint(70, 95)} per BBL"
+    if 'price' in pl and 'basis' in pl:
+        return random.choice(['Platts', 'Argus', 'OPIS'])
+    if 'benchmark' in pl:
+        return random.choice(['Platts ULSD CIF NWE', 'Argus Gasoil', 'Platts Dubai'])
+    if 'delivery' in pl and 'term' in pl:
+        return random.choice(['FOB', 'CIF', 'CFR'])
+    if 'tolerance' in pl and 'percent' in pl:
+        return f"{random.uniform(0.3, 2.0):.1f}%"
+    if 'signing' in pl and 'place' in pl or 'place' in pl and ('seller' in pl or 'mandated' in pl):
+        return random.choice(['Singapore', 'London', 'Dubai'])
+    if 'witness' in pl and 'place' in pl:
+        return random.choice(['Singapore', 'London', 'Dubai'])
+
     # Dates - always short format
     if 'date' in pl or 'issue' in pl and 'date' in pl or 'expir' in pl or 'signature' in pl and 'date' in pl:
         from datetime import timedelta
@@ -4906,6 +4947,8 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         return random.choice(['Operations Manager', 'Chartering Manager', 'Trader', 'Shipping Coordinator'])
     # Product/commodity - BEFORE name (commodity_name -> product, not person)
     products = ['Crude Oil', 'Diesel', 'Jet A-1', 'Fuel Oil 380', 'Gasoline', 'Brent Blend', 'Murban Crude']
+    if 'commodity' in pl and 'category' in pl:
+        return random.choice(['Petroleum', 'Refined Products', 'Crude Oil'])
     if 'product' in pl or 'oil' in pl or 'grade' in pl or 'commodity' in pl or ('cargo' in pl and 'quantity' not in pl and 'capacity' not in pl and 'tank' not in pl):
         return random.choice(products)
     # Person names - short
@@ -5235,9 +5278,71 @@ def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache
 EMPTY_PLACEHOLDER = "—"
 
 
-def _normalize_replacement_value(val, _field_name: Optional[str] = None) -> str:
+def _format_date_value(s: str) -> str:
+    """Convert ISO datetime to YYYY-MM-DD. Return as-is if not a date."""
+    s = str(s).strip()
+    if not s:
+        return s
+    # ISO format: 2025-12-26T10:19:32.636
+    if 'T' in s and len(s) >= 10:
+        try:
+            return s[:10]
+        except Exception:
+            pass
+    return s
+
+
+def _is_value_wrong_for_placeholder(placeholder: str, value: str) -> bool:
+    """Return True if value is clearly wrong for this placeholder type. Use to reject DB/CSV values."""
+    if not value or not placeholder:
+        return True
+    s = str(value).strip()
+    pl = placeholder.lower().replace('_', '').replace('-', '').replace(' ', '')
+    # Pure integer (likely DB ID) - wrong for semantic fields
+    if re.match(r'^\d+\.?\d*$', s):
+        num = float(s) if '.' in s else int(s)
+        # Country, address, title, name, place - never accept pure number
+        if 'country' in pl or 'address' in pl or 'place' in pl or 'title' in pl or 'name' in pl:
+            return True
+        if 'exclusivity' in pl or 'mandate' in pl and 'exclusivity' in pl:
+            return True
+        if 'arbitration' in pl or 'governing' in pl:
+            return True
+        if 'role' in pl and 'number' not in pl:
+            return True
+        # Registration number: "25" too short, likely ID; "6948.0" has decimal - suspicious
+        if 'registration' in pl and 'number' in pl:
+            if len(s) <= 3 or '.' in s:
+                return True
+        # Years: 351 is absurd
+        if 'year' in pl or 'survival' in pl or 'confidentiality' in pl:
+            if num > 50:
+                return True
+        # Very short numbers for address/place
+        if len(s) <= 3 and ('address' in pl or 'place' in pl):
+            return True
+    # ISO timestamp - wrong for non-date fields
+    if 'T' in s and re.match(r'^\d{4}-\d{2}-\d{2}T', s):
+        if 'date' not in pl and 'time' not in pl:
+            return True
+    # Incoterms (FOB, CIF) - wrong for title
+    if s.upper() in ('FOB', 'CIF', 'CFR', 'EXW', 'DAP', 'DDP') and 'title' in pl:
+        return True
+    # Port/location format in date field (e.g. "Kochi (IN COK)")
+    if '(' in s and ')' in s and 'date' in pl:
+        return True
+    # Quality spec / long text in date field
+    if ('date' in pl or 'expir' in pl) and ('°' in s or 'astm' in s.lower() or 'api gravity' in s.lower()):
+        return True
+    # Quality spec in exclusivity/mandate field
+    if ('exclusivity' in pl or 'mandate' in pl) and ('°' in s or 'sulfur' in s.lower()):
+        return True
+    return False
+
+
+def _normalize_replacement_value(val, _field_name: Optional[str] = None, placeholder: Optional[str] = None) -> str:
     """Normalize a value for placeholder replacement. None/empty -> '—'.
-    Reject log-like, verbose, or unrelated text. Cap at 150 chars for document fields."""
+    Reject log-like, verbose, or unrelated text. Format dates to YYYY-MM-DD. Cap at 150 chars."""
     if val is None:
         return EMPTY_PLACEHOLDER
     s = str(val).strip()
@@ -5249,7 +5354,11 @@ def _normalize_replacement_value(val, _field_name: Optional[str] = None) -> str:
     for bad in ("✅", "⚠️", "❌", "📋", "🔍"):
         if bad in s:
             return EMPTY_PLACEHOLDER
-    # Cap length - placeholders need short values, not paragraphs
+    # Format ISO datetime to YYYY-MM-DD for date placeholders
+    pl = (placeholder or '').lower()
+    if 'date' in pl or 'expir' in pl or 'effective' in pl or 'issue' in pl or 'signature' in pl:
+        s = _format_date_value(s)
+    # Cap length
     if len(s) > 150:
         s = s[:147].rsplit(' ', 1)[0] + "..." if ' ' in s[:147] else s[:147]
     return s[:150]
@@ -5881,10 +5990,13 @@ async def generate_document(request: Request):
                 logger.info(f"  🗄️  STEP 1: Trying intelligent database matching (vessels → ports → companies → refineries)...")
                 matched_field, matched_value = _intelligent_field_match_multi_table(placeholder, vessel)
                 if matched_field and matched_value:
-                    data_mapping[placeholder] = _normalize_replacement_value(matched_value)
-                    found = True
-                    logger.info(f"  ✅✅✅ DATABASE MATCH (intelligent): {placeholder} = '{matched_value}' (from '{matched_field}')")
-                    continue
+                    if _is_value_wrong_for_placeholder(placeholder, matched_value):
+                        logger.info(f"  ⚠️  Rejecting DB value (wrong type for '{placeholder}'): '{matched_value}'")
+                    else:
+                        data_mapping[placeholder] = _normalize_replacement_value(matched_value, placeholder=placeholder)
+                        found = True
+                        logger.info(f"  ✅✅✅ DATABASE MATCH (intelligent): {placeholder} = '{matched_value}' (from '{matched_field}')")
+                        continue
                 logger.info(f"  ⚠️  No intelligent DB match for '{placeholder}', will try configured source or cascade")
             else:
                 logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [source={src}; using configured source only, no DB override]")
@@ -5910,7 +6022,7 @@ async def generate_document(request: Request):
                     if source == 'custom':
                         custom_value = str(setting.get('customValue', '')).strip()
                         if custom_value:
-                            data_mapping[placeholder] = _normalize_replacement_value(custom_value)
+                            data_mapping[placeholder] = _normalize_replacement_value(custom_value, placeholder=placeholder)
                             found = True
                             logger.info(f"✅ {placeholder} -> '{custom_value}' (CMS custom value)")
                         else:
@@ -6013,10 +6125,14 @@ async def generate_document(request: Request):
                                     logger.warning(f"  ⚠️  Intelligent fallback matching failed for '{placeholder}'")
 
                             if matched_field and matched_value:
-                                data_mapping[placeholder] = _normalize_replacement_value(matched_value)
-                                found = True
-                                table_info = f" from {database_table}" if database_table and database_table.lower() != 'vessels' else ""
-                                logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}'{table_info})")
+                                if _is_value_wrong_for_placeholder(placeholder, matched_value):
+                                    logger.info(f"  ⚠️  Rejecting DB value (wrong type): '{matched_value}'")
+                                    found = False
+                                else:
+                                    data_mapping[placeholder] = _normalize_replacement_value(matched_value, placeholder=placeholder)
+                                    found = True
+                                    table_info = f" from {database_table}" if database_table and database_table.lower() != 'vessels' else ""
+                                    logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}'{table_info})")
                             else:
                                 # Explicitly set found=False so cascade triggers
                                 found = False
@@ -6050,9 +6166,12 @@ async def generate_document(request: Request):
                                     if csv_field in csv_data:
                                         value = csv_data[csv_field]
                                         if value is not None and str(value).strip() != '':
-                                            data_mapping[placeholder] = _normalize_replacement_value(value)
-                                            found = True
-                                            logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{csv_field})")
+                                            if _is_value_wrong_for_placeholder(placeholder, value):
+                                                logger.info(f"  ⚠️  Rejecting CSV value (wrong type): '{value}'")
+                                            else:
+                                                data_mapping[placeholder] = _normalize_replacement_value(value, placeholder=placeholder)
+                                                found = True
+                                                logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{csv_field})")
                                         else:
                                             logger.warning(f"  ⚠️  CSV field '{csv_field}' exists but is empty")
                                     else:
@@ -6063,10 +6182,13 @@ async def generate_document(request: Request):
                                             if key.lower() == csv_field_lower:
                                                 value = csv_data[key]
                                                 if value is not None and str(value).strip() != '':
-                                                    matched_field = key
-                                                    data_mapping[placeholder] = _normalize_replacement_value(value)
-                                                    found = True
-                                                    logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{matched_field} - case-insensitive match)")
+                                                    if _is_value_wrong_for_placeholder(placeholder, value):
+                                                        logger.info(f"  ⚠️  Rejecting CSV value (wrong type): '{value}'")
+                                                    else:
+                                                        matched_field = key
+                                                        data_mapping[placeholder] = _normalize_replacement_value(value, placeholder=placeholder)
+                                                        found = True
+                                                        logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{matched_field} - case-insensitive match)")
                                                     break
                                         
                                         if not matched_field:
@@ -6096,14 +6218,14 @@ async def generate_document(request: Request):
                 if not csv_val:
                     # 2. Smart CSV search - search all CSVs for matching column
                     csv_val = _smart_csv_search(placeholder)
-                if csv_val:
-                    data_mapping[placeholder] = _normalize_replacement_value(csv_val)
+                if csv_val and not _is_value_wrong_for_placeholder(placeholder, csv_val):
+                    data_mapping[placeholder] = _normalize_replacement_value(csv_val, placeholder=placeholder)
                     found = True
                     logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
                 if not found:
                     # 3. Always generate realistic AI data when no match – never use "—"
                     ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
-                    data_mapping[placeholder] = _normalize_replacement_value(ai_val)
+                    data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
                     found = True
                     logger.info(f"  ✅ AI (realistic fallback): {placeholder} = '{ai_val}'")
             else:
