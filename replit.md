@@ -69,9 +69,13 @@ The system supports legacy placeholder names from existing templates:
 - `imo_number` → vessel.imo
 - `flag_state` → vessel.flag
 - `vessel_type` → vessel.vessel_type
-- `Principal_Buyer_Name` → buyer.name
-- `Seller_Company` → seller.company_name
-- And 50+ more mappings in `LEGACY_PLACEHOLDER_MAPPING`
+- `Principal_Buyer_Name` → buyer.representative_name
+- `Seller_Company` → seller.name
+- And 60+ more mappings in `LEGACY_PLACEHOLDER_MAPPING`
+
+## Known Limitations
+- **Product Quality Variants**: Result_/Min_/Max_ placeholder variants (e.g., `Result_Density`, `Max_Sulfur`) cannot be mapped as the database stores single values only. Use base terms (density, viscosity, sulfur) instead.
+- **Semantic Mapping Philosophy**: Legacy mappings use conservative matching - only verified semantic equivalents are mapped. Fields without exact DB matches remain unmapped rather than risking incorrect data placement.
 
 ## Running the Application
 ```bash
