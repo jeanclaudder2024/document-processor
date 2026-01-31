@@ -2,773 +2,763 @@
   "ICPO TEMPLATE.docx": {
     "authorized_person_name": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "beam": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "beam",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_address": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "buyer_companies",
       "databaseField": "address",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_city_country": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_company_name": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "buyer_companies",
       "databaseField": "name",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_email": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "buyer_companies",
       "databaseField": "email",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_fax": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_mobile": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_name": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "buyer_companies",
       "databaseField": "name",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_office_tel": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_position": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_registration": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "buyer_companies",
       "databaseField": "registration_number",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_signatory_date": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_signatory_name": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_signatory_position": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "buyer_signature": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "call_sign": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "callsign",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "cargo_capacity": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "cargo_capacity",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "cargo_tanks": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "class_society": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "commodity": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "confirming_bank_account_name": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "confirming_bank_account_number": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "confirming_bank_address": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "confirming_bank_name": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "confirming_bank_officer": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "confirming_bank_officer_contact": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "confirming_bank_swift": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "confirming_bank_tel": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "contract_duration": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "contract_value": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "deadweight": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "deadweight",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "document_number": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "draft": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "draft",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "engine_type": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "flag_state": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "flag",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "gross_tonnage": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "gross_tonnage",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "imo_number": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "imo",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "inspection": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "insurance": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "ism_manager": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issue_date": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issuing_bank_account_name": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issuing_bank_account_number": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issuing_bank_address": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issuing_bank_name": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issuing_bank_officer": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issuing_bank_officer_contact": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issuing_bank_swift": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "issuing_bank_tel": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "length_overall": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "length",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "monthly_delivery": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "net_tonnage": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "notary_number": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "origin": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "owner": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "payment_terms": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "performance_bond": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "price": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "pumping_capacity": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "quality": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "registry_port": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "seller_signatory_date": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "seller_signatory_name": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "seller_signatory_position": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "seller_signature": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "shipping_documents": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "shipping_terms": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "specification": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "speed": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "total_quantity": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "valid_until": {
       "source": "random",
-      "customValue": "",
       "databaseTable": "",
       "databaseField": "",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "vessel_operator": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "operator_name",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "vessel_owner": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "owner_name",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "vessel_type": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "vessel_type",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     },
     "year_built": {
       "source": "database",
-      "customValue": "",
       "databaseTable": "vessels",
       "databaseField": "built",
       "csvId": "",
       "csvField": "",
       "csvRow": 0,
-      "randomOption": "auto"
-    },
-    "{imo_number": {
-      "source": "database",
-      "customValue": "",
-      "databaseTable": "vessels",
-      "databaseField": "imo",
-      "csvId": "",
-      "csvField": "",
-      "csvRow": 0,
-      "randomOption": "auto"
+      "randomOption": "auto",
+      "customValue": ""
     }
   },
   "Proof_of_Product_Template.docx": {
