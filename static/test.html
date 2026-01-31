@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Processor - Test Interface</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+            padding: 20px;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 { 
+            text-align: center; 
+            margin-bottom: 10px;
+            font-size: 28px;
+            color: #00d4ff;
+        }
+        .subtitle { 
+            text-align: center; 
+            color: #888; 
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #00d4ff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        .form-group { margin-bottom: 15px; }
+        label {
+            display: block;
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        select, input[type="file"] {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 14px;
+        }
+        select:focus { outline: none; border-color: #00d4ff; }
+        select option { background: #1a1a2e; color: #fff; }
+        .file-upload {
+            border: 2px dashed rgba(0,212,255,0.3);
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .file-upload:hover { border-color: #00d4ff; background: rgba(0,212,255,0.05); }
+        .file-upload.has-file { border-color: #00ff88; background: rgba(0,255,136,0.1); }
+        .file-upload input { display: none; }
+        .file-upload-text { color: #888; font-size: 14px; }
+        .file-name { color: #00ff88; font-weight: 600; margin-top: 10px; }
+        .btn-row { display: flex; gap: 10px; margin-top: 20px; }
+        .btn {
+            flex: 1;
+            padding: 14px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #00d4ff, #0099cc);
+            color: #000;
+        }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0,212,255,0.3); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .btn-secondary {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .output-format { display: flex; gap: 15px; align-items: center; }
+        .output-format label { margin: 0; text-transform: none; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+        .output-format input[type="radio"] { accent-color: #00d4ff; }
+        .results {
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 20px;
+            min-height: 150px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+        }
+        .results.success { border-left: 4px solid #00ff88; }
+        .results.error { border-left: 4px solid #ff4444; }
+        .results.loading { border-left: 4px solid #ffaa00; }
+        .download-link {
+            display: inline-block;
+            margin-top: 15px;
+            padding: 12px 25px;
+            background: linear-gradient(135deg, #00ff88, #00cc6a);
+            color: #000;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        .stats { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 15px; }
+        .stat {
+            background: rgba(0,212,255,0.1);
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+        .stat-value { font-size: 18px; font-weight: 700; color: #00d4ff; }
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .health-status { 
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            background: rgba(0,255,136,0.2);
+            color: #00ff88;
+        }
+        .health-status.offline { background: rgba(255,68,68,0.2); color: #ff4444; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PetroDealHub Document Processor</h1>
+        <p class="subtitle">Test Interface - Upload templates and verify data processing</p>
+
+        <div class="card">
+            <div class="card-title">
+                <span>API Status</span>
+                <span id="health-status" class="health-status offline"><span class="dot"></span> Checking...</span>
+            </div>
+            <div class="stats" id="api-stats"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">1. Upload Template</div>
+            <div class="file-upload" id="file-drop" onclick="document.getElementById('file-input').click()">
+                <input type="file" id="file-input" accept=".docx" />
+                <div class="file-upload-text">Click or drag to upload a .docx template</div>
+                <div class="file-name" id="file-name"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">2. Select Entity Data</div>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Vessel</label>
+                    <select id="vessel_id"><option value="">-- Select Vessel --</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Buyer Company</label>
+                    <select id="buyer_id"><option value="">-- Select Buyer --</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Seller Company</label>
+                    <select id="seller_id"><option value="">-- Select Seller --</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Oil Product</label>
+                    <select id="product_id"><option value="">-- Select Product --</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Refinery</label>
+                    <select id="refinery_id"><option value="">-- Select Refinery --</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Broker</label>
+                    <select id="broker_id"><option value="">-- Select Broker --</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Departure Port</label>
+                    <select id="departure_port_id"><option value="">-- Select Port --</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Destination Port</label>
+                    <select id="destination_port_id"><option value="">-- Select Port --</option></select>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">3. Output Format</div>
+            <div class="output-format">
+                <label><input type="radio" name="format" value="docx" checked /> DOCX (Word)</label>
+                <label><input type="radio" name="format" value="pdf" /> PDF</label>
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-primary" id="process-btn" onclick="processDocument()">
+                    Process Document
+                </button>
+                <button class="btn btn-secondary" onclick="analyzeTemplate()">
+                    Analyze Placeholders
+                </button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">4. Results</div>
+            <div class="results" id="results">Ready. Upload a template and select data to begin testing.</div>
+            <div id="download-container"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let uploadedFile = null;
+
+        async function init() {
+            await checkHealth();
+            await loadEntities();
+        }
+
+        async function checkHealth() {
+            const status = document.getElementById('health-status');
+            const stats = document.getElementById('api-stats');
+            try {
+                const res = await fetch(`${API_BASE}/health`);
+                const data = await res.json();
+                status.className = 'health-status';
+                status.innerHTML = '<span class="dot"></span> Online';
+                stats.innerHTML = `
+                    <div class="stat"><div class="stat-value">${data.version || '1.0'}</div>Version</div>
+                    <div class="stat"><div class="stat-value">${data.templates_count || 0}</div>Templates</div>
+                    <div class="stat"><div class="stat-value">${data.placeholders_supported || '455+'}</div>Placeholders</div>
+                `;
+            } catch (e) {
+                status.className = 'health-status offline';
+                status.innerHTML = '<span class="dot"></span> Offline';
+            }
+        }
+
+        async function loadEntities() {
+            const endpoints = {
+                vessel_id: { url: '/vessels', key: 'vessels', label: v => `${v.name || v.id} (IMO: ${v.imo || 'N/A'})` },
+                buyer_id: { url: '/buyers', key: 'buyers', label: v => v.name || v.trade_name || v.id },
+                seller_id: { url: '/sellers', key: 'sellers', label: v => v.name || v.trade_name || v.id },
+                product_id: { url: '/products', key: 'products', label: v => v.commodity_name || v.name || v.id },
+                refinery_id: { url: '/refineries', key: 'refineries', label: v => v.name || v.id },
+                broker_id: { url: '/brokers', key: 'brokers', label: v => v.full_name || v.company_name || v.id },
+                departure_port_id: { url: '/ports', key: 'ports', label: v => `${v.name || v.id} (${v.country || ''})` },
+                destination_port_id: { url: '/ports', key: 'ports', label: v => `${v.name || v.id} (${v.country || ''})` }
+            };
+
+            for (const [selectId, cfg] of Object.entries(endpoints)) {
+                try {
+                    const res = await fetch(`${API_BASE}${cfg.url}`);
+                    const data = await res.json();
+                    const items = data[cfg.key] || [];
+                    const select = document.getElementById(selectId);
+                    items.forEach(item => {
+                        const opt = document.createElement('option');
+                        opt.value = item.id;
+                        opt.textContent = cfg.label(item);
+                        select.appendChild(opt);
+                    });
+                } catch (e) {
+                    console.error(`Failed to load ${selectId}:`, e);
+                }
+            }
+        }
+
+        document.getElementById('file-input').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                uploadedFile = file;
+                document.getElementById('file-name').textContent = file.name;
+                document.getElementById('file-drop').classList.add('has-file');
+            }
+        });
+
+        async function processDocument() {
+            const results = document.getElementById('results');
+            const download = document.getElementById('download-container');
+            download.innerHTML = '';
+
+            if (!uploadedFile) {
+                results.className = 'results error';
+                results.textContent = 'Error: Please upload a template file first.';
+                return;
+            }
+
+            results.className = 'results loading';
+            results.innerHTML = '<span class="loading-spinner"></span> Processing document...';
+
+            const formData = new FormData();
+            formData.append('file', uploadedFile);
+
+            const ids = ['vessel_id', 'buyer_id', 'seller_id', 'product_id', 'refinery_id', 
+                         'broker_id', 'departure_port_id', 'destination_port_id'];
+            ids.forEach(id => {
+                const val = document.getElementById(id).value;
+                if (val) formData.append(id, val);
+            });
+
+            const format = document.querySelector('input[name="format"]:checked').value;
+            formData.append('output_format', format);
+
+            try {
+                const res = await fetch(`${API_BASE}/process-document`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    const contentType = res.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const data = await res.json();
+                        results.className = 'results success';
+                        results.textContent = JSON.stringify(data, null, 2);
+                    } else {
+                        const blob = await res.blob();
+                        const url = URL.createObjectURL(blob);
+                        const ext = format === 'pdf' ? 'pdf' : 'docx';
+                        const filename = `processed_${uploadedFile.name.replace('.docx', '')}.${ext}`;
+                        
+                        results.className = 'results success';
+                        results.textContent = `Success! Document processed.\n\nFile: ${filename}\nSize: ${(blob.size / 1024).toFixed(2)} KB\nFormat: ${format.toUpperCase()}`;
+                        
+                        download.innerHTML = `<a href="${url}" download="${filename}" class="download-link">Download Processed Document</a>`;
+                    }
+                } else {
+                    const err = await res.json();
+                    results.className = 'results error';
+                    results.textContent = `Error ${res.status}: ${err.detail || JSON.stringify(err)}`;
+                }
+            } catch (e) {
+                results.className = 'results error';
+                results.textContent = `Network Error: ${e.message}`;
+            }
+        }
+
+        async function analyzeTemplate() {
+            const results = document.getElementById('results');
+            
+            if (!uploadedFile) {
+                results.className = 'results error';
+                results.textContent = 'Error: Please upload a template file first.';
+                return;
+            }
+
+            results.className = 'results loading';
+            results.innerHTML = '<span class="loading-spinner"></span> Analyzing template placeholders...';
+
+            const formData = new FormData();
+            formData.append('file', uploadedFile);
+
+            try {
+                const res = await fetch(`${API_BASE}/analyze-template`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    results.className = 'results success';
+                    results.textContent = JSON.stringify(data, null, 2);
+                } else {
+                    results.className = 'results error';
+                    results.textContent = `Error: ${data.detail || JSON.stringify(data)}`;
+                }
+            } catch (e) {
+                results.className = 'results error';
+                results.textContent = `Network Error: ${e.message}`;
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>

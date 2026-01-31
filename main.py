@@ -11,7 +11,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any, Union
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from supabase import create_client, Client
 from docx import Document
@@ -39,8 +40,13 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Directories
 TEMPLATES_DIR = "./templates"
 TEMP_DIR = "./temp"
+STATIC_DIR = "./static"
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+# Mount static files
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # =============================================================================
 # PREFIX-TO-TABLE MAPPING (CRITICAL FOR PLACEHOLDER REPLACEMENT)
@@ -753,6 +759,15 @@ def convert_docx_to_pdf(docx_path: str) -> str:
 @app.get("/")
 async def root():
     return {"message": "PetroDealHub Document Processor API v2.0 is running!"}
+
+@app.get("/test", response_class=HTMLResponse)
+async def test_page():
+    """Serve the test interface page"""
+    test_file = os.path.join(STATIC_DIR, "test.html")
+    if os.path.exists(test_file):
+        with open(test_file, 'r') as f:
+            return HTMLResponse(content=f.read())
+    raise HTTPException(status_code=404, detail="Test page not found")
 
 @app.get("/health")
 async def health():
