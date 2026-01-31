@@ -1299,13 +1299,59 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
     return predefined.get(table_name.lower(), [])
 
 
+def _get_default_columns(table: str) -> List[str]:
+    """Fallback column lists for each table."""
+    defaults = {
+        'vessels': ['imo', 'name', 'vessel_type', 'flag', 'owner_name', 'operator_name', 
+                   'deadweight', 'gross_tonnage', 'length', 'beam', 'draft', 'built',
+                   'cargo_type', 'cargo_quantity', 'departure_port', 'destination_port',
+                   'currentport', 'loading_port', 'discharge_port', 'email', 'phone', 'address'],
+        'ports': ['name', 'country', 'city', 'latitude', 'longitude'],
+        'companies': ['name', 'email', 'phone', 'country', 'address', 'city', 'website'],
+        'refineries': ['name', 'location', 'capacity', 'products']
+    }
+    return defaults.get(table, [])
+
+
+def _get_sample_value_from_column(table: str, column: str) -> Optional[str]:
+    """Get a sample value from a table column for validation during upload mapping."""
+    try:
+        response = supabase.table(table).select(column).limit(1).execute()
+        if response.data and len(response.data) > 0:
+            val = response.data[0].get(column)
+            return str(val) if val is not None else None
+    except Exception as e:
+        logger.debug(f"Could not fetch sample value for {table}.{column}: {e}")
+    return None
+
+
 def _build_schema_for_mapping() -> Dict[str, List[str]]:
-    """Build {table: [col1, col2, ...]} for vessels, ports, refineries, companies. Brokers excluded."""
-    tables = ['vessels', 'ports', 'refineries', 'companies']
+    """Build {table: [col1, col2, ...]} for vessels, ports, refineries, companies. Brokers excluded.
+    Tries to fetch real schema from Supabase first, falls back to predefined columns."""
+    priority_tables = ['vessels', 'ports', 'companies', 'refineries']
     schema: Dict[str, List[str]] = {}
-    for t in tables:
-        cols = _get_predefined_table_columns(t)
-        schema[t] = [c['name'] for c in cols]
+    
+    for table in priority_tables:
+        try:
+            # Try to fetch real schema from Supabase
+            response = supabase.table(table).select("*").limit(1).execute()
+            if response.data and len(response.data) > 0:
+                schema[table] = list(response.data[0].keys())
+                logger.debug(f"Fetched schema for {table}: {len(schema[table])} columns")
+            else:
+                # Fallback to predefined
+                schema[table] = _get_default_columns(table)
+                logger.debug(f"Using default schema for {table}: {len(schema[table])} columns")
+        except Exception as e:
+            logger.warning(f"Could not fetch schema for {table}: {e}, using defaults")
+            # Fallback to default columns
+            schema[table] = _get_default_columns(table)
+    
+    # Explicitly exclude brokers (safety check)
+    if 'brokers' in schema:
+        del schema['brokers']
+        logger.info("Removed brokers table from schema")
+    
     return schema
 
 
@@ -1358,18 +1404,32 @@ _UPLOAD_FIELD_MAPPINGS: Dict[str, Tuple[str, str]] = {
     'portcountry': ('ports', 'country'), 'port_country': ('ports', 'country'), 'portcity': ('ports', 'city'), 'port_city': ('ports', 'city'),
     # companies
     'buyercompany': ('companies', 'name'), 'buyer_company': ('companies', 'name'), 'sellercompany': ('companies', 'name'), 'seller_company': ('companies', 'name'),
+    'companyname': ('companies', 'name'), 'company_name': ('companies', 'name'),
+    'sellercompanyname': ('companies', 'name'), 'seller_company_name': ('companies', 'name'), 'buyercompanyname': ('companies', 'name'), 'buyer_company_name': ('companies', 'name'),
+    'registrationcountry': ('companies', 'country'), 'registration_country': ('companies', 'country'),
+    'sellercountry': ('companies', 'country'), 'seller_country': ('companies', 'country'), 'buyercountry': ('companies', 'country'), 'buyer_country': ('companies', 'country'),
+    'sellerregistrationcountry': ('companies', 'country'), 'seller_registration_country': ('companies', 'country'),
+    'buyerregistrationcountry': ('companies', 'country'), 'buyer_registration_country': ('companies', 'country'),
+    'legaladdress': ('companies', 'address'), 'legal_address': ('companies', 'address'),
+    'sellerlegaladdress': ('companies', 'address'), 'seller_legal_address': ('companies', 'address'), 'buyerlegaladdress': ('companies', 'address'), 'buyer_legal_address': ('companies', 'address'),
+    'selleraddress': ('companies', 'address'), 'seller_address': ('companies', 'address'), 'buyeraddress': ('companies', 'address'), 'buyer_address': ('companies', 'address'),
+    'selleremail': ('companies', 'email'), 'seller_email': ('companies', 'email'), 'buyeremail': ('companies', 'email'), 'buyer_email': ('companies', 'email'),
+    'sellerphone': ('companies', 'phone'), 'seller_phone': ('companies', 'phone'), 'buyerphone': ('companies', 'phone'), 'buyer_phone': ('companies', 'phone'),
 }
 
 
 def _ai_suggest_placeholder_mapping(
     placeholders: List[str],
     schema: Dict[str, List[str]],
+    csv_schema: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, Tuple[str, str]]:
     """
     Suggest (table, column) per placeholder using AI or rule-based fallback.
-    Returns {placeholder: (table, column)}. Skips placeholders with no good match.
+    Returns {placeholder: (table, column)} for database, or {placeholder: ('csv:csvId', 'field')} for CSV.
+    Skips placeholders with no good match.
     """
     result: Dict[str, Tuple[str, str]] = {}
+    csv_schema = csv_schema or {}
 
     def normalize_key(s: str) -> str:
         return re.sub(r'[^a-z0-9]', '', (s or '').lower())
@@ -1387,25 +1447,64 @@ def _ai_suggest_placeholder_mapping(
                     result[ph] = (t, col)
 
     if OPENAI_ENABLED and openai_client and schema:
+        # Detect template type from placeholders for better context
+        template_hints = []
+        placeholders_lower = [p.lower() for p in placeholders]
+        if any('atsc' in p or 'mandate' in p for p in placeholders_lower):
+            template_hints.append("This is an ATSC (Authority to Sell Cargo) document")
+        if any('icpo' in p for p in placeholders_lower):
+            template_hints.append("This is an ICPO (Irrevocable Corporate Purchase Order) document")
+        if any('invoice' in p or 'commercial' in p for p in placeholders_lower):
+            template_hints.append("This is a Commercial Invoice document")
+        
+        context = " ".join(template_hints) if template_hints else "Maritime/oil trading document"
+        
         flat: List[str] = []
         for t, cols in schema.items():
             for c in cols:
                 flat.append(f"{t}.{c}")
         schema_str = ", ".join(flat[:200])
+        
+        # Add CSV columns if available
+        csv_info = ""
+        if csv_schema:
+            csv_cols = []
+            for csv_id, columns in csv_schema.items():
+                csv_cols.extend([f"csv:{csv_id}.{col}" for col in columns[:10]])  # Limit to first 10 columns per CSV
+            if csv_cols:
+                csv_info = f"\n\nAVAILABLE CSV COLUMNS:\n{', '.join(csv_cols[:50])}"
+        
         ph_list = ", ".join(placeholders[:150])
-        prompt = f"""You are a maritime document expert. Map each placeholder to the best database table.column.
+        prompt = f"""You are a maritime document expert. Map placeholders to database tables or CSV files.
 
-Available table.column options: {schema_str}
+CONTEXT: {context}
 
-Placeholders to map: {ph_list}
+AVAILABLE TABLES.COLUMNS:
+{schema_str}{csv_info}
 
-Rules:
-- Prefer "vessels" for ship/vessel/IMO/owner/operator/dimensions/flag/cargo.
-- Use "ports" for port names, countries, cities.
-- Use "companies" for company names, emails, phones when vessel fields don't fit. Do NOT use brokers table.
-- Return valid table.column only; if no good match, return NONE for that placeholder.
+PLACEHOLDERS TO MAP:
+{ph_list}
 
-Return a JSON object: {{ "placeholder1": "table.column", "placeholder2": "NONE", ... }}. Use exact placeholder strings as keys. No other text."""
+STRICT RULES:
+1. Vessels table FIRST for: ship/vessel names, IMO, flag, owner, operator, dimensions, cargo
+2. Ports table for: port names, loading/discharge ports (NOT for addresses or countries unless specifically port-related)
+3. Companies table for: company names, emails, phones, addresses (buyer/seller companies)
+4. CSV files for: buyer/seller specific data, contact information
+5. NEVER use 'brokers' table - map broker data to 'companies' instead
+6. Country/address/title fields MUST map to text columns, NEVER to ID columns
+7. For each placeholder, return ONE best match or "NONE"
+
+OUTPUT FORMAT:
+Return a JSON object: {{ "placeholder1": "table.column", "placeholder2": "csv:file_id.column_name", "placeholder3": "NONE", ... }}
+
+EXAMPLES:
+- vessel_name -> vessels.name
+- registration_country -> companies.country
+- buyer_email -> companies.email (or csv:buyers.email if CSV has better data)
+- port_loading -> ports.name
+- unknown_field -> NONE
+
+Use exact placeholder strings as keys. No other text."""
 
         try:
             r = openai_client.chat.completions.create(
@@ -1422,14 +1521,25 @@ Return a JSON object: {{ "placeholder1": "table.column", "placeholder2": "NONE",
                     for ph, val in data.items():
                         if ph not in placeholders or not isinstance(val, str):
                             continue
-                        val = val.strip().upper()
-                        if val == 'NONE' or not val:
+                        val = val.strip()
+                        if val.upper() == 'NONE' or not val:
                             continue
                         if '.' in val:
                             t, col = val.split('.', 1)
                             t, col = t.strip().lower(), col.strip().lower()
-                            if t in schema and col in (schema.get(t) or []):
-                                result[ph] = (t, col)
+                            # Check if it's a CSV mapping (csv:id.field)
+                            if t.startswith('csv:'):
+                                csv_id = t.replace('csv:', '')
+                                if csv_schema and csv_id in csv_schema and col in csv_schema[csv_id]:
+                                    result[ph] = (t, col)  # Store as ('csv:id', 'field')
+                            # Otherwise database mapping
+                            elif t in schema and col in (schema.get(t) or []):
+                                # Validate mapping by checking sample value
+                                test_value = _get_sample_value_from_column(t, col)
+                                if test_value and _is_value_wrong_for_placeholder(ph, test_value):
+                                    logger.info(f"Rejected AI mapping {ph} -> {t}.{col} (validation failed with sample: {test_value[:50]})")
+                                else:
+                                    result[ph] = (t, col)
                 except json.JSONDecodeError:
                     pass
             if not result:
@@ -1457,22 +1567,47 @@ def _ai_analyze_and_map_placeholders(
     doc_context = doc_context or {}
 
     def rule_based_fallback() -> Dict[str, Dict]:
-        suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema)
+        suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema, csv_schema)
         out: Dict[str, Dict] = {}
         for ph in placeholders:
-            cfg: Dict = {
-                'source': 'database',
-                'databaseTable': '',
-                'databaseField': '',
-                'csvId': '',
-                'csvField': '',
-                'csvRow': 0,
-                'randomOption': 'auto',
-            }
             if ph in suggested:
                 t, col = suggested[ph]
-                cfg['databaseTable'] = t
-                cfg['databaseField'] = col
+                # Check if it's a CSV mapping (starts with 'csv:')
+                if t.startswith('csv:'):
+                    csv_id = t.replace('csv:', '')
+                    cfg = {
+                        'source': 'csv',
+                        'databaseTable': '',
+                        'databaseField': '',
+                        'csvId': csv_id,
+                        'csvField': col,
+                        'csvRow': 0,
+                        'randomOption': 'auto',
+                        'customValue': '',
+                    }
+                else:
+                    cfg = {
+                        'source': 'database',
+                        'databaseTable': t,
+                        'databaseField': col,
+                        'csvId': '',
+                        'csvField': '',
+                        'csvRow': 0,
+                        'randomOption': 'auto',
+                        'customValue': '',
+                    }
+            else:
+                # No mapping found - use random
+                cfg = {
+                    'source': 'random',
+                    'databaseTable': '',
+                    'databaseField': '',
+                    'csvId': '',
+                    'csvField': '',
+                    'csvRow': 0,
+                    'randomOption': 'auto',
+                    'customValue': '',
+                }
             out[ph] = cfg
         return out
 
@@ -1613,8 +1748,8 @@ Use exact placeholder strings as keys. Only valid table.column and csvId.field f
             continue
         result[ph] = cfg
 
-    # Rescue: for placeholders that ended up as random, try rule-based database mapping
-    suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema)
+    # Rescue: for placeholders that ended up as random, try rule-based database/CSV mapping
+    suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema, csv_schema)
     rescued = 0
     for ph in placeholders:
         if result.get(ph, {}).get('source') == 'random' and ph in suggested:
@@ -2640,9 +2775,11 @@ async def upload_template(
                 if 'customValue' not in cfg:
                     cfg['customValue'] = ''
                 default_settings[ph] = cfg
-                if cfg.get('source') == 'database':
+                # Count only when there's an actual mapping (not empty strings)
+                src = cfg.get('source')
+                if src == 'database' and cfg.get('databaseTable') and cfg.get('databaseField'):
                     database_count += 1
-                elif cfg.get('source') == 'csv':
+                elif src == 'csv' and cfg.get('csvId') and cfg.get('csvField'):
                     csv_count += 1
                 else:
                     random_count += 1
