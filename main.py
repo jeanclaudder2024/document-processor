@@ -5181,9 +5181,37 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'via' in pl or 'carrier' in pl:
         return random.choice(['Maersk', 'MSC', 'CMA CGM', 'COSCO'])
 
-    # Short fallbacks - never long text
-    fallbacks = ['TBN', 'N/A', 'As per contract', 'To be confirmed', 'See annex']
-    return random.choice(fallbacks)
+    # NEVER use generic fallbacks like "To be confirmed" - always generate realistic data
+    # Analyze placeholder and generate appropriate realistic value
+    
+    # Generic text fields - use realistic company/person/location names
+    if 'name' in pl:
+        return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei'])
+    
+    # Any date field not caught above
+    if 'date' in pl or 'time' in pl or 'expir' in pl:
+        from datetime import timedelta
+        return (datetime.now() + timedelta(days=random.randint(-30, 90))).strftime('%Y-%m-%d')
+    
+    # Any location/place field
+    if 'location' in pl or 'place' in pl or 'venue' in pl or 'city' in pl:
+        return random.choice(['Singapore', 'London', 'Dubai', 'Geneva', 'Hong Kong'])
+    
+    # Any description/specification/details field
+    if 'description' in pl or 'details' in pl or 'specification' in pl or 'notes' in pl:
+        return 'As per standard maritime specifications'
+    
+    # Any number/code/reference not caught above
+    if 'number' in pl or 'no' in pl or 'code' in pl or 'ref' in pl or 'id' in pl:
+        return f"REF-{random.randint(100000, 999999)}"
+    
+    # Generic catch-all: return a realistic placeholder value (not "TBN" or "To be confirmed")
+    return random.choice([
+        f"REF-{random.randint(100000, 999999)}",
+        random.choice(['Singapore', 'London', 'Dubai']),
+        random.choice(['John Smith', 'Operations Manager']),
+        'As per contract specifications'
+    ])
 
 
 def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
