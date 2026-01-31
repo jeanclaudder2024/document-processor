@@ -212,9 +212,9 @@ class TemplateEditor {
             const data = await this.apiJson('/database-tables');
             console.log('✅ Database tables response:', data);
             if (data && data.tables && Array.isArray(data.tables)) {
-                // Exclude brokers table - not used for placeholder mapping
-                this.databaseTables = (data.tables || []).filter(t => (t.name || '').toLowerCase() !== 'brokers');
-                console.log(`✅ Loaded ${data.tables.length} database tables:`, data.tables.map(t => t.name));
+                // Include all tables - they are all supported now
+                this.databaseTables = data.tables || [];
+                console.log(`✅ Loaded ${this.databaseTables.length} database tables:`, this.databaseTables.map(t => `${t.name} (${t.label || t.name})`));
                 
                 // Update UI if dropdowns are already rendered
                 this.updateDatabaseTableDropdowns();

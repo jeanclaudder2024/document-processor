@@ -1,0 +1,442 @@
+{
+  "summary": {
+    "total_placeholders": 112,
+    "tables_with_mappings": 3,
+    "tables_missing": [
+      "buyer_companies",
+      "vessel_companies",
+      "real_companies",
+      "products",
+      "brokers",
+      "deals",
+      "contracts",
+      "invoices",
+      "payments",
+      "bank_accounts",
+      "contacts",
+      "vessel_positions",
+      "cargo",
+      "inspections",
+      "certificates"
+    ]
+  },
+  "table_mappings": {
+    "vessels": {
+      "total_placeholders": 60,
+      "columns": {
+        "imo": {
+          "placeholder_count": 4,
+          "placeholders": [
+            "imonumber",
+            "imo_number",
+            "imono",
+            "imo"
+          ]
+        },
+        "name": {
+          "placeholder_count": 4,
+          "placeholders": [
+            "vesselname",
+            "vessel_name",
+            "shipname",
+            "name"
+          ]
+        },
+        "vessel_type": {
+          "placeholder_count": 3,
+          "placeholders": [
+            "vesseltype",
+            "vessel_type",
+            "shiptype"
+          ]
+        },
+        "flag": {
+          "placeholder_count": 4,
+          "placeholders": [
+            "flagstate",
+            "flag_state",
+            "flag",
+            "country"
+          ]
+        },
+        "mmsi": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "mmsi",
+            "mmsinumber"
+          ]
+        },
+        "length": {
+          "placeholder_count": 4,
+          "placeholders": [
+            "lengthoverall",
+            "length_overall",
+            "loa",
+            "length"
+          ]
+        },
+        "width": {
+          "placeholder_count": 1,
+          "placeholders": [
+            "width"
+          ]
+        },
+        "beam": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "beam",
+            "breadth"
+          ]
+        },
+        "draft": {
+          "placeholder_count": 1,
+          "placeholders": [
+            "draft"
+          ]
+        },
+        "deadweight": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "deadweight",
+            "dwt"
+          ]
+        },
+        "gross_tonnage": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "grosstonnage",
+            "gross_tonnage"
+          ]
+        },
+        "owner_name": {
+          "placeholder_count": 4,
+          "placeholders": [
+            "ownername",
+            "owner_name",
+            "vesselowner",
+            "owner"
+          ]
+        },
+        "operator_name": {
+          "placeholder_count": 3,
+          "placeholders": [
+            "operatorname",
+            "operator_name",
+            "vesseloperator"
+          ]
+        },
+        "callsign": {
+          "placeholder_count": 1,
+          "placeholders": [
+            "callsign"
+          ]
+        },
+        "built": {
+          "placeholder_count": 3,
+          "placeholders": [
+            "built",
+            "yearbuilt",
+            "year_built"
+          ]
+        },
+        "cargo_capacity": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "cargocapacity",
+            "cargo_capacity"
+          ]
+        },
+        "currentport": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "currentport",
+            "port"
+          ]
+        },
+        "loading_port": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "loadingport",
+            "loading_port"
+          ]
+        },
+        "email": {
+          "placeholder_count": 1,
+          "placeholders": [
+            "email"
+          ]
+        },
+        "phone": {
+          "placeholder_count": 1,
+          "placeholders": [
+            "phone"
+          ]
+        },
+        "address": {
+          "placeholder_count": 1,
+          "placeholders": [
+            "address"
+          ]
+        },
+        "buyer_name": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "buyername",
+            "buyer_name"
+          ]
+        },
+        "seller_name": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "sellername",
+            "seller_name"
+          ]
+        },
+        "cargo_type": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "cargotype",
+            "cargo_type"
+          ]
+        },
+        "oil_type": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "oiltype",
+            "oil_type"
+          ]
+        },
+        "cargo_quantity": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "cargoquantity",
+            "cargo_quantity"
+          ]
+        },
+        "quantity": {
+          "placeholder_count": 1,
+          "placeholders": [
+            "quantity"
+          ]
+        }
+      }
+    },
+    "companies": {
+      "total_placeholders": 38,
+      "columns": {
+        "name": {
+          "placeholder_count": 10,
+          "placeholders": [
+            "companyname",
+            "company_name",
+            "buyercompany",
+            "buyer_company",
+            "sellercompany",
+            "seller_company",
+            "sellercompanyname",
+            "seller_company_name",
+            "buyercompanyname",
+            "buyer_company_name"
+          ]
+        },
+        "country": {
+          "placeholder_count": 10,
+          "placeholders": [
+            "registrationcountry",
+            "registration_country",
+            "sellercountry",
+            "seller_country",
+            "buyercountry",
+            "buyer_country",
+            "sellerregistrationcountry",
+            "seller_registration_country",
+            "buyerregistrationcountry",
+            "buyer_registration_country"
+          ]
+        },
+        "address": {
+          "placeholder_count": 10,
+          "placeholders": [
+            "legaladdress",
+            "legal_address",
+            "sellerlegaladdress",
+            "seller_legal_address",
+            "buyerlegaladdress",
+            "buyer_legal_address",
+            "selleraddress",
+            "seller_address",
+            "buyeraddress",
+            "buyer_address"
+          ]
+        },
+        "email": {
+          "placeholder_count": 4,
+          "placeholders": [
+            "selleremail",
+            "seller_email",
+            "buyeremail",
+            "buyer_email"
+          ]
+        },
+        "phone": {
+          "placeholder_count": 4,
+          "placeholders": [
+            "sellerphone",
+            "seller_phone",
+            "buyerphone",
+            "buyer_phone"
+          ]
+        }
+      }
+    },
+    "ports": {
+      "total_placeholders": 14,
+      "columns": {
+        "name": {
+          "placeholder_count": 10,
+          "placeholders": [
+            "portname",
+            "port_name",
+            "loadingportname",
+            "portofloading",
+            "portofdischarge",
+            "departureport",
+            "destinationport",
+            "dischargeport",
+            "portloading",
+            "portdischarge"
+          ]
+        },
+        "country": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "portcountry",
+            "port_country"
+          ]
+        },
+        "city": {
+          "placeholder_count": 2,
+          "placeholders": [
+            "portcity",
+            "port_city"
+          ]
+        }
+      }
+    }
+  },
+  "available_columns": {
+    "vessels": [
+      "id",
+      "name",
+      "imo",
+      "mmsi",
+      "vessel_type",
+      "flag",
+      "built",
+      "deadweight",
+      "cargo_capacity",
+      "cargo_capacity_bbl",
+      "length",
+      "width",
+      "beam",
+      "draft",
+      "draught",
+      "gross_tonnage",
+      "owner_name",
+      "operator_name",
+      "callsign",
+      "currentport",
+      "loading_port",
+      "discharge_port",
+      "departure_port",
+      "destination_port",
+      "destination",
+      "eta",
+      "nav_status",
+      "status",
+      "vesselstatus",
+      "fuel_consumption",
+      "engine_power",
+      "speed",
+      "service_speed",
+      "deal_value",
+      "dealvalue",
+      "deal_status",
+      "price",
+      "market_price",
+      "cargo_type",
+      "cargo_quantity",
+      "oil_type",
+      "oil_source",
+      "quantity",
+      "buyer_name",
+      "seller_name",
+      "email",
+      "phone",
+      "address"
+    ],
+    "ports": [
+      "id",
+      "name",
+      "country",
+      "city",
+      "latitude",
+      "longitude",
+      "port_type",
+      "timezone",
+      "harbor_size",
+      "harbor_type",
+      "shelter",
+      "entrance_width",
+      "max_vessel_length",
+      "max_vessel_beam",
+      "max_vessel_draft",
+      "anchorage_depth",
+      "cargo_pier_depth",
+      "oil_terminal_depth",
+      "container_terminal_depth",
+      "max_tide",
+      "min_tide"
+    ],
+    "companies": [
+      "id",
+      "name",
+      "email",
+      "phone",
+      "country",
+      "address",
+      "city",
+      "website",
+      "company_type",
+      "registration_number",
+      "tax_id",
+      "legal_name",
+      "contact_person",
+      "contact_email",
+      "contact_phone",
+      "industry",
+      "established_year",
+      "employee_count",
+      "annual_revenue"
+    ],
+    "refineries": [
+      "id",
+      "name",
+      "location",
+      "capacity",
+      "products",
+      "country",
+      "city",
+      "latitude",
+      "longitude",
+      "refinery_type",
+      "crude_capacity",
+      "distillation_capacity",
+      "cracking_capacity",
+      "reforming_capacity",
+      "owner",
+      "operator",
+      "established_year"
+    ]
+  }
+}

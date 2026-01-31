@@ -5,5 +5,7 @@
       "password_hash": "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9"
     }
   ],
-  "sessions": {}
+  "sessions": {
+    "2f1b7735b7844da483743d8b3064c6dd": "admin"
+  }
 }

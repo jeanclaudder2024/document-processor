@@ -26,6 +26,40 @@ from supabase import create_client, Client
 from docx import Document
 import re
 
+# Import ID-based fetcher
+try:
+    # Try relative import first (if running as package)
+    from .id_based_fetcher import (
+        fetch_all_entities, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
+        identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
+    )
+except ImportError:
+    # Fallback for direct execution
+    import sys
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+    try:
+        from id_based_fetcher import (
+            fetch_all_entities, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
+            identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
+        )
+    except ImportError as e:
+        logger.warning(f"Could not import id_based_fetcher: {e}. ID-based fetching will be disabled.")
+        # Create stub functions
+        def fetch_all_entities(*args, **kwargs):
+            return {}
+        def get_placeholder_value(*args, **kwargs):
+            return None
+        def normalize_placeholder_id(*args, **kwargs):
+            return ""
+        def identify_prefix(*args, **kwargs):
+            return None
+        def normalize_replacement_value(*args, **kwargs):
+            return ""
+        PREFIX_TO_TABLE = {}
+
 # Try to import optional dependencies
 try:
     import fitz  # PyMuPDF
@@ -1075,16 +1109,22 @@ async def get_database_tables(request: Request):
     """Get list of all available database tables that can be used as data sources"""
     # Allow unauthenticated access for CMS editor
     try:
-        # List of available tables with their display names (brokers excluded - not used for mapping)
+        # Complete list of all available tables with their display names and descriptions
+        # These match the tables supported by the ID-based fetching system
         tables = [
-            {'name': 'vessels', 'label': 'Vessels', 'description': 'Vessel information and specifications'},
-            {'name': 'ports', 'label': 'Ports', 'description': 'Port information and details'},
-            {'name': 'refineries', 'label': 'Refineries', 'description': 'Refinery information'},
-            {'name': 'companies', 'label': 'Companies', 'description': 'Company information'},
+            {'name': 'vessels', 'label': 'Vessels', 'description': 'Vessel information and specifications (INTEGER ID)'},
+            {'name': 'ports', 'label': 'Ports', 'description': 'Port information and details (INTEGER ID)'},
+            {'name': 'companies', 'label': 'Companies', 'description': 'Generic company information (INTEGER ID)'},
+            {'name': 'buyer_companies', 'label': 'Buyer Companies', 'description': 'Buyer company information (UUID ID)'},
+            {'name': 'seller_companies', 'label': 'Seller Companies', 'description': 'Seller company information (UUID ID)'},
+            {'name': 'refineries', 'label': 'Refineries', 'description': 'Refinery information (UUID ID)'},
+            {'name': 'oil_products', 'label': 'Oil Products', 'description': 'Oil product specifications (UUID ID)'},
+            {'name': 'broker_profiles', 'label': 'Broker Profiles', 'description': 'Broker information (UUID ID)'},
+            {'name': 'buyer_company_bank_accounts', 'label': 'Buyer Bank Accounts', 'description': 'Buyer company bank account details (UUID ID)'},
+            {'name': 'seller_company_bank_accounts', 'label': 'Seller Bank Accounts', 'description': 'Seller company bank account details (UUID ID)'},
+            {'name': 'deals', 'label': 'Deals', 'description': 'Deal/transaction information (UUID ID)'},
         ]
         
-        # If Supabase is enabled, we could dynamically fetch table names
-        # For now, return the predefined list
         logger.info(f"Returning {len(tables)} database tables")
         return {"success": True, "tables": tables}
     except Exception as e:
@@ -1284,6 +1324,153 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
             col('created_at', 'Created At'),
             col('updated_at', 'Updated At'),
         ],
+        'buyer_companies': [
+            col('id', 'ID', 'uuid'),
+            col('name', 'Company Name'),
+            col('company_type', 'Company Type'),
+            col('country', 'Country'),
+            col('city', 'City'),
+            col('address', 'Address'),
+            col('email', 'Email'),
+            col('phone', 'Phone'),
+            col('website', 'Website'),
+            col('contact_person', 'Contact Person'),
+            col('contact_email', 'Contact Email'),
+            col('contact_phone', 'Contact Phone'),
+            col('registration_number', 'Registration Number'),
+            col('tax_id', 'Tax ID'),
+            col('legal_name', 'Legal Name'),
+            col('industry', 'Industry'),
+            col('description', 'Description'),
+            col('established_year', 'Established Year', 'integer'),
+            col('employee_count', 'Employee Count', 'integer'),
+            col('annual_revenue', 'Annual Revenue', 'numeric'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+        ],
+        'seller_companies': [
+            col('id', 'ID', 'uuid'),
+            col('name', 'Company Name'),
+            col('company_type', 'Company Type'),
+            col('country', 'Country'),
+            col('city', 'City'),
+            col('address', 'Address'),
+            col('email', 'Email'),
+            col('phone', 'Phone'),
+            col('website', 'Website'),
+            col('contact_person', 'Contact Person'),
+            col('contact_email', 'Contact Email'),
+            col('contact_phone', 'Contact Phone'),
+            col('registration_number', 'Registration Number'),
+            col('tax_id', 'Tax ID'),
+            col('legal_name', 'Legal Name'),
+            col('industry', 'Industry'),
+            col('description', 'Description'),
+            col('established_year', 'Established Year', 'integer'),
+            col('employee_count', 'Employee Count', 'integer'),
+            col('annual_revenue', 'Annual Revenue', 'numeric'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+        ],
+        'oil_products': [
+            col('id', 'ID', 'uuid'),
+            col('name', 'Product Name'),
+            col('product_type', 'Product Type'),
+            col('category', 'Category'),
+            col('specification', 'Specification'),
+            col('grade', 'Grade'),
+            col('quality', 'Quality'),
+            col('price', 'Price', 'numeric'),
+            col('unit', 'Unit'),
+            col('quantity', 'Quantity', 'numeric'),
+            col('description', 'Description'),
+            col('api_gravity', 'API Gravity', 'numeric'),
+            col('sulfur_content', 'Sulfur Content', 'numeric'),
+            col('density', 'Density', 'numeric'),
+            col('viscosity', 'Viscosity', 'numeric'),
+            col('flash_point', 'Flash Point', 'numeric'),
+            col('pour_point', 'Pour Point', 'numeric'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+        ],
+        'broker_profiles': [
+            col('id', 'ID', 'uuid'),
+            col('company_name', 'Company Name'),
+            col('contact_person', 'Contact Person'),
+            col('email', 'Email'),
+            col('phone', 'Phone'),
+            col('address', 'Address'),
+            col('country', 'Country'),
+            col('city', 'City'),
+            col('website', 'Website'),
+            col('status', 'Status'),
+            col('specialization', 'Specialization'),
+            col('description', 'Description'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+        ],
+        'buyer_company_bank_accounts': [
+            col('id', 'ID', 'uuid'),
+            col('buyer_company_id', 'Buyer Company ID', 'uuid'),
+            col('bank_name', 'Bank Name'),
+            col('account_name', 'Account Name'),
+            col('account_number', 'Account Number'),
+            col('swift_code', 'SWIFT Code'),
+            col('iban', 'IBAN'),
+            col('bank_address', 'Bank Address'),
+            col('bank_country', 'Bank Country'),
+            col('bank_city', 'Bank City'),
+            col('routing_number', 'Routing Number'),
+            col('is_primary', 'Is Primary', 'boolean'),
+            col('currency', 'Currency'),
+            col('account_type', 'Account Type'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+        ],
+        'seller_company_bank_accounts': [
+            col('id', 'ID', 'uuid'),
+            col('seller_company_id', 'Seller Company ID', 'uuid'),
+            col('bank_name', 'Bank Name'),
+            col('account_name', 'Account Name'),
+            col('account_number', 'Account Number'),
+            col('swift_code', 'SWIFT Code'),
+            col('iban', 'IBAN'),
+            col('bank_address', 'Bank Address'),
+            col('bank_country', 'Bank Country'),
+            col('bank_city', 'Bank City'),
+            col('routing_number', 'Routing Number'),
+            col('is_primary', 'Is Primary', 'boolean'),
+            col('currency', 'Currency'),
+            col('account_type', 'Account Type'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+        ],
+        'deals': [
+            col('id', 'ID', 'uuid'),
+            col('vessel_id', 'Vessel ID', 'uuid'),
+            col('broker_id', 'Broker ID', 'uuid'),
+            col('buyer_id', 'Buyer ID', 'uuid'),
+            col('seller_id', 'Seller ID', 'uuid'),
+            col('product_id', 'Product ID', 'uuid'),
+            col('refinery_id', 'Refinery ID', 'uuid'),
+            col('status', 'Deal Status'),
+            col('deal_value', 'Deal Value', 'numeric'),
+            col('price', 'Price', 'numeric'),
+            col('quantity', 'Quantity', 'numeric'),
+            col('currency', 'Currency'),
+            col('payment_terms', 'Payment Terms'),
+            col('delivery_terms', 'Delivery Terms'),
+            col('incoterms', 'Incoterms'),
+            col('departure_port_id', 'Departure Port ID', 'integer'),
+            col('destination_port_id', 'Destination Port ID', 'integer'),
+            col('departure_date', 'Departure Date'),
+            col('arrival_date', 'Arrival Date'),
+            col('eta', 'ETA'),
+            col('notes', 'Notes'),
+            col('steps', 'Steps', 'jsonb'),
+            col('created_at', 'Created At'),
+            col('updated_at', 'Updated At'),
+        ],
         'brokers': [
             col('id', 'ID'),
             col('company_name', 'Company Name'),
@@ -1326,12 +1513,22 @@ def _get_sample_value_from_column(table: str, column: str) -> Optional[str]:
 
 
 def _build_schema_for_mapping() -> Dict[str, List[str]]:
-    """Build {table: [col1, col2, ...]} for vessels, ports, refineries, companies. Brokers excluded.
-    Tries to fetch real schema from Supabase first, falls back to predefined columns."""
-    priority_tables = ['vessels', 'ports', 'companies', 'refineries']
+    """Build {table: [col1, col2, ...]} for ALL supported tables (11 tables total).
+    Tries to fetch real schema from Supabase first, falls back to predefined columns.
+    Includes: vessels, ports, companies, buyer_companies, seller_companies, refineries, 
+    oil_products, broker_profiles, buyer_company_bank_accounts, seller_company_bank_accounts, deals."""
+    # All supported tables - matches id_based_fetcher.py PREFIX_TO_TABLE
+    all_tables = [
+        'vessels', 'ports', 'companies', 
+        'buyer_companies', 'seller_companies', 
+        'refineries', 'oil_products', 
+        'broker_profiles',
+        'buyer_company_bank_accounts', 'seller_company_bank_accounts',
+        'deals'
+    ]
     schema: Dict[str, List[str]] = {}
     
-    for table in priority_tables:
+    for table in all_tables:
         try:
             # Try to fetch real schema from Supabase
             response = supabase.table(table).select("*").limit(1).execute()
@@ -1339,19 +1536,22 @@ def _build_schema_for_mapping() -> Dict[str, List[str]]:
                 schema[table] = list(response.data[0].keys())
                 logger.debug(f"Fetched schema for {table}: {len(schema[table])} columns")
             else:
-                # Fallback to predefined
-                schema[table] = _get_default_columns(table)
-                logger.debug(f"Using default schema for {table}: {len(schema[table])} columns")
+                # Fallback to predefined columns from _get_predefined_table_columns
+                predefined_cols = _get_predefined_table_columns(table)
+                schema[table] = [col['name'] for col in predefined_cols] if predefined_cols else []
+                if not schema[table]:
+                    # Last resort: use _get_default_columns for old tables
+                    schema[table] = _get_default_columns(table)
+                logger.debug(f"Using predefined schema for {table}: {len(schema[table])} columns")
         except Exception as e:
             logger.warning(f"Could not fetch schema for {table}: {e}, using defaults")
-            # Fallback to default columns
-            schema[table] = _get_default_columns(table)
+            # Fallback to predefined columns
+            predefined_cols = _get_predefined_table_columns(table)
+            schema[table] = [col['name'] for col in predefined_cols] if predefined_cols else []
+            if not schema[table]:
+                schema[table] = _get_default_columns(table)
     
-    # Explicitly exclude brokers (safety check)
-    if 'brokers' in schema:
-        del schema['brokers']
-        logger.info("Removed brokers table from schema")
-    
+    logger.info(f"Built schema for mapping: {len(schema)} tables, {sum(len(cols) for cols in schema.values())} total columns")
     return schema
 
 
@@ -1373,48 +1573,167 @@ def _build_csv_schema_for_mapping() -> Dict[str, List[str]]:
 
 
 # Rule-based placeholder -> (table, field) for upload-time mapping when OpenAI is unavailable.
-# Extended for vessels, ports, companies. Field must exist in predefined columns.
+# Extended for ALL 11 tables. Field must exist in predefined columns.
 _UPLOAD_FIELD_MAPPINGS: Dict[str, Tuple[str, str]] = {
-    # vessels
+    # ============= VESSELS =============
     'imonumber': ('vessels', 'imo'), 'imo_number': ('vessels', 'imo'), 'imono': ('vessels', 'imo'), 'imo': ('vessels', 'imo'),
-    'vesselname': ('vessels', 'name'), 'vessel_name': ('vessels', 'name'), 'shipname': ('vessels', 'name'), 'name': ('vessels', 'name'),
+    'vesselname': ('vessels', 'name'), 'vessel_name': ('vessels', 'name'), 'shipname': ('vessels', 'name'),
     'vesseltype': ('vessels', 'vessel_type'), 'vessel_type': ('vessels', 'vessel_type'), 'shiptype': ('vessels', 'vessel_type'),
+    'vesselflag': ('vessels', 'flag'), 'vessel_flag': ('vessels', 'flag'),
     'flagstate': ('vessels', 'flag'), 'flag_state': ('vessels', 'flag'), 'flag': ('vessels', 'flag'),
-    'mmsi': ('vessels', 'mmsi'), 'mmsinumber': ('vessels', 'mmsi'),
-    'lengthoverall': ('vessels', 'length'), 'length_overall': ('vessels', 'length'), 'loa': ('vessels', 'length'), 'length': ('vessels', 'length'),
+    'mmsi': ('vessels', 'mmsi'), 'mmsinumber': ('vessels', 'mmsi'), 'vesselmmsi': ('vessels', 'mmsi'),
+    'lengthoverall': ('vessels', 'length'), 'length_overall': ('vessels', 'length'), 'loa': ('vessels', 'length'), 'vessellength': ('vessels', 'length'),
+    'vesselwidth': ('vessels', 'width'), 'vesselbeam': ('vessels', 'beam'), 'vesseldraft': ('vessels', 'draft'),
     'width': ('vessels', 'width'), 'beam': ('vessels', 'beam'), 'breadth': ('vessels', 'beam'), 'draft': ('vessels', 'draft'),
-    'deadweight': ('vessels', 'deadweight'), 'dwt': ('vessels', 'deadweight'), 'grosstonnage': ('vessels', 'gross_tonnage'), 'gross_tonnage': ('vessels', 'gross_tonnage'),
-    'ownername': ('vessels', 'owner_name'), 'owner_name': ('vessels', 'owner_name'), 'vesselowner': ('vessels', 'owner_name'), 'owner': ('vessels', 'owner_name'),
+    'deadweight': ('vessels', 'deadweight'), 'dwt': ('vessels', 'deadweight'), 'vesseldeadweight': ('vessels', 'deadweight'),
+    'grosstonnage': ('vessels', 'gross_tonnage'), 'gross_tonnage': ('vessels', 'gross_tonnage'), 'vesselgrosstonnage': ('vessels', 'gross_tonnage'),
+    'ownername': ('vessels', 'owner_name'), 'owner_name': ('vessels', 'owner_name'), 'vesselowner': ('vessels', 'owner_name'),
     'operatorname': ('vessels', 'operator_name'), 'operator_name': ('vessels', 'operator_name'), 'vesseloperator': ('vessels', 'operator_name'),
-    'callsign': ('vessels', 'callsign'), 'built': ('vessels', 'built'), 'yearbuilt': ('vessels', 'built'), 'year_built': ('vessels', 'built'),
-    'cargocapacity': ('vessels', 'cargo_capacity'), 'cargo_capacity': ('vessels', 'cargo_capacity'),
-    'currentport': ('vessels', 'currentport'), 'loadingport': ('vessels', 'loading_port'), 'loading_port': ('vessels', 'loading_port'),
-    'port': ('vessels', 'currentport'), 'country': ('vessels', 'flag'), 'email': ('vessels', 'email'), 'phone': ('vessels', 'phone'),
-    'address': ('vessels', 'address'), 'companyname': ('vessels', 'owner_name'), 'company_name': ('vessels', 'owner_name'),
-    'buyername': ('vessels', 'buyer_name'), 'buyer_name': ('vessels', 'buyer_name'),
-    'sellername': ('vessels', 'seller_name'), 'seller_name': ('vessels', 'seller_name'),
-    'cargotype': ('vessels', 'cargo_type'), 'cargo_type': ('vessels', 'cargo_type'),
-    'oiltype': ('vessels', 'oil_type'), 'oil_type': ('vessels', 'oil_type'),
-    'cargoquantity': ('vessels', 'cargo_quantity'), 'cargo_quantity': ('vessels', 'cargo_quantity'),
-    'quantity': ('vessels', 'quantity'),
-    # ports (common placeholders)
+    'callsign': ('vessels', 'callsign'), 'vesselcallsign': ('vessels', 'callsign'),
+    'built': ('vessels', 'built'), 'yearbuilt': ('vessels', 'built'), 'year_built': ('vessels', 'built'), 'vesselbuilt': ('vessels', 'built'),
+    'cargocapacity': ('vessels', 'cargo_capacity'), 'cargo_capacity': ('vessels', 'cargo_capacity'), 'vesselcapacity': ('vessels', 'cargo_capacity'),
+    'currentport': ('vessels', 'currentport'), 'vesselport': ('vessels', 'currentport'),
+    'vesselloadingport': ('vessels', 'loading_port'), 'vesseldischargeport': ('vessels', 'discharge_port'),
+    'cargotype': ('vessels', 'cargo_type'), 'cargo_type': ('vessels', 'cargo_type'), 'vesselcargotype': ('vessels', 'cargo_type'),
+    'oiltype': ('vessels', 'oil_type'), 'oil_type': ('vessels', 'oil_type'), 'vesseloiltype': ('vessels', 'oil_type'),
+    'cargoquantity': ('vessels', 'cargo_quantity'), 'cargo_quantity': ('vessels', 'cargo_quantity'), 'vesselcargoquantity': ('vessels', 'cargo_quantity'),
+    'vesselprice': ('vessels', 'price'), 'vesselquantity': ('vessels', 'quantity'),
+    'vesseldealvalue': ('vessels', 'deal_value'), 'vesselstatus': ('vessels', 'status'),
+    
+    # ============= PORTS =============
     'portname': ('ports', 'name'), 'port_name': ('ports', 'name'), 'loadingportname': ('ports', 'name'), 'portofloading': ('ports', 'name'),
-    'portofdischarge': ('ports', 'name'), 'departureport': ('ports', 'name'),
-    'destinationport': ('ports', 'name'), 'dischargeport': ('ports', 'name'), 'portloading': ('ports', 'name'), 'portdischarge': ('ports', 'name'),
-    'portcountry': ('ports', 'country'), 'port_country': ('ports', 'country'), 'portcity': ('ports', 'city'), 'port_city': ('ports', 'city'),
-    # companies
-    'buyercompany': ('companies', 'name'), 'buyer_company': ('companies', 'name'), 'sellercompany': ('companies', 'name'), 'seller_company': ('companies', 'name'),
+    'portofdischarge': ('ports', 'name'), 'departureportname': ('ports', 'name'), 'destinationportname': ('ports', 'name'),
+    'dischargeportname': ('ports', 'name'), 'portloading': ('ports', 'name'), 'portdischarge': ('ports', 'name'),
+    'portcountry': ('ports', 'country'), 'port_country': ('ports', 'country'),
+    'portcity': ('ports', 'city'), 'port_city': ('ports', 'city'),
+    'portaddress': ('ports', 'address'), 'port_address': ('ports', 'address'),
+    'portregion': ('ports', 'region'), 'port_region': ('ports', 'region'),
+    'porttype': ('ports', 'type'), 'port_type': ('ports', 'type'),
+    'portstatus': ('ports', 'status'), 'portemail': ('ports', 'email'), 'portphone': ('ports', 'phone'),
+    
+    # ============= BUYER COMPANIES (buyer_ prefix) =============
+    'buyername': ('buyer_companies', 'name'), 'buyer_name': ('buyer_companies', 'name'),
+    'buyercompanyname': ('buyer_companies', 'name'), 'buyer_company_name': ('buyer_companies', 'name'),
+    'buyercompany': ('buyer_companies', 'name'), 'buyer_company': ('buyer_companies', 'name'),
+    'buyerlegalname': ('buyer_companies', 'legal_name'), 'buyer_legal_name': ('buyer_companies', 'legal_name'),
+    'buyercountry': ('buyer_companies', 'country'), 'buyer_country': ('buyer_companies', 'country'),
+    'buyerregistrationcountry': ('buyer_companies', 'country'), 'buyer_registration_country': ('buyer_companies', 'country'),
+    'buyercity': ('buyer_companies', 'city'), 'buyer_city': ('buyer_companies', 'city'),
+    'buyeraddress': ('buyer_companies', 'address'), 'buyer_address': ('buyer_companies', 'address'),
+    'buyerlegaladdress': ('buyer_companies', 'address'), 'buyer_legal_address': ('buyer_companies', 'address'),
+    'buyeremail': ('buyer_companies', 'email'), 'buyer_email': ('buyer_companies', 'email'),
+    'buyerphone': ('buyer_companies', 'phone'), 'buyer_phone': ('buyer_companies', 'phone'),
+    'buyerwebsite': ('buyer_companies', 'website'), 'buyer_website': ('buyer_companies', 'website'),
+    'buyercontactperson': ('buyer_companies', 'contact_person'), 'buyer_contact_person': ('buyer_companies', 'contact_person'),
+    'buyercontactemail': ('buyer_companies', 'contact_email'), 'buyer_contact_email': ('buyer_companies', 'contact_email'),
+    'buyercontactphone': ('buyer_companies', 'contact_phone'), 'buyer_contact_phone': ('buyer_companies', 'contact_phone'),
+    'buyerregistrationnumber': ('buyer_companies', 'registration_number'), 'buyer_registration_number': ('buyer_companies', 'registration_number'),
+    'buyertaxid': ('buyer_companies', 'tax_id'), 'buyer_tax_id': ('buyer_companies', 'tax_id'),
+    'buyertype': ('buyer_companies', 'company_type'), 'buyer_company_type': ('buyer_companies', 'company_type'),
+    
+    # ============= SELLER COMPANIES (seller_ prefix) =============
+    'sellername': ('seller_companies', 'name'), 'seller_name': ('seller_companies', 'name'),
+    'sellercompanyname': ('seller_companies', 'name'), 'seller_company_name': ('seller_companies', 'name'),
+    'sellercompany': ('seller_companies', 'name'), 'seller_company': ('seller_companies', 'name'),
+    'sellerlegalname': ('seller_companies', 'legal_name'), 'seller_legal_name': ('seller_companies', 'legal_name'),
+    'sellercountry': ('seller_companies', 'country'), 'seller_country': ('seller_companies', 'country'),
+    'sellerregistrationcountry': ('seller_companies', 'country'), 'seller_registration_country': ('seller_companies', 'country'),
+    'sellercity': ('seller_companies', 'city'), 'seller_city': ('seller_companies', 'city'),
+    'selleraddress': ('seller_companies', 'address'), 'seller_address': ('seller_companies', 'address'),
+    'sellerlegaladdress': ('seller_companies', 'address'), 'seller_legal_address': ('seller_companies', 'address'),
+    'selleremail': ('seller_companies', 'email'), 'seller_email': ('seller_companies', 'email'),
+    'sellerphone': ('seller_companies', 'phone'), 'seller_phone': ('seller_companies', 'phone'),
+    'sellerwebsite': ('seller_companies', 'website'), 'seller_website': ('seller_companies', 'website'),
+    'sellercontactperson': ('seller_companies', 'contact_person'), 'seller_contact_person': ('seller_companies', 'contact_person'),
+    'sellercontactemail': ('seller_companies', 'contact_email'), 'seller_contact_email': ('seller_companies', 'contact_email'),
+    'sellercontactphone': ('seller_companies', 'contact_phone'), 'seller_contact_phone': ('seller_companies', 'contact_phone'),
+    'sellerregistrationnumber': ('seller_companies', 'registration_number'), 'seller_registration_number': ('seller_companies', 'registration_number'),
+    'sellertaxid': ('seller_companies', 'tax_id'), 'seller_tax_id': ('seller_companies', 'tax_id'),
+    'sellertype': ('seller_companies', 'company_type'), 'seller_company_type': ('seller_companies', 'company_type'),
+    
+    # ============= GENERIC COMPANIES (company_ prefix) =============
     'companyname': ('companies', 'name'), 'company_name': ('companies', 'name'),
-    'sellercompanyname': ('companies', 'name'), 'seller_company_name': ('companies', 'name'), 'buyercompanyname': ('companies', 'name'), 'buyer_company_name': ('companies', 'name'),
-    'registrationcountry': ('companies', 'country'), 'registration_country': ('companies', 'country'),
-    'sellercountry': ('companies', 'country'), 'seller_country': ('companies', 'country'), 'buyercountry': ('companies', 'country'), 'buyer_country': ('companies', 'country'),
-    'sellerregistrationcountry': ('companies', 'country'), 'seller_registration_country': ('companies', 'country'),
-    'buyerregistrationcountry': ('companies', 'country'), 'buyer_registration_country': ('companies', 'country'),
-    'legaladdress': ('companies', 'address'), 'legal_address': ('companies', 'address'),
-    'sellerlegaladdress': ('companies', 'address'), 'seller_legal_address': ('companies', 'address'), 'buyerlegaladdress': ('companies', 'address'), 'buyer_legal_address': ('companies', 'address'),
-    'selleraddress': ('companies', 'address'), 'seller_address': ('companies', 'address'), 'buyeraddress': ('companies', 'address'), 'buyer_address': ('companies', 'address'),
-    'selleremail': ('companies', 'email'), 'seller_email': ('companies', 'email'), 'buyeremail': ('companies', 'email'), 'buyer_email': ('companies', 'email'),
-    'sellerphone': ('companies', 'phone'), 'seller_phone': ('companies', 'phone'), 'buyerphone': ('companies', 'phone'), 'buyer_phone': ('companies', 'phone'),
+    'companycountry': ('companies', 'country'), 'company_country': ('companies', 'country'),
+    'companycity': ('companies', 'city'), 'company_city': ('companies', 'city'),
+    'companyaddress': ('companies', 'address'), 'company_address': ('companies', 'address'),
+    'companyemail': ('companies', 'email'), 'company_email': ('companies', 'email'),
+    'companyphone': ('companies', 'phone'), 'company_phone': ('companies', 'phone'),
+    'companytype': ('companies', 'company_type'), 'company_type': ('companies', 'company_type'),
+    
+    # ============= REFINERIES (refinery_ prefix) =============
+    'refineryname': ('refineries', 'name'), 'refinery_name': ('refineries', 'name'),
+    'refinerycountry': ('refineries', 'country'), 'refinery_country': ('refineries', 'country'),
+    'refinerycity': ('refineries', 'city'), 'refinery_city': ('refineries', 'city'),
+    'refineryaddress': ('refineries', 'address'), 'refinery_address': ('refineries', 'address'),
+    'refinerycapacity': ('refineries', 'capacity'), 'refinery_capacity': ('refineries', 'capacity'),
+    'refineryprocessingcapacity': ('refineries', 'processing_capacity'), 'refinery_processing_capacity': ('refineries', 'processing_capacity'),
+    'refinerystatus': ('refineries', 'status'), 'refinery_status': ('refineries', 'status'),
+    'refineryoperator': ('refineries', 'operator'), 'refinery_operator': ('refineries', 'operator'),
+    'refineryowner': ('refineries', 'owner'), 'refinery_owner': ('refineries', 'owner'),
+    
+    # ============= OIL PRODUCTS (product_ prefix) =============
+    'productname': ('oil_products', 'name'), 'product_name': ('oil_products', 'name'),
+    'producttype': ('oil_products', 'product_type'), 'product_type': ('oil_products', 'product_type'),
+    'productcategory': ('oil_products', 'category'), 'product_category': ('oil_products', 'category'),
+    'productspecification': ('oil_products', 'specification'), 'product_specification': ('oil_products', 'specification'),
+    'productgrade': ('oil_products', 'grade'), 'product_grade': ('oil_products', 'grade'),
+    'productquality': ('oil_products', 'quality'), 'product_quality': ('oil_products', 'quality'),
+    'productprice': ('oil_products', 'price'), 'product_price': ('oil_products', 'price'),
+    'productunit': ('oil_products', 'unit'), 'product_unit': ('oil_products', 'unit'),
+    'productquantity': ('oil_products', 'quantity'), 'product_quantity': ('oil_products', 'quantity'),
+    'apigravity': ('oil_products', 'api_gravity'), 'api_gravity': ('oil_products', 'api_gravity'),
+    'sulfurcontent': ('oil_products', 'sulfur_content'), 'sulfur_content': ('oil_products', 'sulfur_content'),
+    'productviscosity': ('oil_products', 'viscosity'), 'product_viscosity': ('oil_products', 'viscosity'),
+    'productdensity': ('oil_products', 'density'), 'product_density': ('oil_products', 'density'),
+    
+    # ============= BROKER PROFILES (broker_ prefix) =============
+    'brokername': ('broker_profiles', 'company_name'), 'broker_name': ('broker_profiles', 'company_name'),
+    'brokercompanyname': ('broker_profiles', 'company_name'), 'broker_company_name': ('broker_profiles', 'company_name'),
+    'brokercontactperson': ('broker_profiles', 'contact_person'), 'broker_contact_person': ('broker_profiles', 'contact_person'),
+    'brokeremail': ('broker_profiles', 'email'), 'broker_email': ('broker_profiles', 'email'),
+    'brokerphone': ('broker_profiles', 'phone'), 'broker_phone': ('broker_profiles', 'phone'),
+    'brokeraddress': ('broker_profiles', 'address'), 'broker_address': ('broker_profiles', 'address'),
+    'brokercountry': ('broker_profiles', 'country'), 'broker_country': ('broker_profiles', 'country'),
+    'brokercity': ('broker_profiles', 'city'), 'broker_city': ('broker_profiles', 'city'),
+    'brokerstatus': ('broker_profiles', 'status'), 'broker_status': ('broker_profiles', 'status'),
+    
+    # ============= BUYER BANK ACCOUNTS (buyer_bank_ prefix) =============
+    'buyerbankname': ('buyer_company_bank_accounts', 'bank_name'), 'buyer_bank_name': ('buyer_company_bank_accounts', 'bank_name'),
+    'buyerbankaccountname': ('buyer_company_bank_accounts', 'account_name'), 'buyer_bank_account_name': ('buyer_company_bank_accounts', 'account_name'),
+    'buyerbankaccountnumber': ('buyer_company_bank_accounts', 'account_number'), 'buyer_bank_account_number': ('buyer_company_bank_accounts', 'account_number'),
+    'buyerbankswift': ('buyer_company_bank_accounts', 'swift_code'), 'buyer_bank_swift': ('buyer_company_bank_accounts', 'swift_code'),
+    'buyerbankswiftcode': ('buyer_company_bank_accounts', 'swift_code'), 'buyer_bank_swift_code': ('buyer_company_bank_accounts', 'swift_code'),
+    'buyerbankiban': ('buyer_company_bank_accounts', 'iban'), 'buyer_bank_iban': ('buyer_company_bank_accounts', 'iban'),
+    'buyerbankaddress': ('buyer_company_bank_accounts', 'bank_address'), 'buyer_bank_address': ('buyer_company_bank_accounts', 'bank_address'),
+    'buyerbankcountry': ('buyer_company_bank_accounts', 'bank_country'), 'buyer_bank_country': ('buyer_company_bank_accounts', 'bank_country'),
+    'buyerbankcity': ('buyer_company_bank_accounts', 'bank_city'), 'buyer_bank_city': ('buyer_company_bank_accounts', 'bank_city'),
+    'buyerbankcurrency': ('buyer_company_bank_accounts', 'currency'), 'buyer_bank_currency': ('buyer_company_bank_accounts', 'currency'),
+    
+    # ============= SELLER BANK ACCOUNTS (seller_bank_ prefix) =============
+    'sellerbankname': ('seller_company_bank_accounts', 'bank_name'), 'seller_bank_name': ('seller_company_bank_accounts', 'bank_name'),
+    'sellerbankaccountname': ('seller_company_bank_accounts', 'account_name'), 'seller_bank_account_name': ('seller_company_bank_accounts', 'account_name'),
+    'sellerbankaccountnumber': ('seller_company_bank_accounts', 'account_number'), 'seller_bank_account_number': ('seller_company_bank_accounts', 'account_number'),
+    'sellerbankswift': ('seller_company_bank_accounts', 'swift_code'), 'seller_bank_swift': ('seller_company_bank_accounts', 'swift_code'),
+    'sellerbankswiftcode': ('seller_company_bank_accounts', 'swift_code'), 'seller_bank_swift_code': ('seller_company_bank_accounts', 'swift_code'),
+    'sellerbankiban': ('seller_company_bank_accounts', 'iban'), 'seller_bank_iban': ('seller_company_bank_accounts', 'iban'),
+    'sellerbankaddress': ('seller_company_bank_accounts', 'bank_address'), 'seller_bank_address': ('seller_company_bank_accounts', 'bank_address'),
+    'sellerbankcountry': ('seller_company_bank_accounts', 'bank_country'), 'seller_bank_country': ('seller_company_bank_accounts', 'bank_country'),
+    'sellerbankcity': ('seller_company_bank_accounts', 'bank_city'), 'seller_bank_city': ('seller_company_bank_accounts', 'bank_city'),
+    'sellerbankcurrency': ('seller_company_bank_accounts', 'currency'), 'seller_bank_currency': ('seller_company_bank_accounts', 'currency'),
+    
+    # ============= DEALS (deal_ prefix) =============
+    'dealstatus': ('deals', 'status'), 'deal_status': ('deals', 'status'),
+    'dealvalue': ('deals', 'deal_value'), 'deal_value': ('deals', 'deal_value'),
+    'dealprice': ('deals', 'price'), 'deal_price': ('deals', 'price'),
+    'dealquantity': ('deals', 'quantity'), 'deal_quantity': ('deals', 'quantity'),
+    'dealcurrency': ('deals', 'currency'), 'deal_currency': ('deals', 'currency'),
+    'dealpaymentterms': ('deals', 'payment_terms'), 'deal_payment_terms': ('deals', 'payment_terms'),
+    'dealdeliveryterms': ('deals', 'delivery_terms'), 'deal_delivery_terms': ('deals', 'delivery_terms'),
+    'dealincoterms': ('deals', 'incoterms'), 'deal_incoterms': ('deals', 'incoterms'),
+    'dealdeparturedate': ('deals', 'departure_date'), 'deal_departure_date': ('deals', 'departure_date'),
+    'dealarrivaldate': ('deals', 'arrival_date'), 'deal_arrival_date': ('deals', 'arrival_date'),
+    'dealeta': ('deals', 'eta'), 'deal_eta': ('deals', 'eta'),
+    'dealnotes': ('deals', 'notes'), 'deal_notes': ('deals', 'notes'),
 }
 
 
@@ -1434,12 +1753,45 @@ def _ai_suggest_placeholder_mapping(
     def normalize_key(s: str) -> str:
         return re.sub(r'[^a-z0-9]', '', (s or '').lower())
 
-    # Rule-based fallback: map to (table, field) using _UPLOAD_FIELD_MAPPINGS
+    # Rule-based fallback: map to (table, field) using prefix-based matching + _UPLOAD_FIELD_MAPPINGS
     def rule_based() -> None:
+        # Import prefix matching from id_based_fetcher
+        try:
+            from id_based_fetcher import identify_prefix, normalize_placeholder, PREFIX_TO_TABLE
+        except ImportError:
+            identify_prefix = None
+            PREFIX_TO_TABLE = {}
+        
         for ph in placeholders:
             key = normalize_key(ph)
             if not key:
                 continue
+            
+            # First try prefix-based matching (more accurate for buyer_, seller_, vessel_, etc.)
+            if identify_prefix:
+                prefix = identify_prefix(ph)
+                if prefix and prefix in PREFIX_TO_TABLE:
+                    table_name = PREFIX_TO_TABLE[prefix]
+                    if table_name in schema:
+                        # Extract field name from placeholder (remove prefix)
+                        normalized_ph = normalize_placeholder(ph)
+                        normalized_prefix = normalize_placeholder(prefix)
+                        field_name = normalized_ph[len(normalized_prefix):] if normalized_ph.startswith(normalized_prefix) else normalized_ph
+                        
+                        # Try to find matching column in schema
+                        # Match by exact name, or by partial match (e.g., "name" matches "name", "company_name", etc.)
+                        matching_col = None
+                        for col in schema[table_name]:
+                            col_normalized = normalize_key(col)
+                            if field_name == col_normalized or col_normalized.endswith(field_name) or field_name in col_normalized:
+                                matching_col = col
+                                break
+                        
+                        if matching_col:
+                            result[ph] = (table_name, matching_col)
+                            continue
+            
+            # Fallback to _UPLOAD_FIELD_MAPPINGS
             mapping = _UPLOAD_FIELD_MAPPINGS.get(key)
             if mapping:
                 t, col = mapping
@@ -1459,11 +1811,13 @@ def _ai_suggest_placeholder_mapping(
         
         context = " ".join(template_hints) if template_hints else "Maritime/oil trading document"
         
+        # Include ALL columns from ALL tables (no truncation - we need complete schema for accurate mapping)
         flat: List[str] = []
         for t, cols in schema.items():
             for c in cols:
                 flat.append(f"{t}.{c}")
-        schema_str = ", ".join(flat[:200])
+        schema_str = ", ".join(flat)  # No limit - send all columns for accurate mapping
+        logger.info(f"Sending {len(flat)} table.column combinations to AI for mapping")
         
         # Add CSV columns if available
         csv_info = ""
@@ -1485,14 +1839,23 @@ AVAILABLE TABLES.COLUMNS:
 PLACEHOLDERS TO MAP:
 {ph_list}
 
-STRICT RULES:
-1. Vessels table FIRST for: ship/vessel names, IMO, flag, owner, operator, dimensions, cargo
-2. Ports table for: port names, loading/discharge ports (NOT for addresses or countries unless specifically port-related)
-3. Companies table for: company names, emails, phones, addresses (buyer/seller companies)
-4. CSV files for: buyer/seller specific data, contact information
-5. NEVER use 'brokers' table - map broker data to 'companies' instead
-6. Country/address/title fields MUST map to text columns, NEVER to ID columns
-7. For each placeholder, return ONE best match or "NONE"
+STRICT RULES (PRIORITIZE DATABASE - 90%+ should be database):
+1. **Database FIRST (90%+)**:
+   - vessel_* → vessels table (ship/vessel names, IMO, flag, owner, operator, dimensions, cargo)
+   - port_*, departure_port_*, destination_port_* → ports table
+   - buyer_* → buyer_companies table
+   - seller_* → seller_companies table
+   - company_* → companies table
+   - refinery_* → refineries table
+   - product_*, oil_* → oil_products table
+   - broker_* → broker_profiles table
+   - buyer_bank_* → buyer_company_bank_accounts table
+   - seller_bank_* → seller_company_bank_accounts table
+   - deal_* → deals table
+2. **CSV SECOND (5-10%)**: Only use CSV when database has NO matching column
+3. **Random LAST (<5%)**: Only when no database or CSV match
+4. Country/address/title fields MUST map to text columns, NEVER to ID columns
+5. For each placeholder, return ONE best match or "NONE"
 
 OUTPUT FORMAT:
 Return a JSON object: {{ "placeholder1": "table.column", "placeholder2": "csv:file_id.column_name", "placeholder3": "NONE", ... }}
@@ -1640,18 +2003,38 @@ def _ai_analyze_and_map_placeholders(
 
 **Placeholders to map:** {ph_list}
 
-**Lookup order (follow strictly):**
-1. **Vessels first**: IMO, vessel name, flag, owner, dimensions, cargo, port, etc. -> vessels table.
-2. **Other tables**: Port names, company names, refinery -> ports, companies, refineries. (Do NOT use brokers table.)
-3. **CSV**: Buyer/seller/contact/beneficiary/invoice party -> csv with matching column.
-4. **Random**: ONLY when no database or CSV column fits. We will generate realistic AI data at runtime.
+**Lookup order (follow strictly - PRIORITIZE DATABASE 90%+):**
+1. **Database FIRST (90%+ should be database)**: 
+   - Vessel/ship data (IMO, name, flag, owner, dimensions, cargo, port) -> vessels table
+   - Port names, locations -> ports table
+   - Buyer companies (buyer_*, buyer_company_*) -> buyer_companies table
+   - Seller companies (seller_*, seller_company_*) -> seller_companies table
+   - Generic companies (company_*) -> companies table
+   - Refineries (refinery_*) -> refineries table
+   - Products (product_*, oil_*) -> oil_products table
+   - Broker data (broker_*) -> broker_profiles table
+   - Bank accounts (buyer_bank_*, seller_bank_*) -> buyer_company_bank_accounts / seller_company_bank_accounts
+   - Deal data (deal_*) -> deals table
+2. **CSV SECOND (only 5-10%)**: Use CSV ONLY when database has NO matching column AND CSV has exact match (e.g., very specific buyer/seller contact details not in database)
+3. **Random LAST (<5%)**: ONLY when no database or CSV column fits at all. We will generate realistic AI data at runtime.
 
 **Rules (follow strictly):**
-1. **Buyer/seller data**: Placeholders that refer to BUYER or SELLER (name, company, email, address, phone, contact, etc.) MUST use **csv** when a matching CSV field exists. Example: BUYER_NAME, SELLER_COMPANY, BUYER_EMAIL → csv with buyer_name, seller_company, buyer_email, etc.
-2. **Vessel/ship data**: IMO, vessel name, flag, port, cargo, etc. -> **database** (vessels, ports). Use table.column from the list.
-3. **Company/port/refinery** (not buyer/seller): Use **database** when a matching table.column exists. NEVER use brokers table.
-4. **Use csv** for any placeholder that clearly matches a CSV column (e.g. invoice party, beneficiary, bank details, contact person) when such CSV fields exist.
-5. **Use random** only when no database or CSV fit.
+1. **PRIORITY: Database > CSV > Random** - 90%+ should map to database tables
+2. **Prefix-based matching**: 
+   - buyer_* → buyer_companies table
+   - seller_* → seller_companies table  
+   - vessel_* → vessels table
+   - port_*, departure_port_*, destination_port_* → ports table
+   - refinery_* → refineries table
+   - product_* → oil_products table
+   - broker_* → broker_profiles table
+   - buyer_bank_* → buyer_company_bank_accounts table
+   - seller_bank_* → seller_company_bank_accounts table
+   - deal_* → deals table
+3. **Buyer/seller data**: Use **buyer_companies** or **seller_companies** tables FIRST, not CSV. Only use CSV if database table has no matching column.
+4. **Vessel/ship data**: Always use **database** (vessels, ports tables)
+5. **Use CSV** ONLY when database has no matching column AND CSV has exact match
+6. **Use random** ONLY when no database or CSV fit at all (<5% of placeholders)
 
 Return a JSON object only. Each key is an exact placeholder string. Each value is one of:
 {{"source": "database", "table": "vessels", "column": "imo"}}
@@ -1719,6 +2102,41 @@ Use exact placeholder strings as keys. Only valid table.column and csvId.field f
             result[ph] = cfg
             continue
         if src == 'csv':
+            # Before accepting CSV, check if database has a match (prioritize database)
+            # Try prefix-based matching first
+            db_match_found = False
+            try:
+                from id_based_fetcher import identify_prefix, normalize_placeholder, PREFIX_TO_TABLE
+                prefix = identify_prefix(ph) if identify_prefix else None
+                if prefix and prefix in PREFIX_TO_TABLE:
+                    table_name = PREFIX_TO_TABLE[prefix]
+                    if table_name in db_schema:
+                        # Try to find matching column
+                        normalized_ph = normalize_placeholder(ph)
+                        normalized_prefix = normalize_placeholder(prefix)
+                        field_name = normalized_ph[len(normalized_prefix):] if normalized_ph.startswith(normalized_prefix) else normalized_ph
+                        
+                        # Match column
+                        for col in db_schema[table_name]:
+                            col_normalized = re.sub(r'[^a-z0-9]', '', col.lower())
+                            if field_name == col_normalized or col_normalized.endswith(field_name) or field_name in col_normalized:
+                                # Database match found - use database instead of CSV
+                                cfg['source'] = 'database'
+                                cfg['databaseTable'] = table_name
+                                cfg['databaseField'] = col
+                                cfg['csvId'] = ''
+                                cfg['csvField'] = ''
+                                result[ph] = cfg
+                                db_match_found = True
+                                break
+            except ImportError:
+                pass
+            
+            # If database match found, skip CSV
+            if db_match_found:
+                continue
+            
+            # No database match - proceed with CSV if valid
             cid = (val.get('csvId') or '').strip()
             fld = (val.get('csvField') or '').strip()
             if cid in csv_schema and fld in (csv_schema.get(cid) or []):
@@ -1748,25 +2166,39 @@ Use exact placeholder strings as keys. Only valid table.column and csvId.field f
             continue
         result[ph] = cfg
 
-    # Rescue: for placeholders that ended up as random, try rule-based database/CSV mapping
+    # Rescue: for placeholders that ended up as random or CSV, try rule-based database mapping FIRST
+    # Prioritize database over CSV - aim for 90%+ database mappings
     suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema, csv_schema)
-    rescued = 0
+    rescued_to_db = 0
+    rescued_from_csv = 0
+    
     for ph in placeholders:
-        if result.get(ph, {}).get('source') == 'random' and ph in suggested:
+        current_cfg = result.get(ph, {})
+        current_source = current_cfg.get('source', 'random')
+        
+        # If we have a database mapping suggestion, use it (even if AI chose CSV or random)
+        if ph in suggested:
             t, col = suggested[ph]
-            result[ph] = {
-                'source': 'database',
-                'databaseTable': t,
-                'databaseField': col,
-                'csvId': '',
-                'csvField': '',
-                'csvRow': 0,
-                'randomOption': 'auto',
-                'customValue': '',
-            }
-            rescued += 1
-    if rescued:
-        logger.info(f"AI mapping rescue: {rescued} placeholders remapped from random to database via rule-based")
+            # Only use database mappings (skip CSV suggestions if we want 90%+ database)
+            if not t.startswith('csv:'):
+                if t in db_schema and col in (db_schema.get(t) or []):
+                    if current_source == 'random':
+                        rescued_to_db += 1
+                    elif current_source == 'csv':
+                        rescued_from_csv += 1
+                    result[ph] = {
+                        'source': 'database',
+                        'databaseTable': t,
+                        'databaseField': col,
+                        'csvId': '',
+                        'csvField': '',
+                        'csvRow': 0,
+                        'randomOption': 'auto',
+                        'customValue': '',
+                    }
+    
+    if rescued_to_db or rescued_from_csv:
+        logger.info(f"AI mapping rescue: {rescued_to_db} placeholders remapped from random to database, {rescued_from_csv} from CSV to database via rule-based")
 
     return result
 
@@ -2863,52 +3295,84 @@ async def delete_template(
                 if template_record:
                     template_id = template_record['id']
                     resolved_name = template_record.get('file_name') or template_name
-                    logger.info(f"Found template in Supabase: ID={template_id}, file_name={resolved_name}")
+                    
+                    # Validate template_id
+                    if not template_id:
+                        logger.error(f"Template record found but ID is empty: {template_record}")
+                        warnings.append("Template record has no ID - cannot delete from Supabase")
+                    else:
+                        logger.info(f"Found template in Supabase: ID={template_id} (type: {type(template_id).__name__}), file_name={resolved_name}")
 
                     try:
+                        # Ensure template_id is properly formatted (UUID string)
+                        template_id_str = str(template_id)
+                        logger.info(f"Attempting to delete template with ID: {template_id_str} (type: {type(template_id).__name__})")
+                        
                         # Hard delete: Remove from plan permissions first (foreign key constraint)
                         try:
-                            perm_result = supabase.table('plan_template_permissions').delete().eq('template_id', template_id).execute()
-                            logger.info(f"Deleted plan permissions for template {template_id}: {len(perm_result.data) if perm_result.data else 0} rows")
+                            perm_result = supabase.table('plan_template_permissions').delete().eq('template_id', template_id_str).execute()
+                            deleted_perms = len(perm_result.data) if perm_result.data else 0
+                            logger.info(f"Deleted plan permissions for template {template_id_str}: {deleted_perms} rows")
                         except Exception as perm_exc:
-                            logger.warning(f"Could not delete plan permissions: {perm_exc}")
+                            error_msg = str(perm_exc)
+                            logger.warning(f"Could not delete plan permissions: {error_msg}")
+                            warnings.append(f"Plan permissions deletion failed: {error_msg}")
                         
                         # Delete related records
                         try:
-                            file_result = supabase.table('template_files').delete().eq('template_id', template_id).execute()
-                            logger.info(f"Deleted template files for template {template_id}: {len(file_result.data) if file_result.data else 0} rows")
+                            file_result = supabase.table('template_files').delete().eq('template_id', template_id_str).execute()
+                            deleted_files = len(file_result.data) if file_result.data else 0
+                            logger.info(f"Deleted template files for template {template_id_str}: {deleted_files} rows")
                         except Exception as file_exc:
-                            logger.warning(f"Could not delete template files: {file_exc}")
+                            error_msg = str(file_exc)
+                            logger.warning(f"Could not delete template files: {error_msg}")
+                            warnings.append(f"Template files deletion failed: {error_msg}")
                         
                         try:
-                            placeholder_result = supabase.table('template_placeholders').delete().eq('template_id', template_id).execute()
-                            logger.info(f"Deleted template placeholders for template {template_id}: {len(placeholder_result.data) if placeholder_result.data else 0} rows")
+                            placeholder_result = supabase.table('template_placeholders').delete().eq('template_id', template_id_str).execute()
+                            deleted_placeholders = len(placeholder_result.data) if placeholder_result.data else 0
+                            logger.info(f"Deleted template placeholders for template {template_id_str}: {deleted_placeholders} rows")
                         except Exception as placeholder_exc:
-                            logger.warning(f"Could not delete template placeholders: {placeholder_exc}")
+                            error_msg = str(placeholder_exc)
+                            logger.warning(f"Could not delete template placeholders: {error_msg}")
+                            warnings.append(f"Template placeholders deletion failed: {error_msg}")
                         
                         # Finally, hard delete the template record itself
-                        delete_result = supabase.table('document_templates').delete().eq('id', template_id).execute()
-                        deleted_count = len(delete_result.data) if delete_result.data else 0
-                        if deleted_count > 0:
-                            logger.info(f"✓ Hard deleted template record {template_id} from Supabase document_templates table ({deleted_count} row(s))")
-                            supabase_deleted = True
-                        else:
-                            logger.warning(f"Template delete query executed but no rows were deleted for ID {template_id}")
-                            warnings.append("Template not found in Supabase database (may have been already deleted)")
-                        
-                        # Verify deletion
-                        verify_result = supabase.table('document_templates').select('id').eq('id', template_id).execute()
-                        if verify_result.data and len(verify_result.data) > 0:
-                            logger.error(f"⚠ WARNING: Template {template_id} still exists in Supabase after deletion attempt!")
-                            warnings.append("Template deletion from Supabase may have failed - please verify")
-                        else:
-                            logger.info(f"✓ Verified: Template {template_id} successfully deleted from Supabase")
+                        try:
+                            delete_result = supabase.table('document_templates').delete().eq('id', template_id_str).execute()
+                            deleted_count = len(delete_result.data) if delete_result.data else 0
+                            
+                            if deleted_count > 0:
+                                logger.info(f"✓ Hard deleted template record {template_id_str} from Supabase document_templates table ({deleted_count} row(s))")
+                                supabase_deleted = True
+                                
+                                # Verify deletion
+                                try:
+                                    verify_result = supabase.table('document_templates').select('id').eq('id', template_id_str).execute()
+                                    if verify_result.data and len(verify_result.data) > 0:
+                                        logger.error(f"⚠ WARNING: Template {template_id_str} still exists in Supabase after deletion attempt!")
+                                        warnings.append("Template deletion verification failed - template may still exist in database")
+                                    else:
+                                        logger.info(f"✓ Verified: Template {template_id_str} successfully deleted from Supabase")
+                                except Exception as verify_exc:
+                                    logger.warning(f"Could not verify template deletion: {verify_exc}")
+                                    # Don't fail if verification fails - deletion might have succeeded
+                            else:
+                                logger.warning(f"Template delete query executed but no rows were deleted for ID {template_id_str}")
+                                warnings.append(f"Template not found in Supabase database (ID: {template_id_str}) - may have been already deleted")
+                        except Exception as delete_exc:
+                            error_msg = str(delete_exc)
+                            logger.error(f"✗ Failed to delete template record from Supabase: {error_msg}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                            warnings.append(f"Failed to delete template from Supabase: {error_msg}")
                             
                     except Exception as exc:
-                        logger.error(f"✗ Failed to delete template from Supabase: {exc}")
+                        error_msg = str(exc)
+                        logger.error(f"✗ Failed to delete template from Supabase: {error_msg}")
                         import traceback
                         logger.error(traceback.format_exc())
-                        warnings.append(f"Supabase delete failed: {str(exc)}")
+                        warnings.append(f"Supabase delete failed: {error_msg}")
                 else:
                     logger.warning(f"Template not found in Supabase: {template_name}, proceeding with local deletion only")
             except Exception as supabase_exc:
@@ -5115,15 +5579,30 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
             d = random.randint(-60, 90)
             return (datetime.now() + timedelta(days=d)).strftime('%Y-%m-%d')
 
-    # Bank / finance
+    # Bank / finance - realistic bank data
+    bank_names = ['HSBC Bank Singapore', 'Standard Chartered Bank', 'Deutsche Bank AG', 'ING Commercial Banking', 'BNP Paribas', 'Citibank N.A.', 'DBS Bank Ltd', 'Barclays Bank PLC']
+    swift_codes = ['HSBCSGSG', 'SCBLSGSG', 'DEUTSGSG', 'INGBSGSG', 'BNPASGSG', 'CITISGSG', 'DBSSSGSG', 'BABOROMM']
+    
     if 'swift' in pl or 'bic' in pl:
-        return f"ABCDUS2S{random.randint(100,999)}"
-    if 'account' in pl or 'acct' in pl:
-        return f"ACC-{random.randint(1000000000, 9999999999)}"
-    if 'bank' in pl and ('name' in pl or 'officer' not in pl):
-        return random.choice(['HSBC Singapore', 'Standard Chartered', 'Deutsche Bank', 'ING Commercial Banking', 'BNP Paribas', 'Citibank'])
+        return random.choice(swift_codes)
+    if 'iban' in pl:
+        country = random.choice(['GB', 'DE', 'FR', 'NL', 'CH'])
+        return f"{country}{random.randint(10,99)}{random.randint(1000,9999)}{random.randint(10000000,99999999)}"
+    if 'account' in pl and 'number' in pl:
+        return f"{random.randint(1000000000, 9999999999)}"
+    if 'account' in pl and 'name' in pl:
+        return random.choice(['Operating Account', 'Trade Finance Account', 'Corporate Account'])
+    if 'bank' in pl and 'name' in pl:
+        return random.choice(bank_names)
     if 'bank' in pl and 'address' in pl:
-        return random.choice(['25 Raffles Place, Singapore 048619', '1 HarbourFront Place, Singapore 098633'])
+        return random.choice([
+            '25 Raffles Place, Singapore 048619',
+            '1 Churchill Place, London E14 5HP, UK',
+            'Taunusanlage 12, 60325 Frankfurt, Germany',
+            'Emirates Towers, Sheikh Zayed Road, Dubai, UAE'
+        ])
+    if 'bank' in pl and ('city' in pl or 'country' in pl):
+        return random.choice(['Singapore', 'London, UK', 'Frankfurt, Germany', 'Dubai, UAE'])
 
     # Quality / spec values (short numbers)
     if 'result' in pl or 'max' in pl or 'min' in pl:
@@ -5176,6 +5655,18 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
         '1 HarbourFront Place, Singapore 098633',
         '25 Marina Bay, Singapore 018936'
     ]
+    # Companies / buyer / seller - use realistic trading company names
+    buyer_companies = ['Global Energy Trading Ltd', 'Pacific Petroleum Co.', 'Asian Oil Importers Pte Ltd', 'European Fuel Solutions GmbH', 'Atlantic Trading Corporation', 'Nordic Energy Partners']
+    seller_companies = ['Arabian Oil Corporation', 'Gulf Petroleum DMCC', 'Middle East Energy Trading', 'Russian Petroleum Export LLC', 'Nigerian National Oil Corp', 'South American Crude Suppliers']
+    generic_companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services', 'Gulf Energy Trading', 'Nordic Tanker Co']
+    if 'buyer' in pl:
+        if 'name' in pl or 'company' in pl:
+            return random.choice(buyer_companies)
+    if 'seller' in pl:
+        if 'name' in pl or 'company' in pl:
+            return random.choice(seller_companies)
+    if 'company' in pl and 'name' in pl:
+        return random.choice(generic_companies)
     if 'address' in pl:
         return random.choice(addresses)
 
@@ -5347,8 +5838,14 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'required' in pl or 'mandatory' in pl:
         return 'Yes'
     
+    # Context-aware fallbacks: email, phone for unknown placeholders
+    if 'email' in pl:
+        return f"contact@{random.choice(['trading-corp.com', 'energy-partners.com', 'maritime-solutions.com'])}"
+    if 'phone' in pl or 'tel' in pl or 'fax' in pl:
+        return f"+{random.choice([65, 971, 44])} {random.randint(1000, 9999)} {random.randint(1000, 9999)}"
+    
     # Ultimate fallback: generate based on placeholder type hint
-    # Prefer realistic value over generic text
+    logger.debug(f"No specific match for placeholder '{placeholder}', using generic fallback")
     return random.choice([
         'As per contract',
         'Standard',
@@ -5484,29 +5981,118 @@ def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str =
         try:
             imo = (vessel or {}).get('imo') or vessel_imo or 'N/A'
             pl_lower = (placeholder or '').lower()
+            
+            # Comprehensive hints for realistic data
             hints = []
-            if 'date' in pl_lower: hints.append('date YYYY-MM-DD')
-            if 'email' in pl_lower: hints.append('email')
-            if 'company' in pl_lower or 'buyer' in pl_lower or 'seller' in pl_lower: hints.append('company name')
-            if 'port' in pl_lower or 'loading' in pl_lower or 'discharge' in pl_lower: hints.append('port name')
-            if 'quantity' in pl_lower or 'amount' in pl_lower: hints.append('number with unit')
-            if 'phone' in pl_lower or 'tel' in pl_lower: hints.append('phone')
-            if 'address' in pl_lower: hints.append('short address')
-            if 'name' in pl_lower and 'company' not in pl_lower: hints.append('person name')
-            if 'bank' in pl_lower or 'swift' in pl_lower: hints.append('bank/SWIFT')
-            if 'price' in pl_lower or 'value' in pl_lower: hints.append('currency amount')
-            hint_str = ', '.join(hints) if hints else 'short value'
-            prompt = (
-                f"Placeholder: '{placeholder}' (maritime/oil document). Type: {hint_str}. "
-                f"Output ONLY the value - one short phrase or number, max 50 chars. "
-                f"No quotes, no explanation, no sentences. Example: buyer_name -> 'John Smith'. "
-                f"Vessel IMO: {imo}."
-            )
+            # Dates
+            if 'date' in pl_lower:
+                if 'departure' in pl_lower or 'issue' in pl_lower:
+                    hints.append('recent date (past 30 days) in YYYY-MM-DD format')
+                elif 'arrival' in pl_lower or 'eta' in pl_lower or 'expir' in pl_lower:
+                    hints.append('future date (next 30-90 days) in YYYY-MM-DD format')
+                else:
+                    hints.append('date in YYYY-MM-DD format')
+            
+            # Company data
+            if 'buyer' in pl_lower:
+                if 'company' in pl_lower or 'name' in pl_lower:
+                    hints.append('professional oil/trading company name (e.g., "Global Energy Trading Ltd", "Pacific Petroleum Co.")')
+                elif 'address' in pl_lower:
+                    hints.append('business address with street, city, country')
+                elif 'country' in pl_lower:
+                    hints.append('country name (trading hub like Singapore, UAE, Netherlands)')
+            elif 'seller' in pl_lower:
+                if 'company' in pl_lower or 'name' in pl_lower:
+                    hints.append('professional oil/energy company name (e.g., "Arabian Oil Corporation", "Nordic Petroleum")')
+                elif 'address' in pl_lower:
+                    hints.append('business address with street, city, country')
+                elif 'country' in pl_lower:
+                    hints.append('country name (oil producer like Saudi Arabia, UAE, Russia)')
+            elif 'company' in pl_lower:
+                hints.append('professional maritime/trading company name')
+            
+            # Bank data
+            if 'bank' in pl_lower:
+                if 'name' in pl_lower:
+                    hints.append('major international bank name (HSBC, Standard Chartered, Citibank, BNP Paribas)')
+                elif 'swift' in pl_lower:
+                    hints.append('valid SWIFT/BIC code format (8-11 characters like HSBCSGSG or CITIUS33)')
+                elif 'iban' in pl_lower:
+                    hints.append('valid IBAN format (country code + numbers)')
+                elif 'account' in pl_lower:
+                    hints.append('bank account number format')
+                elif 'address' in pl_lower:
+                    hints.append('bank branch address')
+            
+            # Contact info
+            if 'email' in pl_lower:
+                hints.append('professional business email (e.g., trading@company.com)')
+            if 'phone' in pl_lower or 'tel' in pl_lower:
+                hints.append('international phone format (+country code)')
+            if 'person' in pl_lower or 'representative' in pl_lower or 'signatory' in pl_lower:
+                hints.append('professional name (First Last)')
+            if 'title' in pl_lower or 'position' in pl_lower or 'designation' in pl_lower:
+                hints.append('business title (Trading Manager, Operations Director)')
+            
+            # Port/location
+            if 'port' in pl_lower or 'loading' in pl_lower or 'discharge' in pl_lower:
+                hints.append('major oil trading port (Rotterdam, Singapore, Fujairah, Houston)')
+            
+            # Product/cargo
+            if 'product' in pl_lower or 'commodity' in pl_lower or 'oil' in pl_lower or 'cargo' in pl_lower:
+                if 'type' in pl_lower or 'name' in pl_lower:
+                    hints.append('oil product name (Crude Oil, ULSD, Jet A-1, Fuel Oil 380)')
+                elif 'quantity' in pl_lower:
+                    hints.append('quantity with unit (e.g., "50,000 MT")')
+            
+            # Vessel data
+            if 'vessel' in pl_lower or 'ship' in pl_lower:
+                if 'name' in pl_lower:
+                    hints.append('vessel name (e.g., "MT Pacific Star", "Nordic Trader")')
+            
+            # Financial
+            if 'price' in pl_lower or 'value' in pl_lower or 'amount' in pl_lower:
+                hints.append('USD amount (e.g., "$1,250,000" or "$85.50 per BBL")')
+            if 'quantity' in pl_lower:
+                hints.append('quantity with unit (e.g., "50,000 MT")')
+            
+            # Address
+            if 'address' in pl_lower and not hints:
+                hints.append('business address with street, city, country')
+            
+            # References
+            if 'ref' in pl_lower or 'number' in pl_lower or 'no' in pl_lower:
+                if 'invoice' in pl_lower:
+                    hints.append('invoice number format (INV-2024-XXXXX)')
+                elif 'contract' in pl_lower:
+                    hints.append('contract reference format (CTR-2024-XXXXX)')
+                else:
+                    hints.append('reference number format (REF-XXXXX)')
+            
+            hint_str = '; '.join(hints) if hints else 'realistic value appropriate for maritime/oil trading document'
+            
+            prompt = f"""Generate a REALISTIC, PROFESSIONAL value for this placeholder in a maritime/oil trading document.
+
+Placeholder: "{placeholder}"
+Expected format: {hint_str}
+Vessel IMO: {imo}
+
+RULES:
+1. Output ONLY the value - no quotes, no explanation, no extra text
+2. Keep it SHORT (max 50 characters for most fields)
+3. Make it REALISTIC and PROFESSIONAL
+4. Use proper formatting (dates: YYYY-MM-DD, phones: +country code, etc.)
+5. For company names: use realistic trading/oil company names
+6. For addresses: include street, city, country
+7. For bank details: use realistic bank names and formats
+
+Output ONLY the value:"""
+            
             r = openai_client.chat.completions.create(
                 model='gpt-4o-mini',
                 messages=[{'role': 'user', 'content': prompt}],
-                max_tokens=60,
-                temperature=0.2,
+                max_tokens=80,
+                temperature=0.3,
             )
             raw = (r.choices[0].message.content or '').strip()
             out = _sanitize_ai_replacement(raw)
@@ -6255,9 +6841,34 @@ async def generate_document(request: Request):
         if template_settings:
             logger.info(f"Template settings keys: {list(template_settings.keys())[:5]}...")  # Show first 5 placeholders
         
-        # Get vessel data from database using the provided IMO
-        logger.info(f"📊 Fetching vessel data from database for IMO: {vessel_imo}")
-        vessel = get_vessel_data(vessel_imo)
+        # ========================================================================
+        # NEW: ID-BASED DATA FETCHING (Payload-Driven)
+        # ========================================================================
+        logger.info("=" * 80)
+        logger.info("🔄 ID-BASED DATA FETCHING")
+        logger.info("=" * 80)
+        
+        # Fetch all entities based on IDs in payload (only if IDs are provided)
+        fetched_entities = {}
+        if SUPABASE_ENABLED and supabase:
+            try:
+                fetched_entities = fetch_all_entities(supabase, body)
+                logger.info(f"✅ Fetched {sum(1 for v in fetched_entities.values() if v is not None)} entities from database")
+                for entity_name, entity_data in fetched_entities.items():
+                    if entity_data:
+                        logger.info(f"   - {entity_name}: {entity_data.get('name', entity_data.get('id', 'Unknown'))}")
+            except Exception as e:
+                logger.error(f"❌ Error in ID-based fetching: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        # Backward compatibility: If vessel_imo provided but no vessel_id, fetch by IMO
+        vessel = fetched_entities.get('vessel')
+        if not vessel and vessel_imo:
+            logger.info(f"📊 Fetching vessel data from database for IMO: {vessel_imo} (backward compatibility)")
+            vessel = get_vessel_data(vessel_imo)
+            if vessel:
+                fetched_entities['vessel'] = vessel
         
         if vessel:
             vessel_name = vessel.get('name', 'Unknown')
@@ -6266,10 +6877,11 @@ async def generate_document(request: Request):
         else:
             logger.error(f"❌ Vessel NOT FOUND in database for IMO: {vessel_imo}")
             vessel = {'imo': vessel_imo, 'name': f'Vessel {vessel_imo}'}
+            fetched_entities['vessel'] = vessel
         
         # CRITICAL: Always ensure the vessel IMO from the page is in the vessel data
-        # This ensures IMO placeholders always get the correct IMO from the vessel page
         vessel['imo'] = vessel_imo
+        fetched_entities['vessel'] = vessel
         logger.info(f"🔑 Set vessel['imo'] = '{vessel_imo}' (from vessel detail page)")
         logger.info(f"   Final vessel data: {dict(list(vessel.items())[:10])}...")  # Show first 10 fields
         
@@ -6306,65 +6918,45 @@ async def generate_document(request: Request):
         for placeholder in placeholders:
             found = False
             setting_key, setting = resolve_placeholder_setting(template_settings, placeholder)
-            # Default: database. Random only when user explicitly chooses it in CMS.
             source = (setting.get('source') or 'database') if setting else 'database'
             
-            # Log all available settings keys for debugging
+            logger.info(f"\n🔍 Processing placeholder: '{placeholder}'")
+            
+            # ====================================================================
+            # STEP 1: PREFIX-BASED ID FETCHING (NEW - MANDATORY)
+            # ====================================================================
+            # Try prefix-based matching first if IDs were provided in payload
+            prefix = identify_prefix(placeholder)
+            if prefix:
+                logger.info(f"  🔑 Prefix identified: '{prefix}' → table: {PREFIX_TO_TABLE.get(prefix)}")
+                prefix_value = get_placeholder_value(placeholder, fetched_entities)
+                if prefix_value is not None:
+                    normalized_value = normalize_replacement_value(prefix_value, placeholder)
+                    if normalized_value:
+                        data_mapping[placeholder] = normalized_value
+                        found = True
+                        logger.info(f"  ✅✅✅ PREFIX-BASED MATCH: {placeholder} = '{normalized_value}'")
+                        matched_placeholders.append(placeholder)
+                        continue
+                else:
+                    logger.info(f"  ⚠️  Prefix '{prefix}' identified but no data found (ID may not be in payload)")
+            else:
+                logger.debug(f"  ℹ️  No prefix identified for '{placeholder}' (will try other methods)")
+            
+            # ====================================================================
+            # STEP 2: CMS SETTINGS (Custom, CSV, Random)
+            # ====================================================================
             if not setting and template_settings:
                 unmatched_placeholders.append(placeholder)
-                logger.warning(f"⚠️  Placeholder '{placeholder}' not found in template_settings")
-                logger.warning(f"   Available settings keys: {list(template_settings.keys())[:20]}...")
-                logger.warning(f"   Trying to match using normalization...")
-                
-                # Try to find similar placeholder names using normalization
-                placeholder_norm = normalise_placeholder_key(placeholder)
-                logger.warning(f"   Normalized placeholder: '{placeholder_norm}'")
-                
-                similar_keys = []
-                for key in template_settings.keys():
-                    key_norm = normalise_placeholder_key(key)
-                    if placeholder_norm == key_norm:
-                        similar_keys.append(f"'{key}' (exact normalized match)")
-                    elif placeholder_norm in key_norm or key_norm in placeholder_norm:
-                        similarity = len(set(placeholder_norm) & set(key_norm)) / max(len(placeholder_norm), len(key_norm))
-                        if similarity > 0.5:
-                            similar_keys.append(f"'{key}' (similarity: {similarity:.2f})")
-                
-                if similar_keys:
-                    logger.warning(f"   Similar keys found: {', '.join(similar_keys[:5])}")
-                else:
-                    logger.warning(f"   No similar keys found. This placeholder will use cascade (DB → CSV → AI).")
+                logger.debug(f"  ⚠️  Placeholder '{placeholder}' not found in template_settings")
             else:
                 matched_placeholders.append(placeholder)
-                logger.debug(f"✅ Found CMS setting for '{placeholder}' (matched key: '{setting_key}')")
+                logger.debug(f"  ✅ Found CMS setting for '{placeholder}' (matched key: '{setting_key}')")
 
-            # Respect editor choice: only try "intelligent DB first" when source is database (or no setting).
-            # When user chose csv / custom / random, never override with DB – use their choice.
-            src = (setting.get('source') or 'database') if setting else 'database'
-            dt = (setting.get('databaseTable') or '').strip() if setting else ''
-            df = (setting.get('databaseField') or '').strip() if setting else ''
-            has_explicit_db = bool(setting and src == 'database' and dt and df)
-            run_intelligent_db_first = (not setting) or (src == 'database')
-
-            if has_explicit_db:
-                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [explicit (table, column) configured; using those first]")
-            elif run_intelligent_db_first:
-                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [source=database; trying intelligent DB match first]")
-                logger.info(f"  🗄️  STEP 1: Trying intelligent database matching (vessels → ports → companies → refineries)...")
-                matched_field, matched_value = _intelligent_field_match_multi_table(placeholder, vessel)
-                if matched_field and matched_value:
-                    if _is_value_wrong_for_placeholder(placeholder, matched_value):
-                        logger.info(f"  ⚠️  Rejecting DB value (wrong type for '{placeholder}'): '{matched_value}'")
-                    else:
-                        data_mapping[placeholder] = _normalize_replacement_value(matched_value, placeholder=placeholder)
-                        found = True
-                        logger.info(f"  ✅✅✅ DATABASE MATCH (intelligent): {placeholder} = '{matched_value}' (from '{matched_field}')")
-                        continue
-                logger.info(f"  ⚠️  No intelligent DB match for '{placeholder}', will try configured source or cascade")
-            else:
-                logger.info(f"\n🔍 Processing placeholder: '{placeholder}' [source={src}; using configured source only, no DB override]")
-
-            if setting:
+            # ====================================================================
+            # STEP 3: CMS SETTINGS PROCESSING (if prefix-based didn't work)
+            # ====================================================================
+            if setting and not found:
                 # Validate setting structure
                 is_valid, validation_errors = validate_placeholder_setting(setting)
                 if not is_valid:
@@ -6380,8 +6972,7 @@ async def generate_document(request: Request):
                 logger.info(f"     randomOption: '{setting.get('randomOption')}'")
 
                 try:
-                    
-                    # STEP 2: If database matching failed, try configured source
+                    # Process based on source type
                     if source == 'custom':
                         custom_value = str(setting.get('customValue', '')).strip()
                         if custom_value:
@@ -6403,54 +6994,60 @@ async def generate_document(request: Request):
                         logger.info(f"  🗄️  DATABASE source configured for '{placeholder}'")
                         logger.info(f"     databaseTable='{database_table}'")
                         logger.info(f"     databaseField='{database_field}'")
-                        logger.info(f"     vessel_imo='{vessel_imo}' (from page)")
-
+                        
                         matched_field = None
                         matched_value = None
-                        source_data = vessel  # Default to vessel data
-
-                        # If database_table is brokers, skip DB lookup and fall through to cascade
-                        if database_table and database_table.lower() == 'brokers':
-                            logger.info(f"  ⚠️  Brokers table excluded from mapping; will use cascade (CSV → AI)")
-                            found = False
-                            source_data = None  # Skip matching block
-                        # If database_table is specified and it's not 'vessels', fetch data from that table
-                        elif database_table and database_table.lower() != 'vessels':
-                            logger.info(f"  🔍 Fetching data from table '{database_table}'...")
+                        source_data = None
+                        
+                        # PREFER: Use fetched_entities if available (ID-based fetching)
+                        if database_table:
+                            table_lower = database_table.lower()
+                            # Map table names to fetched_entities keys
+                            entity_map = {
+                                'vessels': 'vessel',
+                                'ports': 'departure_port',  # Default, but check both
+                                'departure_port': 'departure_port',
+                                'destination_port': 'destination_port',
+                                'companies': 'company',
+                                'buyer_companies': 'buyer',
+                                'seller_companies': 'seller',
+                                'refineries': 'refinery',
+                                'oil_products': 'product',
+                                'broker_profiles': 'broker',
+                                'buyer_company_bank_accounts': 'buyer_bank',
+                                'seller_company_bank_accounts': 'seller_bank',
+                                'deals': 'deal',
+                            }
                             
-                            # Determine lookup field and value based on table
-                            # For now, we'll try common lookup strategies
-                            lookup_field = None
-                            lookup_value = None
+                            entity_key = entity_map.get(table_lower)
+                            if entity_key and entity_key in fetched_entities:
+                                source_data = fetched_entities.get(entity_key)
+                                if source_data:
+                                    logger.info(f"  ✅ Using fetched {entity_key} data (from payload ID)")
                             
-                            if database_table.lower() == 'ports':
-                                # Vessel has departure_port, destination_port (numeric port IDs). Prefer departure, else destination.
-                                lookup_field = 'id'
-                                lookup_value = vessel.get('departure_port')
-                                if lookup_value is None:
-                                    lookup_value = vessel.get('destination_port')
-                            elif database_table.lower() == 'refineries':
-                                lookup_field = 'id'
-                                lookup_value = vessel.get('refinery_id')
-                            elif database_table.lower() == 'companies':
-                                lookup_field = 'id'
-                                lookup_value = vessel.get('company_id') or vessel.get('buyer_company_id') or vessel.get('seller_company_id')
-                            else:
-                                lookup_field = 'id'
-                                lookup_value = vessel.get(f'{database_table.lower()}_id')
-                            
-                            if lookup_field and lookup_value is not None:
-                                source_data = get_data_from_table(database_table, lookup_field, lookup_value)
-                                if not source_data:
-                                    logger.warning(f"  ⚠️  Could not fetch data from {database_table} using {lookup_field}={lookup_value}")
-                                    source_data = vessel  # Fallback to vessel data
-                            else:
-                                logger.warning(f"  ⚠️  Could not determine lookup field/value for table {database_table}, using vessel data")
+                            # Special handling for ports - check both departure and destination
+                            if table_lower == 'ports' and not source_data:
+                                source_data = fetched_entities.get('destination_port')
+                                if source_data:
+                                    logger.info(f"  ✅ Using fetched destination_port data")
+                        
+                        # FALLBACK: If not in fetched_entities, use vessel data or fetch by ID
+                        if not source_data:
+                            if database_table and database_table.lower() == 'brokers':
+                                logger.info(f"  ⚠️  Brokers table excluded from mapping; will use cascade (CSV → AI)")
+                                found = False
+                                source_data = None
+                            elif database_table and database_table.lower() == 'vessels':
                                 source_data = vessel
-                        else:
-                            # Use vessel data (default or explicitly 'vessels' table)
-                            logger.info(f"  📋 Using vessel data (table: {database_table or 'vessels'})")
-                            logger.info(f"  📋 Available fields: {list(vessel.keys())[:20]}...")
+                                logger.info(f"  📋 Using vessel data (table: vessels)")
+                            elif database_table:
+                                # Try to fetch if we have IDs in payload
+                                logger.info(f"  ⚠️  Table '{database_table}' not in fetched_entities, checking payload IDs...")
+                                # This is a fallback - ideally all data should come from fetched_entities
+                                source_data = vessel  # Fallback to vessel
+                            else:
+                                source_data = vessel
+                                logger.info(f"  📋 Using vessel data (default)")
 
                         if source_data is not None and source_data:
                             if database_field:
