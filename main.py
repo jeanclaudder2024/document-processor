@@ -396,57 +396,65 @@ _LEGACY_PLACEHOLDER_MAPPING_RAW = {
     "imo_number": ("vessel", "imo"),
     "flag_state": ("vessel", "flag"),
     "vessel_type": ("vessel", "vessel_type"),
-    "call_sign": ("vessel", "call_sign"),
-    "year_built": ("vessel", "year_built"),
-    "vessel_owner": ("vessel", "owner"),
-    "length_overall": ("vessel", "length_overall"),
-    "vessel_operator": ("vessel", "operator"),
+    "call_sign": ("vessel", "callsign"),
+    "callsign": ("vessel", "callsign"),
+    "year_built": ("vessel", "built"),
+    "built": ("vessel", "built"),
+    "vessel_owner": ("vessel", "owner_name"),
+    "owner": ("vessel", "owner_name"),
+    "owner_name": ("vessel", "owner_name"),
+    "length_overall": ("vessel", "length"),
+    "length": ("vessel", "length"),
+    "vessel_operator": ("vessel", "operator_name"),
+    "operator": ("vessel", "operator_name"),
+    "operator_name": ("vessel", "operator_name"),
     "beam": ("vessel", "beam"),
-    "ism_manager": ("vessel", "ism_manager"),
+    "width": ("vessel", "width"),
     "draft": ("vessel", "draft"),
-    "registry_port": ("vessel", "registry_port"),
+    "draught": ("vessel", "draught"),
     "gross_tonnage": ("vessel", "gross_tonnage"),
     "deadweight": ("vessel", "deadweight"),
-    "net_tonnage": ("vessel", "net_tonnage"),
     "cargo_capacity": ("vessel", "cargo_capacity"),
-    "class_society": ("vessel", "class_society"),
-    "cargo_tanks": ("vessel", "cargo_tanks"),
-    "engine_type": ("vessel", "engine_type"),
-    "pumping_capacity": ("vessel", "pumping_capacity"),
+    "cargo_capacity_bbl": ("vessel", "cargo_capacity_bbl"),
+    "cargo_type": ("vessel", "cargo_type"),
+    "engine_power": ("vessel", "engine_power"),
+    "fuel_consumption": ("vessel", "fuel_consumption"),
     "speed": ("vessel", "speed"),
+    "service_speed": ("vessel", "service_speed"),
+    "mmsi": ("vessel", "mmsi"),
+    "crew_size": ("vessel", "crew_size"),
+    "nav_status": ("vessel", "nav_status"),
+    "course": ("vessel", "course"),
+    "current_region": ("vessel", "current_region"),
     "company_name": ("company", "name"),
     "refinery_name": ("refinery", "name"),
-    "principal_buyer_name": ("buyer", "name"),
-    "principal_buyer_designation": ("buyer", "designation"),
-    "principal_buyer_company": ("buyer", "company_name"),
-    "buyer_logistics_name": ("buyer", "logistics_name"),
-    "buyer_logistics_company": ("buyer", "logistics_company"),
-    "buyer_logistics_designation": ("buyer", "logistics_designation"),
-    "buyer_company_name": ("buyer", "company_name"),
-    "buyer_company_name2": ("buyer", "company_name"),
-    "buyer_attention": ("buyer", "attention"),
-    "buyer_attention2": ("buyer", "attention"),
-    "buyer_designations2": ("buyer", "designation"),
+    "principal_buyer_name": ("buyer", "representative_name"),
+    "principal_buyer_designation": ("buyer", "representative_title"),
+    "principal_buyer_company": ("buyer", "name"),
+    "buyer_company_name": ("buyer", "name"),
+    "buyer_company_name2": ("buyer", "name"),
+    "buyer_attention": ("buyer", "representative_name"),
+    "buyer_attention2": ("buyer", "representative_name"),
+    "buyer_designations2": ("buyer", "representative_title"),
     "buyer_telfax": ("buyer", "phone"),
     "buyer_email": ("buyer", "email"),
-    "buyer_passport_no": ("buyer", "passport_no"),
-    "buyer_bin": ("buyer", "bin"),
-    "seller_name": ("seller", "name"),
-    "seller_designation": ("seller", "designation"),
-    "seller_company": ("seller", "company_name"),
-    "seller_signature": ("seller", "signature"),
+    "buyer_passport_no": ("buyer", "passport_number"),
+    "buyer_bin": ("buyer", "registration_number"),
+    "seller_name": ("seller", "representative_name"),
+    "seller_designation": ("seller", "representative_title"),
+    "seller_company": ("seller", "name"),
     "seller_address": ("seller", "address"),
-    "seller_address2": ("seller", "address2"),
-    "seller_refinery": ("seller", "refinery"),
-    "seller_company_reg": ("seller", "company_reg"),
-    "seller_representative": ("seller", "representative"),
-    "seller_passport_no": ("seller", "passport_no"),
-    "seller_company_no": ("seller", "company_no"),
+    "seller_address2": ("seller", "legal_address"),
+    "seller_refinery": ("seller", "refinery_name"),
+    "seller_company_reg": ("seller", "registration_number"),
+    "seller_representative": ("seller", "representative_name"),
+    "seller_passport_no": ("seller", "passport_number"),
+    "seller_company_no": ("seller", "registration_number"),
     "seller_emails": ("seller", "email"),
-    "product_description": ("product", "description"),
-    "country_of_origin": ("product", "country_of_origin"),
+    "product_description": ("product", "commodity_name"),
+    "country_of_origin": ("product", "origin_country"),
     "quantity": ("deal", "quantity"),
-    "price": ("deal", "price"),
+    "price": ("deal", "price_per_unit"),
     "total_product_value": ("deal", "total_value"),
     "delivery_port": ("destination_port", "name"),
     "address": ("company", "address"),
@@ -454,13 +462,41 @@ _LEGACY_PLACEHOLDER_MAPPING_RAW = {
     "okpo": ("company", "okpo"),
     "tel": ("company", "phone"),
     "email": ("company", "email"),
-    "to": ("buyer", "company_name"),
-    "designations": ("buyer", "designation"),
-    "via": ("broker", "name"),
-    "position": ("deal", "position"),
-    "commercial_invoice_no": ("deal", "invoice_no"),
-    "issued_date": ("deal", "issued_date"),
-    "validity": ("deal", "validity"),
+    "to": ("buyer", "name"),
+    "designations": ("buyer", "representative_title"),
+    "via": ("broker", "full_name"),
+    "broker_name": ("broker", "full_name"),
+    "broker_company": ("broker", "company_name"),
+    "broker_email": ("broker", "email"),
+    "broker_phone": ("broker", "phone"),
+    "position": ("deal", "deal_type"),
+    "deal_type": ("deal", "deal_type"),
+    "deal_status": ("deal", "status"),
+    "deal_date": ("deal", "deal_date"),
+    "deal_value": ("deal", "total_value"),
+    "commission": ("deal", "commission_amount"),
+    "commercial_invoice_no": ("deal", "id"),
+    "issued_date": ("deal", "deal_date"),
+    "validity": ("deal", "deal_validity"),
+    "laycan_start": ("deal", "laycan_start"),
+    "laycan_end": ("deal", "laycan_end"),
+    "density": ("product", "density_kg_m3"),
+    "viscosity": ("product", "viscosity_cst"),
+    "sulfur": ("product", "sulphur_content_ppm"),
+    "sulphur": ("product", "sulphur_content_ppm"),
+    "cetane": ("product", "cetane_number_min"),
+    "color": ("product", "color_max"),
+    "ash": ("product", "ash_content_max"),
+    "oxidation": ("product", "oxidation_stability"),
+    "lubricity": ("product", "lubricity_um"),
+    "distillation": ("product", "distillation_range"),
+    "flash_point": ("product", "flash_point_min_c"),
+    "pour_point": ("product", "pour_point_c"),
+    "cloud_point": ("product", "cloud_point_c"),
+    "grade": ("product", "grade"),
+    "origin": ("product", "origin"),
+    "commodity_name": ("product", "commodity_name"),
+    "commodity_type": ("product", "commodity_type"),
 }
 
 # Create normalized lookup for legacy mappings (removes underscores, dashes, lowercase)
@@ -868,6 +904,73 @@ async def process_document_v2(request: DocumentProcessRequest):
         placeholders = find_placeholders(full_text)
         print(f"\nFound {len(placeholders)} placeholders in template")
         
+        # Detect required IDs based on placeholders and check what's missing
+        required_ids = set()
+        missing_ids = []
+        
+        for placeholder in placeholders:
+            normalized = normalize_placeholder(placeholder)
+            
+            # Check legacy mapping first
+            if normalized in LEGACY_PLACEHOLDER_MAPPING:
+                entity, _ = LEGACY_PLACEHOLDER_MAPPING[normalized]
+                if entity == "vessel" and not request.vessel_id:
+                    required_ids.add("vessel_id")
+                elif entity == "buyer" and not request.buyer_id:
+                    required_ids.add("buyer_id")
+                elif entity == "seller" and not request.seller_id:
+                    required_ids.add("seller_id")
+                elif entity == "product" and not request.product_id:
+                    required_ids.add("product_id")
+                elif entity == "refinery" and not request.refinery_id:
+                    required_ids.add("refinery_id")
+                elif entity == "broker" and not request.broker_id:
+                    required_ids.add("broker_id")
+                elif entity == "deal" and not request.deal_id:
+                    required_ids.add("deal_id")
+                elif entity == "company" and not request.company_id:
+                    required_ids.add("company_id")
+                elif entity == "destination_port" and not request.destination_port_id:
+                    required_ids.add("destination_port_id")
+                elif entity == "departure_port" and not request.departure_port_id:
+                    required_ids.add("departure_port_id")
+            else:
+                # Check prefix-based
+                prefix = identify_prefix(placeholder)
+                if prefix:
+                    if prefix == "vessel_" and not request.vessel_id:
+                        required_ids.add("vessel_id")
+                    elif prefix == "buyer_" and not request.buyer_id:
+                        required_ids.add("buyer_id")
+                    elif prefix == "seller_" and not request.seller_id:
+                        required_ids.add("seller_id")
+                    elif prefix == "product_" and not request.product_id:
+                        required_ids.add("product_id")
+                    elif prefix == "refinery_" and not request.refinery_id:
+                        required_ids.add("refinery_id")
+                    elif prefix == "broker_" and not request.broker_id:
+                        required_ids.add("broker_id")
+                    elif prefix == "deal_" and not request.deal_id:
+                        required_ids.add("deal_id")
+                    elif prefix == "company_" and not request.company_id:
+                        required_ids.add("company_id")
+                    elif prefix == "destination_port_" and not request.destination_port_id:
+                        required_ids.add("destination_port_id")
+                    elif prefix == "departure_port_" and not request.departure_port_id:
+                        required_ids.add("departure_port_id")
+                    elif prefix == "buyer_bank_" and not request.buyer_bank_id and not request.buyer_id:
+                        required_ids.add("buyer_bank_id (or buyer_id)")
+                    elif prefix == "seller_bank_" and not request.seller_bank_id and not request.seller_id:
+                        required_ids.add("seller_bank_id (or seller_id)")
+                    elif prefix == "company_bank_" and not request.company_bank_id and not request.company_id:
+                        required_ids.add("company_bank_id (or company_id)")
+                    elif prefix == "port_" and not request.destination_port_id and not request.departure_port_id:
+                        required_ids.add("port_id (destination_port_id or departure_port_id)")
+        
+        missing_ids = sorted(list(required_ids))
+        if missing_ids:
+            print(f"Warning: Missing IDs for complete replacement: {', '.join(missing_ids)}")
+        
         # Build replacement mapping
         mapping = build_replacement_mapping(data, placeholders)
         print(f"\nBuilt mapping for {len(mapping)} placeholders")
@@ -899,15 +1002,21 @@ async def process_document_v2(request: DocumentProcessRequest):
         content_type = "application/pdf" if output_format.lower() == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename = f"processed_{request.template_name.replace('.docx', '')}.{output_format.lower()}"
         
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Replacement-Rate": f"{replacement_rate:.1f}%",
+            "X-Placeholders-Found": str(len(placeholders)),
+            "X-Placeholders-Replaced": str(len(mapping))
+        }
+        
+        if missing_ids:
+            headers["X-Missing-IDs"] = ",".join(missing_ids)
+            headers["X-Warning"] = f"Missing {len(missing_ids)} IDs for complete placeholder replacement"
+        
         return Response(
             content=content,
             media_type=content_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "X-Replacement-Rate": f"{replacement_rate:.1f}%",
-                "X-Placeholders-Found": str(len(placeholders)),
-                "X-Placeholders-Replaced": str(len(mapping))
-            }
+            headers=headers
         )
         
     except HTTPException:
