@@ -5181,37 +5181,90 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'via' in pl or 'carrier' in pl:
         return random.choice(['Maersk', 'MSC', 'CMA CGM', 'COSCO'])
 
-    # NEVER use generic fallbacks like "To be confirmed" - always generate realistic data
-    # Analyze placeholder and generate appropriate realistic value
+    # NEVER use generic fallbacks - analyze placeholder and generate related data
     
-    # Generic text fields - use realistic company/person/location names
+    # Payment/Commercial terms
+    if 'payment' in pl or 'terms' in pl:
+        if 'payment' in pl:
+            return random.choice(['LC at sight', 'TT 30 days', 'CAD', 'DLC confirmed'])
+        return random.choice(['FOB', 'CIF', 'CFR', 'Ex-works'])
+    
+    # Inspection/Survey/Testing
+    if 'inspection' in pl or 'survey' in pl or 'testing' in pl:
+        return random.choice(['SGS inspection', 'Independent surveyor', 'As per industry standards'])
+    
+    # Insurance/Guarantee/Bond
+    if 'insurance' in pl or 'guarantee' in pl or 'bond' in pl:
+        return random.choice(['Buyer responsibility', 'As per contract', 'Standard marine insurance'])
+    
+    # Clauses/Provisions/Conditions
+    if 'clause' in pl or 'provision' in pl or 'condition' in pl or 'term' in pl:
+        return 'As per standard maritime contract terms'
+    
+    # Limitations/Restrictions
+    if 'limitation' in pl or 'restriction' in pl:
+        return 'None'
+    
+    # Documents/Papers/Certificates
+    if 'document' in pl or 'certificate' in pl or 'paper' in pl:
+        return random.choice(['Standard shipping documents', 'As per contract schedule', 'Commercial invoice, BL, COO'])
+    
+    # Witness/Notary
+    if 'witness' in pl or 'notary' in pl:
+        if 'name' in pl:
+            return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan'])
+        if 'date' in pl:
+            from datetime import timedelta
+            return (datetime.now() - timedelta(days=random.randint(1, 30))).strftime('%Y-%m-%d')
+        return 'Present'
+    
+    # Signature
+    if 'signature' in pl or 'signed' in pl:
+        if 'date' in pl:
+            from datetime import timedelta
+            return (datetime.now() - timedelta(days=random.randint(0, 15))).strftime('%Y-%m-%d')
+        return 'Signed Electronically'
+    
+    # Name fields
     if 'name' in pl:
+        if 'company' in pl or 'firm' in pl:
+            return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
         return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei'])
     
-    # Any date field not caught above
-    if 'date' in pl or 'time' in pl or 'expir' in pl:
+    # Date fields
+    if 'date' in pl or 'expir' in pl or 'effective' in pl:
         from datetime import timedelta
         return (datetime.now() + timedelta(days=random.randint(-30, 90))).strftime('%Y-%m-%d')
     
-    # Any location/place field
+    # Location/Place/Venue fields
     if 'location' in pl or 'place' in pl or 'venue' in pl or 'city' in pl:
-        return random.choice(['Singapore', 'London', 'Dubai', 'Geneva', 'Hong Kong'])
+        return random.choice(['Singapore', 'London', 'Dubai', 'Geneva'])
     
-    # Any description/specification/details field
-    if 'description' in pl or 'details' in pl or 'specification' in pl or 'notes' in pl:
+    # Description/Specification/Details/Notes
+    if 'description' in pl or 'specification' in pl or 'details' in pl or 'notes' in pl or 'remark' in pl:
         return 'As per standard maritime specifications'
     
-    # Any number/code/reference not caught above
+    # Numbers/Codes/References/IDs
     if 'number' in pl or 'no' in pl or 'code' in pl or 'ref' in pl or 'id' in pl:
         return f"REF-{random.randint(100000, 999999)}"
     
-    # Generic catch-all: return a realistic placeholder value (not "TBN" or "To be confirmed")
-    return random.choice([
-        f"REF-{random.randint(100000, 999999)}",
-        random.choice(['Singapore', 'London', 'Dubai']),
-        random.choice(['John Smith', 'Operations Manager']),
-        'As per contract specifications'
-    ])
+    # Final catch-all: analyze placeholder words and make best guess
+    # Extract key words from placeholder
+    words = re.findall(r'[a-z]+', pl)
+    if words:
+        # Check for specific keywords and generate appropriate data
+        for word in words:
+            if word in ['duration', 'period', 'validity']:
+                return f"{random.randint(30, 180)} days"
+            if word in ['method', 'mode', 'type', 'kind']:
+                return random.choice(['Standard', 'Express', 'As specified'])
+            if word in ['officer', 'contact', 'representative']:
+                return random.choice(['John Smith', 'Operations Manager'])
+            if word in ['status', 'state', 'condition']:
+                return random.choice(['Active', 'Confirmed', 'Pending'])
+    
+    # Ultimate fallback: Use placeholder name as hint for realistic generation
+    return f"As per contract ({placeholder[:30]})"
 
 
 def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
