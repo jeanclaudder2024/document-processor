@@ -1352,8 +1352,9 @@ _UPLOAD_FIELD_MAPPINGS: Dict[str, Tuple[str, str]] = {
     'cargoquantity': ('vessels', 'cargo_quantity'), 'cargo_quantity': ('vessels', 'cargo_quantity'),
     'quantity': ('vessels', 'quantity'),
     # ports (common placeholders)
-    'portname': ('ports', 'name'), 'port_name': ('ports', 'name'), 'loadingportname': ('ports', 'name'), 'departureport': ('ports', 'name'),
-    'destinationport': ('ports', 'name'), 'dischargeport': ('ports', 'name'),
+    'portname': ('ports', 'name'), 'port_name': ('ports', 'name'), 'loadingportname': ('ports', 'name'), 'portofloading': ('ports', 'name'),
+    'portofdischarge': ('ports', 'name'), 'departureport': ('ports', 'name'),
+    'destinationport': ('ports', 'name'), 'dischargeport': ('ports', 'name'), 'portloading': ('ports', 'name'), 'portdischarge': ('ports', 'name'),
     'portcountry': ('ports', 'country'), 'port_country': ('ports', 'country'), 'portcity': ('ports', 'city'), 'port_city': ('ports', 'city'),
     # companies
     'buyercompany': ('companies', 'name'), 'buyer_company': ('companies', 'name'), 'sellercompany': ('companies', 'name'), 'seller_company': ('companies', 'name'),
@@ -4790,9 +4791,9 @@ def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tupl
     # Step 2: Build merged "related data" dict from ports, companies, refineries (no brokers)
     merged: Dict[str, any] = dict(vessel)
     try:
-        # Ports: departure_port, destination_port (may be IDs)
+        # Ports: departure_port, destination_port, loading_port, discharge_port (may be IDs)
         for port_key, prefix in [('departure_port', 'departure_port_'), ('destination_port', 'destination_port_'),
-                                 ('loading_port', 'loading_port_')]:
+                                 ('loading_port', 'loading_port_'), ('discharge_port', 'discharge_port_')]:
             port_id = vessel.get(port_key)
             if port_id is not None:
                 port_data = get_data_from_table('ports', 'id', port_id)
@@ -4804,9 +4805,13 @@ def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tupl
         # Loading port often same as departure - add alias if missing
         if 'loading_port_name' not in merged and 'departure_port_name' in merged:
             merged['loading_port_name'] = merged['departure_port_name']
-        # Generic port_name for "Port" / "Port Name" placeholders
+        # Generic port_name, port_loading, port_discharge for template placeholders
         if 'port_name' not in merged and merged.get('departure_port_name'):
             merged['port_name'] = merged['departure_port_name']
+        if 'port_loading' not in merged and merged.get('loading_port_name'):
+            merged['port_loading'] = merged['loading_port_name']
+        if 'port_discharge' not in merged and merged.get('discharge_port_name'):
+            merged['port_discharge'] = merged['discharge_port_name']
         # Company
         company_id = vessel.get('company_id') or vessel.get('buyer_company_id') or vessel.get('seller_company_id')
         if company_id is not None:
@@ -4836,7 +4841,8 @@ def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tupl
 
 
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
-    """Generate realistic random data for placeholders (maritime/oil shipping context)."""
+    """Generate realistic random data for placeholders (maritime/oil shipping context).
+    Returns SHORT, SPECIFIC values matching placeholder type - no long text, no unrelated content."""
     import random
     import hashlib
 
@@ -4846,85 +4852,120 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
 
     pl = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
 
-    # Dates
-    if 'date' in pl:
+    # Dates - always short format
+    if 'date' in pl or 'issue' in pl and 'date' in pl or 'expir' in pl or 'signature' in pl and 'date' in pl:
         from datetime import timedelta
-        d = random.randint(1, 60)
+        d = random.randint(1, 90)
         return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
-    if 'result' in pl:
-        return random.choice(['0.01%', '0.15%', '0.23%', '0.45%', '0.67%', '1.20%', '2.34%', '0.89%', '0.12%'])
+
+    # Bank / finance
+    if 'swift' in pl or 'bic' in pl:
+        return f"ABCDUS2S{random.randint(100,999)}"
+    if 'account' in pl or 'acct' in pl:
+        return f"ACC-{random.randint(1000000000, 9999999999)}"
+    if 'bank' in pl and ('name' in pl or 'officer' not in pl):
+        return random.choice(['HSBC Singapore', 'Standard Chartered', 'Deutsche Bank', 'ING Commercial Banking', 'BNP Paribas', 'Citibank'])
+    if 'bank' in pl and 'address' in pl:
+        return random.choice(['25 Raffles Place, Singapore 048619', '1 HarbourFront Place, Singapore 098633'])
+
+    # Quality / spec values (short numbers)
+    if 'result' in pl or 'max' in pl or 'min' in pl:
+        if 'density' in pl or 'api' in pl:
+            return f"{random.uniform(0.80, 0.90):.3f}"
+        if 'viscosity' in pl:
+            return f"{random.uniform(1.0, 6.0):.2f} cSt"
+        if 'sulfur' in pl or 'sulphur' in pl:
+            return f"{random.uniform(0.001, 0.5):.3f}%"
+        if 'ash' in pl:
+            return f"{random.uniform(0.01, 0.1):.3f}%"
+        if 'acid' in pl:
+            return f"{random.uniform(0.01, 0.5):.2f} mg KOH/g"
+        if 'water' in pl:
+            return f"{random.uniform(0.01, 0.5):.2f}%"
+        if 'cloud' in pl or 'cfpp' in pl or 'pour' in pl:
+            return f"{random.randint(-15, 25)}°C"
+        if 'flash' in pl:
+            return f"{random.randint(40, 100)}°C"
+        if 'color' in pl or 'colour' in pl:
+            return f"{random.randint(0, 3)}"
+        if 'cetane' in pl:
+            return f"{random.randint(45, 60)}"
+        if 'distill' in pl or 'dist' in pl:
+            return f"{random.randint(180, 360)}°C"
+        return f"{random.uniform(0.01, 2.0):.2f}"
 
     # Contact
     if 'email' in pl:
-        domains = ['maritimetrading.com', 'oceanfreight.co', 'petrodealhub.com', 'globaltankers.com', 'harborlogistics.com']
-        return f"contact{random.randint(1,999)}@{random.choice(domains)}"
-    if 'phone' in pl or 'tel' in pl:
-        return f"+{random.choice([1,44,31,49,33,971,65])} {random.randint(100,999)} {random.randint(100000,999999)}"
+        domains = ['maritimetrading.com', 'oceanfreight.co', 'petrodealhub.com']
+        return f"contact{random.randint(1,99)}@{random.choice(domains)}"
+    if 'phone' in pl or 'tel' in pl or 'mobile' in pl or 'fax' in pl:
+        return f"+{random.choice([1,44,31,49,971])} {random.randint(100,999)} {random.randint(1000000,9999999)}"
 
-    # References
-    if 'ref' in pl or ('number' in pl and 'phone' not in pl):
-        return f"REF-{random.randint(100000,999999)}"
-
-    # Maritime/oil – companies, ports, products, persons
-    if 'company' in pl or 'firm' in pl or 'seller' in pl or 'buyer' in pl:
-        companies = [
-            'Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services',
-            'International Vessel Corp', 'Gulf Energy Trading', 'Nordic Tanker Co', 'Pacific Petrochemicals',
-            'Harbor Logistics AG', 'Blue Ocean Freight Ltd', 'Saudi Aramco Trading', 'Shell Maritime'
-        ]
-        return random.choice(companies)
-    if 'address' in pl:
-        addrs = [
-            '123 Maritime Street, London, UK', '456 Harbor Road, Singapore', '789 Port Avenue, Dubai, UAE',
-            '321 Dock Lane, Rotterdam, NL', '55 Raffles Place, Singapore 048619', 'Level 12, One Raffles Quay, Singapore'
-        ]
-        return random.choice(addrs)
-    if 'port' in pl or 'harbor' in pl or 'loading' in pl or 'discharge' in pl:
-        ports = ['Rotterdam', 'Singapore', 'Fujairah', 'Houston', 'Antwerp', 'Hamburg', 'Ras Tanura', 'Yanbu', 'Jebel Ali', 'Southampton']
-        return random.choice(ports)
-    if 'product' in pl or 'cargo' in pl or 'oil' in pl or 'grade' in pl:
-        products = ['Crude Oil', 'Diesel', 'Jet A-1', 'Fuel Oil 380', 'Gasoline', 'LNG', 'LPG', 'Brent Blend', 'Murban Crude']
+    # Title/designation - BEFORE name (representative_title -> title, not name)
+    if 'designation' in pl or 'position' in pl or 'title' in pl or 'role' in pl:
+        return random.choice(['Operations Manager', 'Chartering Manager', 'Trader', 'Shipping Coordinator'])
+    # Product/commodity - BEFORE name (commodity_name -> product, not person)
+    products = ['Crude Oil', 'Diesel', 'Jet A-1', 'Fuel Oil 380', 'Gasoline', 'Brent Blend', 'Murban Crude']
+    if 'product' in pl or 'oil' in pl or 'grade' in pl or 'commodity' in pl or ('cargo' in pl and 'quantity' not in pl and 'capacity' not in pl and 'tank' not in pl):
         return random.choice(products)
-    if 'person' in pl or 'contact' in pl or 'name' in pl:
-        names = ['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown', 'James Wilson', 'Elena Petrova']
+    # Person names - short
+    names = ['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown']
+    if 'person' in pl or 'representative' in pl or 'signatory' in pl or 'witness' in pl or 'officer' in pl or ('name' in pl and 'company' not in pl and 'commodity' not in pl):
+        if 'company' in pl:
+            return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
         return random.choice(names)
 
-    # Numbers
-    if 'value' in pl or 'amount' in pl or 'price' in pl:
-        return f"${random.randint(1000, 999999):,}"
-    if 'percent' in pl or 'percentage' in pl:
-        return f"{random.uniform(0.1, 99.9):.2f}%"
-    if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl:
+    # Companies / buyer / seller
+    companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services', 'Gulf Energy Trading', 'Nordic Tanker Co']
+    if 'company' in pl or 'seller' in pl or 'buyer' in pl and 'name' in pl:
+        return random.choice(companies)
+
+    # Address
+    if 'address' in pl:
+        return random.choice(['123 Maritime St, London', '456 Harbour Rd, Singapore', '55 Raffles Place, Singapore'])
+
+    # Numbers / amounts - BEFORE product (cargo_quantity -> MT, not product name)
+    if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl or 'weight' in pl:
         return f"{random.randint(1000, 50000):,} MT"
-    if 'tonnage' in pl:
+
+    # Ports / locations
+    ports = ['Rotterdam', 'Singapore', 'Fujairah', 'Houston', 'Antwerp', 'Jebel Ali', 'Ras Tanura']
+    if 'port' in pl or 'harbor' in pl or 'loading' in pl or 'discharge' in pl or 'origin' in pl or 'destination' in pl:
+        return random.choice(ports)
+    if 'country' in pl:
+        return random.choice(['Singapore', 'UAE', 'Netherlands', 'USA', 'UK', 'Saudi Arabia'])
+
+    if 'value' in pl or 'amount' in pl or 'price' in pl or 'total' in pl:
+        return f"${random.randint(10000, 999999):,}"
+    if 'percent' in pl or 'percentage' in pl or 'tolerance' in pl:
+        return f"{random.uniform(0.1, 5.0):.2f}%"
+    if 'tonnage' in pl or 'capacity' in pl:
         return f"{random.randint(5000, 120000):,}"
-    if 'capacity' in pl or 'pumping' in pl or 'm³' in pl or 'hr' in pl:
-        return f"{random.randint(500, 5000)} m³/hr" if 'pump' in pl or 'm³' in pl else f"{random.randint(1000, 50000):,}"
+    if 'pumping' in pl:
+        return f"{random.randint(500, 3000)} m³/hr"
 
-    # Vessel / maritime specifics
-    if 'ism' in pl or 'manager' in pl:
-        return random.choice(['BP Ship Management', 'V.Ships', 'Anglo-Eastern', 'Synergy Marine', 'Fleet Management Ltd', 'Wilhelmsen Ship Management', 'Columbia Shipmanagement'])
-    if 'classification' in pl or 'class' in pl or 'society' in pl:
-        return random.choice(["Lloyd's Register", 'DNV', 'ABS', 'Bureau Veritas', 'ClassNK', 'RINA', 'KR'])
-
-    # Via / carrier / route
-    if 'via' in pl or 'carrier' in pl or 'route' in pl:
-        return random.choice(['MSC', 'Maersk', 'CMA CGM', 'Hapag-Lloyd', 'Evergreen', 'COSCO', 'ONE', 'NYK'])
-    # Position / title
-    if 'position' in pl or 'title' in pl or 'role' in pl:
-        return random.choice(['Operations Manager', 'Chartering Manager', 'Vessel Operator', 'Trader', 'Shipping Coordinator', 'Port Captain'])
-    # BIN / OKPO / code / id (generic)
-    if 'bin' in pl or 'okpo' in pl or ('code' in pl and 'via' not in pl) or ('id' in pl and 'imo' not in pl and 'vessel' not in pl):
-        return f"{random.choice(['BIN', 'OKPO', 'ID'])}-{random.randint(100000, 999999)}"
-    # Generic code/number
-    if 'number' in pl or 'no' in pl or 'num' in pl:
+    # References / IDs
+    if 'ref' in pl or 'number' in pl or 'no' in pl and 'phone' not in pl:
         return f"REF-{random.randint(100000, 999999)}"
+    if 'bin' in pl or 'okpo' in pl:
+        return f"{random.randint(100000000, 999999999)}"
 
-    # Catch-all: always return realistic data, never "Value-XXXX" or "—"
-    fallbacks = [
-        'As per contract', 'To be confirmed', 'See attached', 'TBN', 'N/A',
-        'Per agreement', 'As per specification', 'To be advised', 'Refer to annex',
-    ]
+    # Legal / contract
+    if 'arbitration' in pl or 'governing' in pl or 'law' in pl:
+        return random.choice(['Singapore', 'London', 'Dubai', 'Geneva'])
+    if 'registration' in pl and 'number' in pl:
+        return f"REG-{random.randint(100000, 999999)}"
+
+    # Vessel / maritime
+    if 'ism' in pl or 'manager' in pl:
+        return random.choice(['V.Ships', 'Anglo-Eastern', 'Synergy Marine', 'Fleet Management'])
+    if 'class' in pl or 'society' in pl or 'classification' in pl:
+        return random.choice(["Lloyd's Register", 'DNV', 'ABS', 'Bureau Veritas'])
+    if 'via' in pl or 'carrier' in pl:
+        return random.choice(['Maersk', 'MSC', 'CMA CGM', 'COSCO'])
+
+    # Short fallbacks - never long text
+    fallbacks = ['TBN', 'N/A', 'As per contract', 'To be confirmed', 'See annex']
     return random.choice(fallbacks)
 
 
@@ -5035,7 +5076,7 @@ def _sanitize_ai_replacement(text: str) -> str:
                 break
         if not hit:
             break
-    if not first or len(first) > 300:
+    if not first or len(first) > 120:
         return ""
     # Reject log-like / debug output (avoid putting logger text into documents)
     lower = first.lower()
@@ -5046,7 +5087,7 @@ def _sanitize_ai_replacement(text: str) -> str:
     for bad in ("✅", "⚠️", "❌", "📋", "🔍"):
         if bad in first:
             return ""
-    return first[:300]
+    return first[:100]
 
 
 def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str = None) -> str:
@@ -5056,26 +5097,28 @@ def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str =
             imo = (vessel or {}).get('imo') or vessel_imo or 'N/A'
             pl_lower = (placeholder or '').lower()
             hints = []
-            if 'date' in pl_lower or 'time' in pl_lower: hints.append('date')
-            if 'email' in pl_lower or 'mail' in pl_lower: hints.append('email')
-            if 'company' in pl_lower or 'firm' in pl_lower: hints.append('company name')
-            if 'port' in pl_lower or 'harbor' in pl_lower: hints.append('port name')
-            if 'quantity' in pl_lower or 'amount' in pl_lower or 'qty' in pl_lower: hints.append('quantity/number')
+            if 'date' in pl_lower: hints.append('date YYYY-MM-DD')
+            if 'email' in pl_lower: hints.append('email')
+            if 'company' in pl_lower or 'buyer' in pl_lower or 'seller' in pl_lower: hints.append('company name')
+            if 'port' in pl_lower or 'loading' in pl_lower or 'discharge' in pl_lower: hints.append('port name')
+            if 'quantity' in pl_lower or 'amount' in pl_lower: hints.append('number with unit')
             if 'phone' in pl_lower or 'tel' in pl_lower: hints.append('phone')
-            if 'address' in pl_lower: hints.append('address')
-            if 'name' in pl_lower and 'company' not in pl_lower: hints.append('person/entity name')
-            hint_str = ', '.join(hints) if hints else 'general value'
+            if 'address' in pl_lower: hints.append('short address')
+            if 'name' in pl_lower and 'company' not in pl_lower: hints.append('person name')
+            if 'bank' in pl_lower or 'swift' in pl_lower: hints.append('bank/SWIFT')
+            if 'price' in pl_lower or 'value' in pl_lower: hints.append('currency amount')
+            hint_str = ', '.join(hints) if hints else 'short value'
             prompt = (
-                f"Generate ONE realistic value for placeholder '{placeholder}' "
-                f"in maritime/oil shipping. The placeholder suggests: {hint_str}. "
-                f"Vessel IMO: {imo}. "
-                f"Reply with ONLY the value, no quotes, no explanation, no punctuation after."
+                f"Placeholder: '{placeholder}' (maritime/oil document). Type: {hint_str}. "
+                f"Output ONLY the value - one short phrase or number, max 50 chars. "
+                f"No quotes, no explanation, no sentences. Example: buyer_name -> 'John Smith'. "
+                f"Vessel IMO: {imo}."
             )
             r = openai_client.chat.completions.create(
                 model='gpt-4o-mini',
                 messages=[{'role': 'user', 'content': prompt}],
-                max_tokens=80,
-                temperature=0.3,
+                max_tokens=60,
+                temperature=0.2,
             )
             raw = (r.choices[0].message.content or '').strip()
             out = _sanitize_ai_replacement(raw)
@@ -5193,8 +5236,8 @@ EMPTY_PLACEHOLDER = "—"
 
 
 def _normalize_replacement_value(val, _field_name: Optional[str] = None) -> str:
-    """Normalize a value for placeholder replacement. None/empty/'None'/'null' -> '—'.
-    Reject log-like strings (e.g. 'Mapping:', '-> ', emoji) so they never appear in documents."""
+    """Normalize a value for placeholder replacement. None/empty -> '—'.
+    Reject log-like, verbose, or unrelated text. Cap at 150 chars for document fields."""
     if val is None:
         return EMPTY_PLACEHOLDER
     s = str(val).strip()
@@ -5206,7 +5249,10 @@ def _normalize_replacement_value(val, _field_name: Optional[str] = None) -> str:
     for bad in ("✅", "⚠️", "❌", "📋", "🔍"):
         if bad in s:
             return EMPTY_PLACEHOLDER
-    return s
+    # Cap length - placeholders need short values, not paragraphs
+    if len(s) > 150:
+        s = s[:147].rsplit(' ', 1)[0] + "..." if ' ' in s[:147] else s[:147]
+    return s[:150]
 
 
 def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
@@ -6105,23 +6151,31 @@ async def generate_document(request: Request):
         if not template_display_name:
             template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
         
-        # Flow: Template → PDF → images → new PDF (image-based) → download PDF
+        # Flow: Template → PDF → [optional: images→PDF] → download
+        # Image conversion is slow (30+ sec for multi-page); use fast_pdf=true to skip for quicker downloads
+        fast_pdf = body.get('fast_pdf', True)  # Default True = skip image conversion for speed
         if pdf_path.endswith('.pdf') and os.path.exists(pdf_path):
             base_filename = f"{template_display_name}_{vessel_imo}"
-            logger.info(f"Converting PDF to images then to PDF for download: {base_filename}")
-            try:
-                file_content = convert_pdf_to_images_then_to_pdf(pdf_path)
-                media_type = "application/pdf"
-                filename = f"{template_display_name}_{vessel_imo}.pdf"
-                logger.info(f"Successfully created image-based PDF: {filename} ({len(file_content)} bytes)")
-            except HTTPException:
-                raise
-            except Exception as conv_error:
-                logger.error(f"Failed to convert PDF to images then PDF: {conv_error}", exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to convert PDF: {str(conv_error)}. Please try again."
-                )
+            if fast_pdf:
+                # Direct PDF - faster download (skip slow image rasterization)
+                with open(pdf_path, 'rb') as f:
+                    file_content = f.read()
+                logger.info(f"Using direct PDF for download: {base_filename} ({len(file_content)} bytes)")
+            else:
+                logger.info(f"Converting PDF to images then to PDF for download: {base_filename}")
+                try:
+                    file_content = convert_pdf_to_images_then_to_pdf(pdf_path)
+                    logger.info(f"Successfully created image-based PDF: {base_filename} ({len(file_content)} bytes)")
+                except HTTPException:
+                    raise
+                except Exception as conv_error:
+                    logger.error(f"Failed to convert PDF to images then PDF: {conv_error}", exc_info=True)
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to convert PDF: {str(conv_error)}. Please try again."
+                    )
+            media_type = "application/pdf"
+            filename = f"{template_display_name}_{vessel_imo}.pdf"
         else:
             # If no PDF, return DOCX
             with open(processed_docx, 'rb') as f:
