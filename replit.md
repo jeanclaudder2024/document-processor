@@ -31,7 +31,16 @@ python main.py
 ```
 
 ## External Services
-- **Supabase**: Used for vessel, port, company, and refinery data storage
+- **Supabase**: Used for vessel, port, company, and refinery data storage.
+  - **URL**: `https://ozjhdxvwqbzcvcywhwjg.supabase.co`
+
+## Database Table Structure
+The system uses the following tables to map data to your documents:
+- **`vessels`**: Main table (IMO, Name, Flag, Type)
+- **`ports`**: Linked via `loading_port_id` and `destination_port_id`
+- **`companies`**: Linked via `owner_id` and `operator_id`
+- **`refineries`**: Linked via `refinery_id`
 
 ## Recent Changes
 - 2026-01-31: Initial Replit setup, configured to run on port 5000
+- 2026-01-31: Added detailed database table and placeholder mapping documentation
