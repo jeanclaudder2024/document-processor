@@ -1075,13 +1075,12 @@ async def get_database_tables(request: Request):
     """Get list of all available database tables that can be used as data sources"""
     # Allow unauthenticated access for CMS editor
     try:
-        # List of available tables with their display names
+        # List of available tables with their display names (brokers excluded - not used for mapping)
         tables = [
             {'name': 'vessels', 'label': 'Vessels', 'description': 'Vessel information and specifications'},
             {'name': 'ports', 'label': 'Ports', 'description': 'Port information and details'},
             {'name': 'refineries', 'label': 'Refineries', 'description': 'Refinery information'},
             {'name': 'companies', 'label': 'Companies', 'description': 'Company information'},
-            {'name': 'brokers', 'label': 'Brokers', 'description': 'Broker information'},
         ]
         
         # If Supabase is enabled, we could dynamically fetch table names
@@ -1328,23 +1327,36 @@ def _build_csv_schema_for_mapping() -> Dict[str, List[str]]:
 
 
 # Rule-based placeholder -> (table, field) for upload-time mapping when OpenAI is unavailable.
-# Most mappings target vessels; use vessels table. Field must exist in _get_predefined_table_columns('vessels').
-_UPLOAD_FIELD_MAPPINGS: Dict[str, str] = {
-    'imonumber': 'imo', 'imo_number': 'imo', 'imono': 'imo', 'imo': 'imo',
-    'vesselname': 'name', 'vessel_name': 'name', 'shipname': 'name', 'name': 'name',
-    'vesseltype': 'vessel_type', 'vessel_type': 'vessel_type', 'shiptype': 'vessel_type',
-    'flagstate': 'flag', 'flag_state': 'flag', 'flag': 'flag',
-    'mmsi': 'mmsi', 'mmsinumber': 'mmsi',
-    'lengthoverall': 'length', 'length_overall': 'length', 'loa': 'length', 'length': 'length',
-    'width': 'width', 'beam': 'beam', 'breadth': 'beam', 'draft': 'draft',
-    'deadweight': 'deadweight', 'dwt': 'deadweight', 'grosstonnage': 'gross_tonnage', 'gross_tonnage': 'gross_tonnage',
-    'ownername': 'owner_name', 'owner_name': 'owner_name', 'vesselowner': 'owner_name', 'owner': 'owner_name',
-    'operatorname': 'operator_name', 'operator_name': 'operator_name', 'vesseloperator': 'operator_name',
-    'callsign': 'callsign', 'built': 'built', 'yearbuilt': 'built', 'year_built': 'built',
-    'cargocapacity': 'cargo_capacity', 'cargo_capacity': 'cargo_capacity',
-    'currentport': 'currentport', 'loadingport': 'loading_port', 'loading_port': 'loading_port',
-    'port': 'currentport', 'country': 'flag', 'email': 'email', 'phone': 'phone',
-    'address': 'address', 'companyname': 'owner_name', 'company_name': 'owner_name',
+# Extended for vessels, ports, companies. Field must exist in predefined columns.
+_UPLOAD_FIELD_MAPPINGS: Dict[str, Tuple[str, str]] = {
+    # vessels
+    'imonumber': ('vessels', 'imo'), 'imo_number': ('vessels', 'imo'), 'imono': ('vessels', 'imo'), 'imo': ('vessels', 'imo'),
+    'vesselname': ('vessels', 'name'), 'vessel_name': ('vessels', 'name'), 'shipname': ('vessels', 'name'), 'name': ('vessels', 'name'),
+    'vesseltype': ('vessels', 'vessel_type'), 'vessel_type': ('vessels', 'vessel_type'), 'shiptype': ('vessels', 'vessel_type'),
+    'flagstate': ('vessels', 'flag'), 'flag_state': ('vessels', 'flag'), 'flag': ('vessels', 'flag'),
+    'mmsi': ('vessels', 'mmsi'), 'mmsinumber': ('vessels', 'mmsi'),
+    'lengthoverall': ('vessels', 'length'), 'length_overall': ('vessels', 'length'), 'loa': ('vessels', 'length'), 'length': ('vessels', 'length'),
+    'width': ('vessels', 'width'), 'beam': ('vessels', 'beam'), 'breadth': ('vessels', 'beam'), 'draft': ('vessels', 'draft'),
+    'deadweight': ('vessels', 'deadweight'), 'dwt': ('vessels', 'deadweight'), 'grosstonnage': ('vessels', 'gross_tonnage'), 'gross_tonnage': ('vessels', 'gross_tonnage'),
+    'ownername': ('vessels', 'owner_name'), 'owner_name': ('vessels', 'owner_name'), 'vesselowner': ('vessels', 'owner_name'), 'owner': ('vessels', 'owner_name'),
+    'operatorname': ('vessels', 'operator_name'), 'operator_name': ('vessels', 'operator_name'), 'vesseloperator': ('vessels', 'operator_name'),
+    'callsign': ('vessels', 'callsign'), 'built': ('vessels', 'built'), 'yearbuilt': ('vessels', 'built'), 'year_built': ('vessels', 'built'),
+    'cargocapacity': ('vessels', 'cargo_capacity'), 'cargo_capacity': ('vessels', 'cargo_capacity'),
+    'currentport': ('vessels', 'currentport'), 'loadingport': ('vessels', 'loading_port'), 'loading_port': ('vessels', 'loading_port'),
+    'port': ('vessels', 'currentport'), 'country': ('vessels', 'flag'), 'email': ('vessels', 'email'), 'phone': ('vessels', 'phone'),
+    'address': ('vessels', 'address'), 'companyname': ('vessels', 'owner_name'), 'company_name': ('vessels', 'owner_name'),
+    'buyername': ('vessels', 'buyer_name'), 'buyer_name': ('vessels', 'buyer_name'),
+    'sellername': ('vessels', 'seller_name'), 'seller_name': ('vessels', 'seller_name'),
+    'cargotype': ('vessels', 'cargo_type'), 'cargo_type': ('vessels', 'cargo_type'),
+    'oiltype': ('vessels', 'oil_type'), 'oil_type': ('vessels', 'oil_type'),
+    'cargoquantity': ('vessels', 'cargo_quantity'), 'cargo_quantity': ('vessels', 'cargo_quantity'),
+    'quantity': ('vessels', 'quantity'),
+    # ports (common placeholders)
+    'portname': ('ports', 'name'), 'port_name': ('ports', 'name'), 'loadingportname': ('ports', 'name'), 'departureport': ('ports', 'name'),
+    'destinationport': ('ports', 'name'), 'dischargeport': ('ports', 'name'),
+    'portcountry': ('ports', 'country'), 'port_country': ('ports', 'country'), 'portcity': ('ports', 'city'), 'port_city': ('ports', 'city'),
+    # companies
+    'buyercompany': ('companies', 'name'), 'buyer_company': ('companies', 'name'), 'sellercompany': ('companies', 'name'), 'seller_company': ('companies', 'name'),
 }
 
 
@@ -1357,20 +1369,21 @@ def _ai_suggest_placeholder_mapping(
     Returns {placeholder: (table, column)}. Skips placeholders with no good match.
     """
     result: Dict[str, Tuple[str, str]] = {}
-    vessels_cols = set(schema.get('vessels') or [])
 
     def normalize_key(s: str) -> str:
         return re.sub(r'[^a-z0-9]', '', (s or '').lower())
 
-    # Rule-based fallback: map to (vessels, field) using _UPLOAD_FIELD_MAPPINGS
+    # Rule-based fallback: map to (table, field) using _UPLOAD_FIELD_MAPPINGS
     def rule_based() -> None:
         for ph in placeholders:
             key = normalize_key(ph)
             if not key:
                 continue
-            field = _UPLOAD_FIELD_MAPPINGS.get(key)
-            if field and field in vessels_cols:
-                result[ph] = ('vessels', field)
+            mapping = _UPLOAD_FIELD_MAPPINGS.get(key)
+            if mapping:
+                t, col = mapping
+                if t in schema and col in (schema.get(t) or []):
+                    result[ph] = (t, col)
 
     if OPENAI_ENABLED and openai_client and schema:
         flat: List[str] = []
@@ -1532,6 +1545,23 @@ Use exact placeholder strings as keys. Only valid table.column and csvId.field f
         logger.warning(f"AI analyze-and-map failed, using rule-based fallback: {e}")
         return rule_based_fallback()
 
+    def _find_ai_value(ph: str, d: dict) -> Optional[dict]:
+        """Get AI value for placeholder, with fuzzy key match."""
+        if not isinstance(d, dict):
+            return None
+        val = d.get(ph)
+        if isinstance(val, dict):
+            return val
+        # Fuzzy match: normalize placeholder for key lookup
+        ph_norm = re.sub(r'[^a-z0-9]', '', (ph or '').lower())
+        for k, v in d.items():
+            if isinstance(v, dict) and re.sub(r'[^a-z0-9]', '', (k or '').lower()) == ph_norm:
+                return v
+        return None
+
+    # Brokers -> companies column mapping (brokers excluded from schema)
+    _BROKERS_TO_COMPANIES = {'company_name': 'name', 'contact_person': 'owner_name', 'email': 'email', 'phone': 'phone', 'address': 'address'}
+
     for ph in placeholders:
         cfg: Dict = {
             'source': 'database',
@@ -1542,7 +1572,7 @@ Use exact placeholder strings as keys. Only valid table.column and csvId.field f
             'csvRow': 0,
             'randomOption': 'auto',
         }
-        val = data.get(ph) if isinstance(data, dict) else None
+        val = _find_ai_value(ph, data)
         if not isinstance(val, dict):
             result[ph] = cfg
             continue
@@ -1567,6 +1597,10 @@ Use exact placeholder strings as keys. Only valid table.column and csvId.field f
         if src == 'database':
             t = (val.get('table') or '').strip().lower()
             col = (val.get('column') or '').strip().lower()
+            # Remap brokers to companies (brokers table excluded)
+            if t == 'brokers' and col:
+                col = _BROKERS_TO_COMPANIES.get(col, col)
+                t = 'companies'
             if t in db_schema and col in (db_schema.get(t) or []):
                 cfg['source'] = 'database'
                 cfg['databaseTable'] = t
@@ -1577,6 +1611,26 @@ Use exact placeholder strings as keys. Only valid table.column and csvId.field f
             result[ph] = cfg
             continue
         result[ph] = cfg
+
+    # Rescue: for placeholders that ended up as random, try rule-based database mapping
+    suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema)
+    rescued = 0
+    for ph in placeholders:
+        if result.get(ph, {}).get('source') == 'random' and ph in suggested:
+            t, col = suggested[ph]
+            result[ph] = {
+                'source': 'database',
+                'databaseTable': t,
+                'databaseField': col,
+                'csvId': '',
+                'csvField': '',
+                'csvRow': 0,
+                'randomOption': 'auto',
+                'customValue': '',
+            }
+            rescued += 1
+    if rescued:
+        logger.info(f"AI mapping rescue: {rescued} placeholders remapped from random to database via rule-based")
 
     return result
 

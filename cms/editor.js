@@ -212,7 +212,8 @@ class TemplateEditor {
             const data = await this.apiJson('/database-tables');
             console.log('✅ Database tables response:', data);
             if (data && data.tables && Array.isArray(data.tables)) {
-                this.databaseTables = data.tables;
+                // Exclude brokers table - not used for placeholder mapping
+                this.databaseTables = (data.tables || []).filter(t => (t.name || '').toLowerCase() !== 'brokers');
                 console.log(`✅ Loaded ${data.tables.length} database tables:`, data.tables.map(t => t.name));
                 
                 // Update UI if dropdowns are already rendered
@@ -230,15 +231,22 @@ class TemplateEditor {
     }
     
     updateDatabaseTableDropdowns() {
-        // Update all database table dropdowns in the UI
-        document.querySelectorAll('select[onchange*="handleDatabaseTableChange"]').forEach(select => {
-            const currentValue = select.value;
+        // Update all database table dropdowns - show actual mapped table, not "Select table" when we have one
+        document.querySelectorAll('.placeholder-config').forEach(configEl => {
+            const ph = configEl.dataset.placeholder;
+            const setting = this.currentSettings[ph] || {};
+            const mappedTable = (setting.databaseTable || '').trim().toLowerCase();
+            const select = configEl.querySelector('select[onchange*="handleDatabaseTableChange"]');
+            if (!select) return;
+            const currentValue = select.value || mappedTable || '';
             select.innerHTML = '<option value="">-- Select table --</option>' +
-                this.databaseTables.map(t => 
-                    `<option value="${t.name}" ${currentValue === t.name ? 'selected' : ''}>
-                        ${t.label}${t.description ? ` - ${t.description}` : ''}
-                    </option>`
-                ).join('');
+                (this.databaseTables || []).map(t => {
+                    const tName = (t.name || '').toLowerCase();
+                    const isSelected = currentValue.toLowerCase() === tName || (mappedTable && mappedTable === tName);
+                    return `<option value="${t.name}" ${isSelected ? 'selected' : ''}>
+                        ${t.label || t.name}${t.description ? ` - ${t.description}` : ''}
+                    </option>`;
+                }).join('');
         });
     }
     
@@ -482,8 +490,8 @@ class TemplateEditor {
                                 onchange="editor.handleDatabaseTableChange('${ph}', this.value)">
                             <option value="">-- Select table --</option>
                             ${(this.databaseTables && this.databaseTables.length > 0) ? this.databaseTables.map(t => 
-                                `<option value="${t.name}" ${setting.databaseTable === t.name ? 'selected' : ''}>
-                                    ${t.label}${t.description ? ` - ${t.description}` : ''}
+                                `<option value="${t.name}" ${((setting.databaseTable || '').toLowerCase() === (t.name || '').toLowerCase()) ? 'selected' : ''}>
+                                    ${t.label || t.name}${t.description ? ` - ${t.description}` : ''}
                                 </option>`
                             ).join('') : '<option value="">Loading tables...</option>'}
                         </select>
