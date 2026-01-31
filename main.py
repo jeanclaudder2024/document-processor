@@ -877,6 +877,7 @@ async def get_placeholder_schema():
     """
     Get the official placeholder schema showing all available placeholders by entity.
     Returns prefix → table mapping and sample column names for each table.
+    Generates correct placeholder names based on official format: {{prefix_fieldname}}
     """
     try:
         schema = {
@@ -887,25 +888,35 @@ async def get_placeholder_schema():
         for prefix, config in PREFIX_TABLE_MAPPING.items():
             table_name = config["table"]
             id_type = config["id_type"]
+            entity_name = prefix.rstrip('_')
             
             try:
                 response = supabase.table(table_name).select('*').limit(1).execute()
                 columns = []
+                placeholders = []
+                
                 if response.data:
                     columns = list(response.data[0].keys())
+                    
+                    for col in columns:
+                        if col == 'id':
+                            placeholders.append(f"{entity_name}_id")
+                        elif col.startswith(f"{entity_name}_"):
+                            placeholders.append(col)
+                        else:
+                            placeholders.append(f"{prefix}{col}")
                 
-                placeholders = [f"{prefix}{col}" for col in columns if col != 'id']
-                
-                schema["entities"][prefix.rstrip('_')] = {
+                schema["entities"][entity_name] = {
                     "prefix": prefix,
                     "table": table_name,
                     "id_type": id_type,
                     "placeholder_count": len(placeholders),
-                    "sample_placeholders": placeholders[:10],
-                    "all_columns": columns
+                    "sample_placeholders": placeholders[:15],
+                    "all_columns": columns,
+                    "usage_example": f"{{{{" + placeholders[1] + "}}}}" if len(placeholders) > 1 else f"{{{{{entity_name}_name}}}}"
                 }
             except Exception as e:
-                schema["entities"][prefix.rstrip('_')] = {
+                schema["entities"][entity_name] = {
                     "prefix": prefix,
                     "table": table_name,
                     "id_type": id_type,
