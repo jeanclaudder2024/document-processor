@@ -5015,14 +5015,15 @@ def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tupl
 
 
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
-    """Generate realistic random data for placeholders (maritime/oil shipping context).
-    Returns SHORT, SPECIFIC values matching placeholder type - no long text, no unrelated content."""
+    """Generate UNIQUE realistic data for each placeholder (maritime/oil context).
+    Each placeholder gets unique value based on its name + vessel context.
+    Returns SHORT, SPECIFIC values - no generic text, no duplicates."""
     import random
     import hashlib
 
-    if vessel_imo:
-        seed_input = f"{vessel_imo}_{placeholder.lower()}"
-        random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
+    # IMPORTANT: Seed with placeholder name to ensure each placeholder gets unique value
+    seed_input = f"{vessel_imo or 'default'}_{placeholder.lower()}_{placeholder}"
+    random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
 
     pl = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
 
@@ -5067,11 +5068,52 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'witness' in pl and 'place' in pl:
         return random.choice(['Singapore', 'London', 'Dubai'])
 
-    # Dates - always short format
-    if 'date' in pl or 'issue' in pl and 'date' in pl or 'expir' in pl or 'signature' in pl and 'date' in pl:
+    # Title/designation - BEFORE dates and names (to avoid matching 'date' in 'mandated')
+    if 'designation' in pl or 'position' in pl or 'title' in pl or 'role' in pl and 'number' not in pl:
+        titles = ['Operations Manager', 'Chartering Manager', 'Trader', 'Shipping Coordinator', 
+                 'Commercial Director', 'CEO', 'Managing Director', 'General Manager']
+        return random.choice(titles)
+    
+    # Person names - BEFORE dates (to avoid matching 'date' in 'mandated')
+    if 'name' in pl and ('witness' in pl or 'signatory' in pl or 'representative' in pl or 'officer' in pl or 'person' in pl or 'contact' in pl):
+        names = [
+            'John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown',
+            'Michael Chen', 'Fatima Al-Said', 'James Wilson', 'Anna Petrova', 'Carlos Rodriguez',
+            'Yuki Tanaka', 'Priya Sharma', 'Mohammed Al-Rashid', 'Sophie Martin', 'Lars Nielsen'
+        ]
+        return random.choice(names)
+    
+    # Company names - BEFORE dates (catch mandated/seller/buyer company)
+    if 'company' in pl or ('mandated' in pl and 'seller' in pl) or ('seller' in pl and ('company' in placeholder.lower() or 'firm' in pl)):
+        if 'name' in pl or 'company' in pl or 'seller' in pl or 'buyer' in pl or 'mandated' in pl:
+            companies = [
+                'Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services',
+                'Gulf Energy Trading', 'Nordic Tanker Co', 'Pacific Petrochemicals', 'Harbor Logistics AG',
+                'Blue Ocean Freight Ltd', 'International Vessel Corp', 'Shell Maritime', 'BP Trading',
+                'TotalEnergies Marine', 'Chevron Shipping', 'ExxonMobil Marine', 'Vitol Chartering'
+            ]
+            return random.choice(companies)
+
+    # Dates - ALWAYS return actual dates in YYYY-MM-DD format, NEVER text
+    if 'date' in pl or 'expir' in pl or 'effective' in pl or 'issue' in pl or 'signature' in pl or 'witness' in pl and 'date' in pl:
         from datetime import timedelta
-        d = random.randint(1, 90)
-        return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
+        # Different date ranges for different types
+        if 'expir' in pl or 'validity' in pl or 'until' in pl:
+            # Future dates
+            d = random.randint(30, 365)
+            return (datetime.now() + timedelta(days=d)).strftime('%Y-%m-%d')
+        elif 'issue' in pl or 'effective' in pl:
+            # Recent past dates
+            d = random.randint(1, 30)
+            return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
+        elif 'signature' in pl or 'witness' in pl:
+            # Very recent dates
+            d = random.randint(0, 14)
+            return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
+        else:
+            # General dates - past or near future
+            d = random.randint(-60, 90)
+            return (datetime.now() + timedelta(days=d)).strftime('%Y-%m-%d')
 
     # Bank / finance
     if 'swift' in pl or 'bic' in pl:
@@ -5116,41 +5158,45 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'phone' in pl or 'tel' in pl or 'mobile' in pl or 'fax' in pl:
         return f"+{random.choice([1,44,31,49,971])} {random.randint(100,999)} {random.randint(1000000,9999999)}"
 
-    # Title/designation - BEFORE name (representative_title -> title, not name)
-    if 'designation' in pl or 'position' in pl or 'title' in pl or 'role' in pl:
-        return random.choice(['Operations Manager', 'Chartering Manager', 'Trader', 'Shipping Coordinator'])
-    # Product/commodity - BEFORE name (commodity_name -> product, not person)
+    # Product/commodity
     products = ['Crude Oil', 'Diesel', 'Jet A-1', 'Fuel Oil 380', 'Gasoline', 'Brent Blend', 'Murban Crude']
     if 'commodity' in pl and 'category' in pl:
         return random.choice(['Petroleum', 'Refined Products', 'Crude Oil'])
     if 'product' in pl or 'oil' in pl or 'grade' in pl or 'commodity' in pl or ('cargo' in pl and 'quantity' not in pl and 'capacity' not in pl and 'tank' not in pl):
         return random.choice(products)
-    # Person names - short
-    names = ['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown']
-    if 'person' in pl or 'representative' in pl or 'signatory' in pl or 'witness' in pl or 'officer' in pl or ('name' in pl and 'company' not in pl and 'commodity' not in pl):
-        if 'company' in pl:
-            return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
-        return random.choice(names)
 
-    # Companies / buyer / seller
-    companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services', 'Gulf Energy Trading', 'Nordic Tanker Co']
-    if 'company' in pl or 'seller' in pl or 'buyer' in pl and 'name' in pl:
-        return random.choice(companies)
-
-    # Address
+    # Address - more variety
+    addresses = [
+        '123 Maritime Street, London EC3N 4AB, UK',
+        '456 Harbour Road, Singapore 098633',
+        '55 Raffles Place #32-01, Singapore 048623',
+        '789 Port Avenue, Dubai Marina, UAE',
+        '321 Dock Lane, Rotterdam 3011, Netherlands',
+        '88 Pudong Avenue, Shanghai 200120, China',
+        '1 HarbourFront Place, Singapore 098633',
+        '25 Marina Bay, Singapore 018936'
+    ]
     if 'address' in pl:
-        return random.choice(['123 Maritime St, London', '456 Harbour Rd, Singapore', '55 Raffles Place, Singapore'])
+        return random.choice(addresses)
 
     # Numbers / amounts - BEFORE product (cargo_quantity -> MT, not product name)
     if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl or 'weight' in pl:
         return f"{random.randint(1000, 50000):,} MT"
 
-    # Ports / locations
-    ports = ['Rotterdam', 'Singapore', 'Fujairah', 'Houston', 'Antwerp', 'Jebel Ali', 'Ras Tanura']
+    # Ports / locations - expanded variety
+    ports = [
+        'Rotterdam', 'Singapore', 'Fujairah', 'Houston', 'Antwerp', 'Jebel Ali', 'Ras Tanura',
+        'Shanghai', 'Busan', 'Hamburg', 'Southampton', 'Yanbu', 'Ningbo', 'Qingdao',
+        'Port Said', 'Suez', 'Durban', 'Cape Town', 'Piraeus', 'Genoa'
+    ]
     if 'port' in pl or 'harbor' in pl or 'loading' in pl or 'discharge' in pl or 'origin' in pl or 'destination' in pl:
         return random.choice(ports)
     if 'country' in pl:
-        return random.choice(['Singapore', 'UAE', 'Netherlands', 'USA', 'UK', 'Saudi Arabia'])
+        countries = [
+            'Singapore', 'UAE', 'Netherlands', 'USA', 'UK', 'Saudi Arabia', 'China',
+            'South Korea', 'Japan', 'Germany', 'France', 'Italy', 'Greece', 'Egypt'
+        ]
+        return random.choice(countries)
 
     if 'value' in pl or 'amount' in pl or 'price' in pl or 'total' in pl:
         return f"${random.randint(10000, 999999):,}"
@@ -5189,11 +5235,18 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
 
     # NEVER use generic fallbacks - analyze placeholder and generate related data
     
-    # Payment/Commercial terms
-    if 'payment' in pl or 'terms' in pl:
-        if 'payment' in pl:
-            return random.choice(['LC at sight', 'TT 30 days', 'CAD', 'DLC confirmed'])
-        return random.choice(['FOB', 'CIF', 'CFR', 'Ex-works'])
+    # Payment/Commercial terms - expanded variety
+    if 'payment' in pl:
+        payment_terms = [
+            'LC at sight', 'TT 30 days', 'TT 60 days', 'CAD', 'DLC confirmed',
+            'Irrevocable LC', 'SBLC', 'Bank guarantee', 'Wire transfer',
+            'Letter of credit 90 days', 'Payment on delivery'
+        ]
+        return random.choice(payment_terms)
+    if 'delivery' in pl and 'term' in pl:
+        return random.choice(['FOB', 'CIF', 'CFR', 'Ex-works', 'DAP', 'DDP'])
+    if 'shipping' in pl and 'term' in pl:
+        return random.choice(['FOB', 'CIF', 'CFR'])
     
     # Inspection/Survey/Testing
     if 'inspection' in pl or 'survey' in pl or 'testing' in pl:
@@ -5237,10 +5290,18 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
             return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
         return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei'])
     
-    # Date fields
-    if 'date' in pl or 'expir' in pl or 'effective' in pl:
+    # Date fields - ALWAYS return actual date, NEVER text
+    if 'date' in pl or 'expir' in pl or 'effective' in pl or 'validity' in pl or 'until' in pl:
         from datetime import timedelta
-        return (datetime.now() + timedelta(days=random.randint(-30, 90))).strftime('%Y-%m-%d')
+        if 'expir' in pl or 'until' in pl or 'validity' in pl:
+            # Future dates for expiry/validity
+            return (datetime.now() + timedelta(days=random.randint(30, 365))).strftime('%Y-%m-%d')
+        elif 'signature' in pl or 'witness' in pl or 'sign' in pl:
+            # Recent past for signatures
+            return (datetime.now() - timedelta(days=random.randint(0, 14))).strftime('%Y-%m-%d')
+        else:
+            # General dates
+            return (datetime.now() + timedelta(days=random.randint(-30, 90))).strftime('%Y-%m-%d')
     
     # Location/Place/Venue fields
     if 'location' in pl or 'place' in pl or 'venue' in pl or 'city' in pl:
