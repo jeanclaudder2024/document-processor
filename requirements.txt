@@ -12,7 +12,8 @@ aiofiles==23.2.1
 supabase==2.27.2
 websockets>=13.0
 aiohttp>=3.8.0
-httpx>=0.24.0
+# Pin httpx < 0.28 to avoid OpenAI Client "proxies" error (httpx 0.28+ removed proxies param)
+httpx>=0.24.0,<0.28.0
 python-dotenv==1.0.0
 docx2pdf==0.1.8
 openai==1.3.0

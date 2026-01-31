@@ -25,9 +25,14 @@ echo "   Done."
 # 2. Kill whatever is on port 8000
 echo ""
 echo "2. Freeing port 8000..."
+PIDS=""
 if command -v lsof &>/dev/null; then
   PIDS=$(lsof -ti:8000 2>/dev/null || true)
-elif command -v ss &>/dev/null; then
+fi
+if [ -z "$PIDS" ] && command -v fuser &>/dev/null; then
+  PIDS=$(fuser -n tcp 8000 2>/dev/null || true)
+fi
+if [ -z "$PIDS" ] && command -v ss &>/dev/null; then
   PIDS=$(ss -tlnp 2>/dev/null | grep ':8000' | grep -oP 'pid=\K[0-9]+' | tr '\n' ' ' || true)
 fi
 if [ -n "$PIDS" ]; then
