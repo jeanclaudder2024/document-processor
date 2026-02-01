@@ -2893,11 +2893,12 @@ async def update_template_metadata(
         plan_ids_raw = payload.get('plan_ids') if 'plan_ids' in payload else None
         plan_ids = plan_ids_raw if isinstance(plan_ids_raw, list) else []
         
-        # Convert plan_tiers to plan_ids (UUIDs) if needed
+        # Convert plan_tiers to plan_ids (UUIDs) if needed (same logic as upload endpoint)
         resolved_plan_ids = []
         if plan_ids and SUPABASE_ENABLED:
-            for plan_identifier in plan_ids:
+            for idx, plan_identifier in enumerate(plan_ids):
                 if not plan_identifier:
+                    logger.warning(f"[permission-convert] Plan {idx}: EMPTY/NULL, skipping")
                     continue
                 try:
                     # Try to parse as UUID first
