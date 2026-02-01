@@ -58,11 +58,12 @@ source venv/bin/activate
 pip install --upgrade pip
 
 # Install all required packages
+# Note: python-docx==0.8.11 is required for compatibility (newer versions have breaking changes)
 pip install --upgrade \
     fastapi \
     uvicorn \
     python-multipart \
-    python-docx \
+    "python-docx==0.8.11" \
     supabase \
     python-dotenv \
     httpx \
