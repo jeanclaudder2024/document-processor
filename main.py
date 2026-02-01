@@ -5402,62 +5402,25 @@ def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tupl
                     for k, v in port_data.items():
                         if v is not None and str(v).strip():
                             merged[f"{prefix}{k}"] = v
-                    # Add specific aliases for port name
-                    port_name = port_data.get('name')
-                    if port_name:
-                        merged[f"{prefix}name"] = port_name
-                        # Add more aliases for common placeholder patterns
-                        if 'loading' in prefix:
-                            merged['loading_port'] = port_name
-                            merged['port_of_loading'] = port_name
-                        elif 'discharge' in prefix or 'destination' in prefix:
-                            merged['discharge_port'] = port_name
-                            merged['port_of_discharge'] = port_name
-                            merged['delivery_port'] = port_name
-        # Generic port aliases
+                    merged[f"{prefix}name"] = port_data.get('name') or merged.get(f"{prefix}name")
+        # Loading port often same as departure - add alias if missing
         if 'loading_port_name' not in merged and 'departure_port_name' in merged:
             merged['loading_port_name'] = merged['departure_port_name']
+        # Generic port_name, port_loading, port_discharge for template placeholders
         if 'port_name' not in merged and merged.get('departure_port_name'):
             merged['port_name'] = merged['departure_port_name']
         if 'port_loading' not in merged and merged.get('loading_port_name'):
             merged['port_loading'] = merged['loading_port_name']
         if 'port_discharge' not in merged and merged.get('discharge_port_name'):
             merged['port_discharge'] = merged['discharge_port_name']
-        # Company - add with multiple aliases for better matching
+        # Company
         company_id = vessel.get('company_id') or vessel.get('buyer_company_id') or vessel.get('seller_company_id')
         if company_id is not None:
             company_data = get_data_from_table('companies', 'id', company_id)
             if company_data:
                 for k, v in company_data.items():
                     if v is not None and str(v).strip():
-                        # Add with company_ prefix
                         merged[f"company_{k}"] = v
-                        # Also add seller_ and buyer_ aliases for ATSC/Invoice templates
-                        merged[f"seller_{k}"] = v
-                        merged[f"buyer_{k}"] = v
-                        # Add specific aliases for common company fields
-                        if k == 'name':
-                            merged['seller_company_name'] = v
-                            merged['buyer_company_name'] = v
-                            merged['company_name'] = v
-                        elif k == 'country':
-                            merged['seller_country'] = v
-                            merged['buyer_country'] = v
-                            merged['registration_country'] = v
-                            merged['seller_registration_country'] = v
-                            merged['buyer_registration_country'] = v
-                        elif k == 'address':
-                            merged['seller_address'] = v
-                            merged['buyer_address'] = v
-                            merged['legal_address'] = v
-                            merged['seller_legal_address'] = v
-                            merged['buyer_legal_address'] = v
-                        elif k == 'email':
-                            merged['seller_email'] = v
-                            merged['buyer_email'] = v
-                        elif k == 'phone':
-                            merged['seller_phone'] = v
-                            merged['buyer_phone'] = v
         # Refinery
         refinery_id = vessel.get('refinery_id')
         if refinery_id is not None:
@@ -5479,15 +5442,14 @@ def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tupl
 
 
 def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
-    """Generate UNIQUE realistic data for each placeholder (maritime/oil context).
-    Each placeholder gets unique value based on its name + vessel context.
-    Returns SHORT, SPECIFIC values - no generic text, no duplicates."""
+    """Generate realistic random data for placeholders (maritime/oil shipping context).
+    Returns SHORT, SPECIFIC values matching placeholder type - no long text, no unrelated content."""
     import random
     import hashlib
 
-    # IMPORTANT: Seed with placeholder name to ensure each placeholder gets unique value
-    seed_input = f"{vessel_imo or 'default'}_{placeholder.lower()}_{placeholder}"
-    random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
+    if vessel_imo:
+        seed_input = f"{vessel_imo}_{placeholder.lower()}"
+        random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
 
     pl = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
 
@@ -5532,52 +5494,11 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'witness' in pl and 'place' in pl:
         return random.choice(['Singapore', 'London', 'Dubai'])
 
-    # Title/designation - BEFORE dates and names (to avoid matching 'date' in 'mandated')
-    if 'designation' in pl or 'position' in pl or 'title' in pl or 'role' in pl and 'number' not in pl:
-        titles = ['Operations Manager', 'Chartering Manager', 'Trader', 'Shipping Coordinator', 
-                 'Commercial Director', 'CEO', 'Managing Director', 'General Manager']
-        return random.choice(titles)
-    
-    # Person names - BEFORE dates (to avoid matching 'date' in 'mandated')
-    if 'name' in pl and ('witness' in pl or 'signatory' in pl or 'representative' in pl or 'officer' in pl or 'person' in pl or 'contact' in pl):
-        names = [
-            'John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown',
-            'Michael Chen', 'Fatima Al-Said', 'James Wilson', 'Anna Petrova', 'Carlos Rodriguez',
-            'Yuki Tanaka', 'Priya Sharma', 'Mohammed Al-Rashid', 'Sophie Martin', 'Lars Nielsen'
-        ]
-        return random.choice(names)
-    
-    # Company names - BEFORE dates (catch mandated/seller/buyer company)
-    if 'company' in pl or ('mandated' in pl and 'seller' in pl) or ('seller' in pl and ('company' in placeholder.lower() or 'firm' in pl)):
-        if 'name' in pl or 'company' in pl or 'seller' in pl or 'buyer' in pl or 'mandated' in pl:
-            companies = [
-                'Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services',
-                'Gulf Energy Trading', 'Nordic Tanker Co', 'Pacific Petrochemicals', 'Harbor Logistics AG',
-                'Blue Ocean Freight Ltd', 'International Vessel Corp', 'Shell Maritime', 'BP Trading',
-                'TotalEnergies Marine', 'Chevron Shipping', 'ExxonMobil Marine', 'Vitol Chartering'
-            ]
-            return random.choice(companies)
-
-    # Dates - ALWAYS return actual dates in YYYY-MM-DD format, NEVER text
-    if 'date' in pl or 'expir' in pl or 'effective' in pl or 'issue' in pl or 'signature' in pl or 'witness' in pl and 'date' in pl:
+    # Dates - always short format
+    if 'date' in pl or 'issue' in pl and 'date' in pl or 'expir' in pl or 'signature' in pl and 'date' in pl:
         from datetime import timedelta
-        # Different date ranges for different types
-        if 'expir' in pl or 'validity' in pl or 'until' in pl:
-            # Future dates
-            d = random.randint(30, 365)
-            return (datetime.now() + timedelta(days=d)).strftime('%Y-%m-%d')
-        elif 'issue' in pl or 'effective' in pl:
-            # Recent past dates
-            d = random.randint(1, 30)
-            return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
-        elif 'signature' in pl or 'witness' in pl:
-            # Very recent dates
-            d = random.randint(0, 14)
-            return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
-        else:
-            # General dates - past or near future
-            d = random.randint(-60, 90)
-            return (datetime.now() + timedelta(days=d)).strftime('%Y-%m-%d')
+        d = random.randint(1, 90)
+        return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
 
     # Bank / finance - realistic bank data
     bank_names = ['HSBC Bank Singapore', 'Standard Chartered Bank', 'Deutsche Bank AG', 'ING Commercial Banking', 'BNP Paribas', 'Citibank N.A.', 'DBS Bank Ltd', 'Barclays Bank PLC']
@@ -5637,28 +5558,27 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'phone' in pl or 'tel' in pl or 'mobile' in pl or 'fax' in pl:
         return f"+{random.choice([1,44,31,49,971])} {random.randint(100,999)} {random.randint(1000000,9999999)}"
 
-    # Product/commodity
+    # Title/designation - BEFORE name (representative_title -> title, not name)
+    if 'designation' in pl or 'position' in pl or 'title' in pl or 'role' in pl:
+        return random.choice(['Operations Manager', 'Chartering Manager', 'Trader', 'Shipping Coordinator'])
+    # Product/commodity - BEFORE name (commodity_name -> product, not person)
     products = ['Crude Oil', 'Diesel', 'Jet A-1', 'Fuel Oil 380', 'Gasoline', 'Brent Blend', 'Murban Crude']
     if 'commodity' in pl and 'category' in pl:
         return random.choice(['Petroleum', 'Refined Products', 'Crude Oil'])
     if 'product' in pl or 'oil' in pl or 'grade' in pl or 'commodity' in pl or ('cargo' in pl and 'quantity' not in pl and 'capacity' not in pl and 'tank' not in pl):
         return random.choice(products)
+    # Person names - short
+    names = ['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown']
+    if 'person' in pl or 'representative' in pl or 'signatory' in pl or 'witness' in pl or 'officer' in pl or ('name' in pl and 'company' not in pl and 'commodity' not in pl):
+        if 'company' in pl:
+            return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
+        return random.choice(names)
 
-    # Address - more variety
-    addresses = [
-        '123 Maritime Street, London EC3N 4AB, UK',
-        '456 Harbour Road, Singapore 098633',
-        '55 Raffles Place #32-01, Singapore 048623',
-        '789 Port Avenue, Dubai Marina, UAE',
-        '321 Dock Lane, Rotterdam 3011, Netherlands',
-        '88 Pudong Avenue, Shanghai 200120, China',
-        '1 HarbourFront Place, Singapore 098633',
-        '25 Marina Bay, Singapore 018936'
-    ]
     # Companies / buyer / seller - use realistic trading company names
     buyer_companies = ['Global Energy Trading Ltd', 'Pacific Petroleum Co.', 'Asian Oil Importers Pte Ltd', 'European Fuel Solutions GmbH', 'Atlantic Trading Corporation', 'Nordic Energy Partners']
     seller_companies = ['Arabian Oil Corporation', 'Gulf Petroleum DMCC', 'Middle East Energy Trading', 'Russian Petroleum Export LLC', 'Nigerian National Oil Corp', 'South American Crude Suppliers']
     generic_companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services', 'Gulf Energy Trading', 'Nordic Tanker Co']
+    
     if 'buyer' in pl:
         if 'name' in pl or 'company' in pl:
             return random.choice(buyer_companies)
@@ -5667,27 +5587,21 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
             return random.choice(seller_companies)
     if 'company' in pl and 'name' in pl:
         return random.choice(generic_companies)
+
+    # Address
     if 'address' in pl:
-        return random.choice(addresses)
+        return random.choice(['123 Maritime St, London', '456 Harbour Rd, Singapore', '55 Raffles Place, Singapore'])
 
     # Numbers / amounts - BEFORE product (cargo_quantity -> MT, not product name)
     if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl or 'weight' in pl:
         return f"{random.randint(1000, 50000):,} MT"
 
-    # Ports / locations - expanded variety
-    ports = [
-        'Rotterdam', 'Singapore', 'Fujairah', 'Houston', 'Antwerp', 'Jebel Ali', 'Ras Tanura',
-        'Shanghai', 'Busan', 'Hamburg', 'Southampton', 'Yanbu', 'Ningbo', 'Qingdao',
-        'Port Said', 'Suez', 'Durban', 'Cape Town', 'Piraeus', 'Genoa'
-    ]
+    # Ports / locations
+    ports = ['Rotterdam', 'Singapore', 'Fujairah', 'Houston', 'Antwerp', 'Jebel Ali', 'Ras Tanura']
     if 'port' in pl or 'harbor' in pl or 'loading' in pl or 'discharge' in pl or 'origin' in pl or 'destination' in pl:
         return random.choice(ports)
     if 'country' in pl:
-        countries = [
-            'Singapore', 'UAE', 'Netherlands', 'USA', 'UK', 'Saudi Arabia', 'China',
-            'South Korea', 'Japan', 'Germany', 'France', 'Italy', 'Greece', 'Egypt'
-        ]
-        return random.choice(countries)
+        return random.choice(['Singapore', 'UAE', 'Netherlands', 'USA', 'UK', 'Saudi Arabia'])
 
     if 'value' in pl or 'amount' in pl or 'price' in pl or 'total' in pl:
         return f"${random.randint(10000, 999999):,}"
@@ -5704,15 +5618,9 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'bin' in pl or 'okpo' in pl:
         return f"{random.randint(100000000, 999999999)}"
 
-    # Legal / contract - BEFORE generic checks
-    if 'dispute' in pl or 'arbitration' in pl:
-        if 'venue' in pl or 'seat' in pl or 'place' in pl:
-            return random.choice(['Singapore', 'London', 'Dubai', 'Geneva'])
-        return random.choice(['ICC Arbitration', 'LCIA London', 'Singapore Arbitration', 'SIAC'])
-    if 'governing' in pl or ('law' in pl and 'country' not in pl):
-        return random.choice(['Singapore Law', 'English Law', 'UAE Law', 'Swiss Law'])
-    if 'jurisdiction' in pl:
-        return random.choice(['Singapore', 'England and Wales', 'Dubai', 'Geneva'])
+    # Legal / contract
+    if 'arbitration' in pl or 'governing' in pl or 'law' in pl:
+        return random.choice(['Singapore', 'London', 'Dubai', 'Geneva'])
     if 'registration' in pl and 'number' in pl:
         return f"REG-{random.randint(100000, 999999)}"
 
@@ -5724,134 +5632,30 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'via' in pl or 'carrier' in pl:
         return random.choice(['Maersk', 'MSC', 'CMA CGM', 'COSCO'])
 
-    # NEVER use generic fallbacks - analyze placeholder and generate related data
-    
-    # Payment/Commercial terms - expanded variety
-    if 'payment' in pl:
-        payment_terms = [
-            'LC at sight', 'TT 30 days', 'TT 60 days', 'CAD', 'DLC confirmed',
-            'Irrevocable LC', 'SBLC', 'Bank guarantee', 'Wire transfer',
-            'Letter of credit 90 days', 'Payment on delivery'
-        ]
-        return random.choice(payment_terms)
-    if 'delivery' in pl and 'term' in pl:
-        return random.choice(['FOB', 'CIF', 'CFR', 'Ex-works', 'DAP', 'DDP'])
-    if 'shipping' in pl and 'term' in pl:
-        return random.choice(['FOB', 'CIF', 'CFR'])
-    
-    # Inspection/Survey/Testing
-    if 'inspection' in pl or 'survey' in pl or 'testing' in pl:
-        return random.choice(['SGS inspection', 'Independent surveyor', 'As per industry standards'])
-    
-    # Insurance/Guarantee/Bond
-    if 'insurance' in pl or 'guarantee' in pl or 'bond' in pl:
-        return random.choice(['Buyer responsibility', 'As per contract', 'Standard marine insurance'])
-    
-    # Clauses/Provisions/Conditions
-    if 'clause' in pl or 'provision' in pl or 'condition' in pl or 'term' in pl:
-        return 'As per standard maritime contract terms'
-    
-    # Limitations/Restrictions
-    if 'limitation' in pl or 'restriction' in pl:
-        return 'None'
-    
-    # Documents/Papers/Certificates
-    if 'document' in pl or 'certificate' in pl or 'paper' in pl:
-        return random.choice(['Standard shipping documents', 'As per contract schedule', 'Commercial invoice, BL, COO'])
-    
-    # Witness/Notary
-    if 'witness' in pl or 'notary' in pl:
-        if 'name' in pl:
-            return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan'])
-        if 'date' in pl:
-            from datetime import timedelta
-            return (datetime.now() - timedelta(days=random.randint(1, 30))).strftime('%Y-%m-%d')
-        return 'Present'
-    
-    # Signature
-    if 'signature' in pl or 'signed' in pl:
-        if 'date' in pl:
-            from datetime import timedelta
-            return (datetime.now() - timedelta(days=random.randint(0, 15))).strftime('%Y-%m-%d')
-        return 'Signed Electronically'
-    
-    # Name fields
+    # Context-aware fallbacks based on placeholder content
+    # Extract meaningful parts from placeholder name
     if 'name' in pl:
-        if 'company' in pl or 'firm' in pl:
-            return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
-        return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei'])
+        if 'buyer' in pl or 'seller' in pl or 'company' in pl:
+            return random.choice(['Global Trading Corp', 'Maritime Solutions Ltd', 'Energy Partners Inc'])
+        return random.choice(['John Smith', 'Michael Johnson', 'Sarah Williams'])
     
-    # Date fields - ALWAYS return actual date, NEVER text
-    if 'date' in pl or 'expir' in pl or 'effective' in pl or 'validity' in pl or 'until' in pl:
-        from datetime import timedelta
-        if 'expir' in pl or 'until' in pl or 'validity' in pl:
-            # Future dates for expiry/validity
-            return (datetime.now() + timedelta(days=random.randint(30, 365))).strftime('%Y-%m-%d')
-        elif 'signature' in pl or 'witness' in pl or 'sign' in pl:
-            # Recent past for signatures
-            return (datetime.now() - timedelta(days=random.randint(0, 14))).strftime('%Y-%m-%d')
-        else:
-            # General dates
-            return (datetime.now() + timedelta(days=random.randint(-30, 90))).strftime('%Y-%m-%d')
+    if 'address' in pl:
+        return random.choice([
+            '123 Business Center, Singapore 048619',
+            '456 Trade Tower, Dubai, UAE',
+            '789 Commerce Street, London EC1V 9BD'
+        ])
     
-    # Location/Place/Venue fields
-    if 'location' in pl or 'place' in pl or 'venue' in pl or 'city' in pl:
-        return random.choice(['Singapore', 'London', 'Dubai', 'Geneva'])
-    
-    # Description/Specification/Details/Notes
-    if 'description' in pl or 'specification' in pl or 'details' in pl or 'notes' in pl or 'remark' in pl:
-        return 'As per standard maritime specifications'
-    
-    # Numbers/Codes/References/IDs
-    if 'number' in pl or 'no' in pl or 'code' in pl or 'ref' in pl or 'id' in pl:
-        return f"REF-{random.randint(100000, 999999)}"
-    
-    # Final catch-all: analyze placeholder words and generate truly related data
-    words = re.findall(r'[a-z]+', pl)
-    if words:
-        # Check for specific keywords and generate appropriate data
-        for word in words:
-            if word in ['duration', 'period', 'validity', 'term']:
-                return f"{random.randint(30, 180)} days"
-            if word in ['method', 'mode', 'delivery', 'shipment']:
-                return random.choice(['FOB', 'CIF', 'CFR'])
-            if word in ['officer', 'contact', 'representative', 'person']:
-                return random.choice(['John Smith', 'Maria Garcia', 'Ahmed Hassan'])
-            if word in ['status', 'state', 'condition']:
-                return 'Confirmed'
-            if word in ['currency', 'denomination']:
-                return 'USD'
-            if word in ['language']:
-                return 'English'
-            if word in ['law', 'jurisdiction']:
-                return random.choice(['Singapore', 'English Law', 'UAE Law'])
-            if word in ['dispute', 'arbitration']:
-                return random.choice(['Singapore Arbitration', 'LCIA London', 'ICC Paris'])
-    
-    # Analyze placeholder structure
-    if 'contract' in pl or 'agreement' in pl:
-        return 'As per contract terms'
-    if 'standard' in pl or 'specification' in pl:
-        return 'As per industry standards'
-    if 'approval' in pl or 'authorization' in pl:
-        return 'Authorized'
-    if 'required' in pl or 'mandatory' in pl:
-        return 'Yes'
-    
-    # Context-aware fallbacks: email, phone for unknown placeholders
     if 'email' in pl:
         return f"contact@{random.choice(['trading-corp.com', 'energy-partners.com', 'maritime-solutions.com'])}"
+    
     if 'phone' in pl or 'tel' in pl or 'fax' in pl:
         return f"+{random.choice([65, 971, 44])} {random.randint(1000, 9999)} {random.randint(1000, 9999)}"
     
-    # Ultimate fallback: generate based on placeholder type hint
+    # Generic short values for truly unknown placeholders
     logger.debug(f"No specific match for placeholder '{placeholder}', using generic fallback")
-    return random.choice([
-        'As per contract',
-        'Standard',
-        'Confirmed',
-        f"REF-{random.randint(100000, 999999)}"
-    ])
+    generic_fallbacks = ['As per contract', 'See attachment', 'Per agreement', 'To be confirmed']
+    return random.choice(generic_fallbacks)
 
 
 def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
@@ -6241,9 +6045,6 @@ def _is_value_wrong_for_placeholder(placeholder: str, value: str) -> bool:
             return True
         if 'role' in pl and 'number' not in pl:
             return True
-        # Position/designation/signatory - never accept pure number
-        if 'position' in pl or 'designation' in pl or ('signatory' in pl and 'position' in pl):
-            return True
         # Registration number: "25" too short, likely ID; "6948.0" has decimal - suspicious
         if 'registration' in pl and 'number' in pl:
             if len(s) <= 3 or '.' in s:
@@ -6270,21 +6071,6 @@ def _is_value_wrong_for_placeholder(placeholder: str, value: str) -> bool:
         return True
     # Quality spec in exclusivity/mandate field
     if ('exclusivity' in pl or 'mandate' in pl) and ('°' in s or 'sulfur' in s.lower()):
-        return True
-    # Quality spec in type/location/storage fields
-    if ('type' in pl or 'location' in pl and 'type' not in pl or 'storage' in pl and 'type' in pl) and ('°' in s or 'api gravity' in s.lower() or 'sulfur' in s.lower() or 'astm' in s.lower()):
-        return True
-    # Reference/document number fields - reject decimals and very short numbers
-    if ('reference' in pl or 'document' in pl) and 'number' not in pl:
-        if re.match(r'^\d+\.?\d*$', s):
-            return True
-    # Percentage/tolerance - reject non-numeric text
-    if ('percentage' in pl or 'tolerance' in pl) and 'price' not in pl:
-        # Should be a number or number with %
-        if not re.search(r'\d', s):
-            return True
-    # SWIFT/BIC codes - reject pure numbers or very short strings
-    if ('swift' in pl or 'bic' in pl) and (re.match(r'^\d+\.?\d*$', s) or len(s) < 6):
         return True
     return False
 
