@@ -2893,12 +2893,11 @@ async def update_template_metadata(
         plan_ids_raw = payload.get('plan_ids') if 'plan_ids' in payload else None
         plan_ids = plan_ids_raw if isinstance(plan_ids_raw, list) else []
         
-        # Convert plan_tiers to plan_ids (UUIDs) if needed (same logic as upload endpoint)
+        # Convert plan_tiers to plan_ids (UUIDs) if needed
         resolved_plan_ids = []
         if plan_ids and SUPABASE_ENABLED:
-            for idx, plan_identifier in enumerate(plan_ids):
+            for plan_identifier in plan_ids:
                 if not plan_identifier:
-                    logger.warning(f"[permission-convert] Plan {idx}: EMPTY/NULL, skipping")
                     continue
                 try:
                     # Try to parse as UUID first
@@ -6360,65 +6359,145 @@ def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
 
 def convert_docx_to_pdf(docx_path: str) -> str:
-    """Convert DOCX to PDF using docx2pdf"""
+    """Convert DOCX to PDF using multiple methods with fallbacks"""
+    import subprocess
+    import platform
+    
     try:
         pdf_path = os.path.join(TEMP_DIR, f"output_{uuid.uuid4().hex}.pdf")
+        is_windows = platform.system() == 'Windows'
         
-        # Try docx2pdf first (pure Python, no external dependencies on Windows)
-        try:
-            from docx2pdf import convert
-            logger.info(f"Converting DOCX to PDF using docx2pdf: {docx_path}")
-            convert(docx_path, pdf_path)
-            
-            if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
-                logger.info(f"Successfully converted to PDF: {pdf_path}")
-                return pdf_path
-            else:
-                logger.warning("docx2pdf created empty PDF")
-        except ImportError:
-            logger.warning("docx2pdf not installed, trying LibreOffice fallback")
-        except Exception as e:
-            logger.warning(f"docx2pdf failed: {e}, trying LibreOffice fallback")
+        logger.info(f"🔄 Converting DOCX to PDF: {docx_path}")
+        logger.info(f"   Platform: {platform.system()}")
         
-        # Fallback: Try LibreOffice on Windows
-        import subprocess
-        libreoffice_paths = [
-            r'C:\Program Files\LibreOffice\program\soffice.exe',
-            r'C:\Program Files (x86)\LibreOffice\program\soffice.exe',
-            'soffice',  # fallback
-        ]
-        
-        for path in libreoffice_paths:
+        # Method 1: Try docx2pdf (Windows only - requires MS Word)
+        if is_windows:
             try:
-                result = subprocess.run([path, '--version'], 
-                                      capture_output=True, text=True, timeout=10)
+                from docx2pdf import convert
+                logger.info(f"   Trying docx2pdf (Windows + MS Word)...")
+                convert(docx_path, pdf_path)
+                
+                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+                    logger.info(f"   ✅ docx2pdf succeeded: {pdf_path}")
+                    return pdf_path
+                else:
+                    logger.warning("   ⚠️ docx2pdf created empty PDF")
+            except ImportError:
+                logger.warning("   ⚠️ docx2pdf not installed")
+            except Exception as e:
+                logger.warning(f"   ⚠️ docx2pdf failed: {e}")
+        
+        # Method 2: Try LibreOffice (cross-platform)
+        # Define paths for both Windows and Linux
+        if is_windows:
+            libreoffice_paths = [
+                r'C:\Program Files\LibreOffice\program\soffice.exe',
+                r'C:\Program Files (x86)\LibreOffice\program\soffice.exe',
+                'soffice.exe',
+            ]
+        else:
+            # Linux paths
+            libreoffice_paths = [
+                '/usr/bin/libreoffice',
+                '/usr/bin/soffice',
+                '/usr/lib/libreoffice/program/soffice',
+                '/opt/libreoffice/program/soffice',
+                '/snap/bin/libreoffice',
+                'libreoffice',
+                'soffice',
+            ]
+        
+        logger.info(f"   Trying LibreOffice conversion...")
+        for lo_path in libreoffice_paths:
+            try:
+                # Check if LibreOffice exists
+                result = subprocess.run(
+                    [lo_path, '--version'], 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=10
+                )
                 if result.returncode == 0:
-                    libreoffice_found = path
+                    logger.info(f"   Found LibreOffice at: {lo_path}")
+                    logger.info(f"   Version: {result.stdout.strip()[:50]}...")
+                    
+                    # Run conversion
                     cmd = [
-                        libreoffice_found,
+                        lo_path,
                         '--headless',
+                        '--invisible',
+                        '--nologo',
                         '--convert-to', 'pdf',
                         '--outdir', TEMP_DIR,
                         docx_path
                     ]
-                    subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    logger.info(f"   Running: {' '.join(cmd)}")
                     
-                    # Get generated PDF
+                    conv_result = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=120  # 2 minute timeout for large documents
+                    )
+                    
+                    if conv_result.returncode != 0:
+                        logger.warning(f"   LibreOffice stderr: {conv_result.stderr[:200] if conv_result.stderr else 'none'}")
+                    
+                    # Get generated PDF (LibreOffice names it based on input file)
                     expected_pdf = os.path.join(
                         TEMP_DIR, 
                         os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
                     )
-                    if os.path.exists(expected_pdf):
-                        os.rename(expected_pdf, pdf_path)
+                    
+                    if os.path.exists(expected_pdf) and os.path.getsize(expected_pdf) > 0:
+                        # Rename to our target path
+                        if expected_pdf != pdf_path:
+                            os.rename(expected_pdf, pdf_path)
+                        logger.info(f"   ✅ LibreOffice conversion succeeded: {pdf_path}")
                         return pdf_path
-            except:
+                    else:
+                        logger.warning(f"   ⚠️ Expected PDF not found: {expected_pdf}")
+                        # List files in temp dir for debugging
+                        temp_files = os.listdir(TEMP_DIR)
+                        logger.warning(f"   Files in temp dir: {temp_files[:10]}...")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"   ⚠️ LibreOffice timeout at: {lo_path}")
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                logger.warning(f"   ⚠️ LibreOffice error at {lo_path}: {e}")
                 continue
         
-        # If no PDF conversion, return DOCX
-        logger.warning("All PDF conversion methods failed, returning DOCX")
+        # Method 3: Try unoconv (Linux alternative to LibreOffice direct call)
+        if not is_windows:
+            try:
+                logger.info(f"   Trying unoconv...")
+                result = subprocess.run(
+                    ['unoconv', '-f', 'pdf', '-o', pdf_path, docx_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+                    logger.info(f"   ✅ unoconv succeeded: {pdf_path}")
+                    return pdf_path
+                else:
+                    logger.warning(f"   ⚠️ unoconv failed: {result.stderr[:200] if result.stderr else 'unknown'}")
+            except FileNotFoundError:
+                logger.warning("   ⚠️ unoconv not installed")
+            except Exception as e:
+                logger.warning(f"   ⚠️ unoconv error: {e}")
+        
+        # If no PDF conversion worked, return DOCX
+        logger.error("❌ All PDF conversion methods failed!")
+        logger.error("   Please install LibreOffice: sudo apt-get install libreoffice")
+        logger.error("   Or install unoconv: sudo apt-get install unoconv")
         return docx_path
+        
     except Exception as e:
-        logger.warning(f"PDF conversion failed: {e}, returning DOCX")
+        logger.error(f"❌ PDF conversion failed with exception: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return docx_path
 
 
@@ -6625,8 +6704,56 @@ async def generate_document(request: Request):
                     logger.info(f"Found settings using template name with extension: {effective_template_name + '.docx'}")
 
         logger.info(f"Loaded {len(template_settings)} placeholder settings for {effective_template_name}")
+        
+        # CRITICAL: Log full settings summary for debugging CMS configuration issues
         if template_settings:
-            logger.info(f"Template settings keys: {list(template_settings.keys())[:5]}...")  # Show first 5 placeholders
+            logger.info("=" * 80)
+            logger.info("📋 CMS PLACEHOLDER SETTINGS SUMMARY (for debugging)")
+            logger.info("=" * 80)
+            db_sources = []
+            csv_sources = []
+            custom_sources = []
+            random_sources = []
+            for ph, setting in template_settings.items():
+                source = setting.get('source', 'database')
+                if source == 'database':
+                    table = setting.get('databaseTable', '')
+                    field = setting.get('databaseField', '')
+                    db_sources.append(f"  {ph}: table='{table}', field='{field}'")
+                elif source == 'csv':
+                    csv_id = setting.get('csvId', '')
+                    csv_field = setting.get('csvField', '')
+                    csv_sources.append(f"  {ph}: csv='{csv_id}', field='{csv_field}'")
+                elif source == 'custom':
+                    value = setting.get('customValue', '')
+                    custom_sources.append(f"  {ph}: value='{value[:50]}...' " if len(value) > 50 else f"  {ph}: value='{value}'")
+                elif source == 'random':
+                    option = setting.get('randomOption', 'auto')
+                    random_sources.append(f"  {ph}: option='{option}'")
+            
+            if db_sources:
+                logger.info(f"📊 DATABASE sources ({len(db_sources)}):")
+                for s in db_sources[:10]:  # Show first 10
+                    logger.info(s)
+                if len(db_sources) > 10:
+                    logger.info(f"  ... and {len(db_sources) - 10} more")
+            
+            if csv_sources:
+                logger.info(f"📄 CSV sources ({len(csv_sources)}):")
+                for s in csv_sources:
+                    logger.info(s)
+            
+            if custom_sources:
+                logger.info(f"✏️ CUSTOM sources ({len(custom_sources)}):")
+                for s in custom_sources:
+                    logger.info(s)
+            
+            if random_sources:
+                logger.info(f"🎲 RANDOM sources ({len(random_sources)}):")
+                for s in random_sources:
+                    logger.info(s)
+            
+            logger.info("=" * 80)
         
         # ========================================================================
         # NEW: ID-BASED DATA FETCHING (Payload-Driven)
@@ -6788,65 +6915,117 @@ async def generate_document(request: Request):
                         
                         # PREFER: Use fetched_entities if available (ID-based fetching)
                         if database_table:
-                            table_lower = database_table.lower()
-                            # Map table names to fetched_entities keys
+                            table_lower = database_table.lower().strip()
+                            # Map table names to fetched_entities keys - EXPANDED to handle all variations
                             entity_map = {
+                                # Vessels
                                 'vessels': 'vessel',
-                                'ports': 'departure_port',  # Default, but check both
+                                'vessel': 'vessel',
+                                
+                                # Ports - try departure first, then destination
+                                'ports': 'departure_port',
+                                'port': 'departure_port',
                                 'departure_port': 'departure_port',
+                                'departure_ports': 'departure_port',
                                 'destination_port': 'destination_port',
+                                'destination_ports': 'destination_port',
+                                'loading_port': 'departure_port',
+                                'discharge_port': 'destination_port',
+                                
+                                # Companies
                                 'companies': 'company',
+                                'company': 'company',
                                 'buyer_companies': 'buyer',
+                                'buyer_company': 'buyer',
+                                'buyer': 'buyer',
                                 'seller_companies': 'seller',
+                                'seller_company': 'seller',
+                                'seller': 'seller',
+                                
+                                # Refineries
                                 'refineries': 'refinery',
+                                'refinery': 'refinery',
+                                
+                                # Products
                                 'oil_products': 'product',
+                                'oil_product': 'product',
+                                'products': 'product',
+                                'product': 'product',
+                                
+                                # Brokers
                                 'broker_profiles': 'broker',
+                                'broker_profile': 'broker',
+                                'brokers': 'broker',
+                                'broker': 'broker',
+                                
+                                # Bank accounts
                                 'buyer_company_bank_accounts': 'buyer_bank',
+                                'buyer_bank_accounts': 'buyer_bank',
+                                'buyer_bank': 'buyer_bank',
                                 'seller_company_bank_accounts': 'seller_bank',
+                                'seller_bank_accounts': 'seller_bank',
+                                'seller_bank': 'seller_bank',
+                                'bank_accounts': 'buyer_bank',  # Default to buyer
+                                
+                                # Deals
                                 'deals': 'deal',
+                                'deal': 'deal',
                             }
                             
                             entity_key = entity_map.get(table_lower)
                             if entity_key and entity_key in fetched_entities:
                                 source_data = fetched_entities.get(entity_key)
                                 if source_data:
-                                    logger.info(f"  ✅ Using fetched {entity_key} data (from payload ID)")
+                                    logger.info(f"  ✅ Using fetched {entity_key} data (from payload ID, table: {database_table})")
+                            else:
+                                logger.info(f"  ℹ️  Table '{database_table}' -> entity_key '{entity_key}' not in fetched_entities")
                             
                             # Special handling for ports - check both departure and destination
-                            if table_lower == 'ports' and not source_data:
+                            if table_lower in ('ports', 'port') and not source_data:
                                 source_data = fetched_entities.get('destination_port')
                                 if source_data:
-                                    logger.info(f"  ✅ Using fetched destination_port data")
+                                    logger.info(f"  ✅ Using fetched destination_port data (fallback from ports)")
                         
-                        # FALLBACK: If not in fetched_entities, use vessel data or fetch by ID
+                        # FALLBACK: If not in fetched_entities
+                        # CRITICAL FIX: Only fallback to vessel data if configured table is 'vessels'
+                        # Do NOT use vessel data for other tables (buyer_companies, seller_companies, etc.)
+                        # This prevents wrong matches like buyer_email -> vessel's buyer_name
+                        is_vessel_table = database_table and database_table.lower() in ('vessels', 'vessel')
+                        
                         if not source_data:
                             if database_table and database_table.lower() == 'brokers':
                                 logger.info(f"  ⚠️  Brokers table excluded from mapping; will use cascade (CSV → AI)")
                                 found = False
                                 source_data = None
-                            elif database_table and database_table.lower() == 'vessels':
+                            elif is_vessel_table:
                                 source_data = vessel
                                 logger.info(f"  📋 Using vessel data (table: vessels)")
                             elif database_table:
-                                # Try to fetch if we have IDs in payload
-                                logger.info(f"  ⚠️  Table '{database_table}' not in fetched_entities, checking payload IDs...")
-                                # This is a fallback - ideally all data should come from fetched_entities
-                                source_data = vessel  # Fallback to vessel
+                                # CRITICAL FIX: Don't fallback to vessel data for non-vessel tables
+                                # This was causing wrong matches like buyer_email -> buyer_name (vessel field)
+                                logger.warning(f"  ⚠️  Table '{database_table}' data not available (not fetched)")
+                                logger.warning(f"  ⚠️  Will use cascade (CSV → AI) instead of wrong vessel data")
+                                source_data = None  # Don't use vessel data for non-vessel tables!
+                                found = False
                             else:
+                                # No table configured - use vessel as default
                                 source_data = vessel
-                                logger.info(f"  📋 Using vessel data (default)")
+                                logger.info(f"  📋 Using vessel data (default - no table configured)")
 
                         if source_data is not None and source_data:
+                            logger.debug(f"  📊 Source data available with {len(source_data)} fields")
+                            
                             if database_field:
-                                # Try exact match first
+                                # Strategy 1: Try exact match first
                                 if database_field in source_data:
                                     value = source_data[database_field]
                                     if value is not None and str(value).strip() != '':
                                         matched_field = database_field
                                         matched_value = str(value).strip()
                                         logger.info(f"  ✅ Exact match found: '{database_field}' = '{matched_value}'")
-                                else:
-                                    # Try case-insensitive match
+                                
+                                # Strategy 2: Try case-insensitive match
+                                if not matched_field:
                                     database_field_lower = database_field.lower()
                                     for key, value in source_data.items():
                                         if key.lower() == database_field_lower and value is not None and str(value).strip() != '':
@@ -6854,6 +7033,30 @@ async def generate_document(request: Request):
                                             matched_value = str(value).strip()
                                             logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}' = '{matched_value}'")
                                             break
+                                
+                                # Strategy 3: Try underscore/space variants
+                                if not matched_field:
+                                    field_variants = [
+                                        database_field.replace('_', ' '),
+                                        database_field.replace(' ', '_'),
+                                        database_field.replace('-', '_'),
+                                        database_field.replace('_', '-'),
+                                    ]
+                                    for variant in field_variants:
+                                        variant_lower = variant.lower()
+                                        for key, value in source_data.items():
+                                            if key.lower() == variant_lower and value is not None and str(value).strip() != '':
+                                                matched_field = key
+                                                matched_value = str(value).strip()
+                                                logger.info(f"  ✅ Variant match: '{database_field}' -> '{key}' = '{matched_value}'")
+                                                break
+                                        if matched_field:
+                                            break
+                                
+                                # Log available fields if not found
+                                if not matched_field:
+                                    logger.warning(f"  ⚠️  Field '{database_field}' not found in source data")
+                                    logger.warning(f"  📋 Available fields: {sorted(source_data.keys())}")
 
                             if not matched_field and not database_field:
                                 logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
@@ -6862,6 +7065,7 @@ async def generate_document(request: Request):
                                     logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
                                 else:
                                     logger.warning(f"  ⚠️  Intelligent matching failed for '{placeholder}'")
+                                    logger.warning(f"  📋 Available fields: {sorted(source_data.keys())[:15]}...")
 
                             if not matched_field and database_field:
                                 logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")

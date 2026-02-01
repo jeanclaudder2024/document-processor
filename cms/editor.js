@@ -552,13 +552,15 @@ class TemplateEditor {
         this.updateCsvFileDropdowns();
         
         // Load initial database columns if database source is selected
+        // CRITICAL: Pass isInitialLoad=true to preserve databaseField from settings
         this.placeholders.forEach(ph => {
             const setting = this.currentSettings[ph];
             if (setting && setting.source === 'database' && setting.databaseTable) {
-                this.handleDatabaseTableChange(ph, setting.databaseTable, setting.databaseField);
+                // Pass true for isInitialLoad to prevent clearing databaseField
+                this.handleDatabaseTableChange(ph, setting.databaseTable, setting.databaseField, true);
             }
             if (setting && setting.source === 'csv' && setting.csvId) {
-                this.handleCsvFileChange(ph, setting.csvId, setting.csvField);
+                this.handleCsvFileChange(ph, setting.csvId, setting.csvField, true);
             }
         });
     }
@@ -583,11 +585,18 @@ class TemplateEditor {
         }
     }
 
-    async handleDatabaseTableChange(placeholder, tableName, selectedField = '') {
+    async handleDatabaseTableChange(placeholder, tableName, selectedField = '', isInitialLoad = false) {
         if (!this.currentSettings[placeholder]) {
-            this.currentSettings[placeholder] = {};
+            this.currentSettings[placeholder] = { source: 'database' };
         }
         this.currentSettings[placeholder].databaseTable = tableName;
+        
+        // CRITICAL FIX: When user changes table (not initial load), clear the databaseField
+        // because the old field might not exist in the new table
+        if (!isInitialLoad && !selectedField) {
+            this.currentSettings[placeholder].databaseField = '';
+            console.log(`🔄 Table changed for '${placeholder}': cleared databaseField`);
+        }
         
         const fieldSelect = document.getElementById(`dbField_${placeholder}`);
         if (!fieldSelect) return;
@@ -595,24 +604,51 @@ class TemplateEditor {
         if (tableName) {
             fieldSelect.innerHTML = '<option value="">Loading...</option>';
             const columns = await this.loadTableColumns(tableName);
+            
+            // CRITICAL FIX: Use case-insensitive matching for selectedField
+            const selectedFieldLower = (selectedField || '').toLowerCase();
+            let matchedField = '';
+            
             fieldSelect.innerHTML = '<option value="">-- Select field --</option>' +
-                columns.map(col => 
-                    `<option value="${col.name}" ${selectedField === col.name ? 'selected' : ''}>
+                columns.map(col => {
+                    const colNameLower = (col.name || '').toLowerCase();
+                    const isSelected = selectedFieldLower && colNameLower === selectedFieldLower;
+                    if (isSelected) {
+                        matchedField = col.name;  // Use actual column name (correct case)
+                    }
+                    return `<option value="${col.name}" ${isSelected ? 'selected' : ''}>
                         ${col.label} (${col.name})
-                    </option>`
-                ).join('');
+                    </option>`;
+                }).join('');
+            
+            // CRITICAL FIX: Update databaseField with matched field (correct case)
+            if (matchedField) {
+                this.currentSettings[placeholder].databaseField = matchedField;
+                console.log(`✅ Field matched for '${placeholder}': '${selectedField}' -> '${matchedField}'`);
+            } else if (selectedField && isInitialLoad) {
+                // Field was configured but not found in columns - might be an issue
+                console.warn(`⚠️ Configured field '${selectedField}' not found in columns for table '${tableName}'`);
+                console.warn(`   Available columns: ${columns.map(c => c.name).join(', ')}`);
+            }
         } else {
             fieldSelect.innerHTML = '<option value="">-- Select field --</option>';
+            this.currentSettings[placeholder].databaseField = '';
         }
         
-        this.updateSetting(placeholder, 'databaseTable', tableName);
+        console.log(`📊 handleDatabaseTableChange: placeholder='${placeholder}', table='${tableName}', field='${this.currentSettings[placeholder].databaseField}'`);
     }
 
-    async handleCsvFileChange(placeholder, csvId, selectedField = '') {
+    async handleCsvFileChange(placeholder, csvId, selectedField = '', isInitialLoad = false) {
         if (!this.currentSettings[placeholder]) {
-            this.currentSettings[placeholder] = {};
+            this.currentSettings[placeholder] = { source: 'csv' };
         }
         this.currentSettings[placeholder].csvId = csvId;
+        
+        // CRITICAL FIX: When user changes CSV file (not initial load), clear the csvField
+        if (!isInitialLoad && !selectedField) {
+            this.currentSettings[placeholder].csvField = '';
+            console.log(`🔄 CSV file changed for '${placeholder}': cleared csvField`);
+        }
         
         const fieldSelect = document.getElementById(`csvField_${placeholder}`);
         if (!fieldSelect) return;
@@ -622,20 +658,38 @@ class TemplateEditor {
                 await this.loadCsvFields(csvId);
             }
             if (this.csvFields[csvId]) {
+                // CRITICAL FIX: Use case-insensitive matching for selectedField
+                const selectedFieldLower = (selectedField || '').toLowerCase();
+                let matchedField = '';
+                
                 fieldSelect.innerHTML = '<option value="">-- Select field --</option>' +
-                    this.csvFields[csvId].map(f => 
-                        `<option value="${f.name}" ${selectedField === f.name ? 'selected' : ''}>
+                    this.csvFields[csvId].map(f => {
+                        const fieldNameLower = (f.name || '').toLowerCase();
+                        const isSelected = selectedFieldLower && fieldNameLower === selectedFieldLower;
+                        if (isSelected) {
+                            matchedField = f.name;
+                        }
+                        return `<option value="${f.name}" ${isSelected ? 'selected' : ''}>
                             ${f.label || f.name} (${f.name})
-                        </option>`
-                    ).join('');
+                        </option>`;
+                    }).join('');
+                
+                // CRITICAL FIX: Update csvField with matched field (correct case)
+                if (matchedField) {
+                    this.currentSettings[placeholder].csvField = matchedField;
+                    console.log(`✅ CSV field matched for '${placeholder}': '${selectedField}' -> '${matchedField}'`);
+                } else if (selectedField && isInitialLoad) {
+                    console.warn(`⚠️ Configured CSV field '${selectedField}' not found in CSV '${csvId}'`);
+                }
             } else {
                 fieldSelect.innerHTML = '<option value="">-- Select field --</option>';
             }
         } else {
             fieldSelect.innerHTML = '<option value="">-- Select field --</option>';
+            this.currentSettings[placeholder].csvField = '';
         }
         
-        this.updateSetting(placeholder, 'csvId', csvId);
+        console.log(`📊 handleCsvFileChange: placeholder='${placeholder}', csvId='${csvId}', field='${this.currentSettings[placeholder].csvField}'`);
     }
 
 
@@ -804,10 +858,28 @@ class TemplateEditor {
                 }
             });
             
-            console.log('💾 Saving placeholder settings...');
+            console.log('=' .repeat(60));
+            console.log('💾 SAVING PLACEHOLDER SETTINGS');
+            console.log('=' .repeat(60));
             console.log('   Template ID:', this.currentTemplateId);
-            console.log('   Settings count:', Object.keys(this.currentSettings).length);
-            console.log('   Sample settings:', Object.entries(this.currentSettings).slice(0, 3));
+            console.log('   Total settings count:', Object.keys(this.currentSettings).length);
+            
+            // Log ALL settings with their database table/field for debugging
+            console.log('📋 Settings being saved:');
+            Object.entries(this.currentSettings).forEach(([ph, setting]) => {
+                console.log(`   ${ph}:`);
+                console.log(`      source: '${setting.source}'`);
+                if (setting.source === 'database') {
+                    console.log(`      databaseTable: '${setting.databaseTable || ''}'`);
+                    console.log(`      databaseField: '${setting.databaseField || ''}'`);
+                } else if (setting.source === 'csv') {
+                    console.log(`      csvId: '${setting.csvId || ''}'`);
+                    console.log(`      csvField: '${setting.csvField || ''}'`);
+                } else if (setting.source === 'custom') {
+                    console.log(`      customValue: '${setting.customValue || ''}'`);
+                }
+            });
+            console.log('=' .repeat(60));
             
             const data = await this.apiJson('/placeholder-settings', {
                 method: 'POST',
@@ -819,6 +891,16 @@ class TemplateEditor {
 
             if (data && data.success) {
                 console.log('✅ Settings saved successfully!', data);
+                console.log('   Saved count:', data.saved_count);
+                
+                // Verify the returned settings match what we sent
+                if (data.settings) {
+                    console.log('📋 Settings returned from server (verification):');
+                    Object.entries(data.settings).slice(0, 5).forEach(([ph, setting]) => {
+                        console.log(`   ${ph}: source='${setting.source}', table='${setting.databaseTable || ''}', field='${setting.databaseField || ''}'`);
+                    });
+                }
+                
                 if (!quiet) alert(`Placeholder settings saved successfully! (${data.saved_count || Object.keys(this.currentSettings).length} settings)`);
             } else {
                 console.error('❌ Save failed:', data);

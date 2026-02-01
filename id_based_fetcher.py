@@ -236,6 +236,31 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
         except Exception as e:
             logger.error(f"Error fetching vessel by IMO {vessel_imo}: {e}")
     
+    # =========================================================================
+    # CRITICAL FIX: Also fetch related entities using IDs from the vessel record
+    # This allows document generation to use buyer/seller data even when not
+    # explicitly passed in the payload
+    # =========================================================================
+    vessel = fetched_data.get('vessel')
+    if vessel:
+        logger.info("📊 Checking vessel record for related entity IDs...")
+        
+        # Extract IDs from vessel record (these override payload if not provided)
+        vessel_buyer_id = vessel.get('buyer_company_id')
+        vessel_seller_id = vessel.get('seller_company_id')
+        vessel_refinery_id = vessel.get('refinery_id')
+        vessel_deal_id = vessel.get('deal_reference_id')
+        
+        if vessel_buyer_id:
+            logger.info(f"   Found buyer_company_id in vessel: {vessel_buyer_id}")
+        if vessel_seller_id:
+            logger.info(f"   Found seller_company_id in vessel: {vessel_seller_id}")
+    else:
+        vessel_buyer_id = None
+        vessel_seller_id = None
+        vessel_refinery_id = None
+        vessel_deal_id = None
+    
     # Fetch ports
     departure_port_id = payload.get('departure_port_id')
     destination_port_id = payload.get('destination_port_id')
@@ -244,23 +269,31 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # Fetch buyer company
-    buyer_id = payload.get('buyer_id')
+    # Fetch buyer company - from payload OR from vessel record
+    buyer_id = payload.get('buyer_id') or vessel_buyer_id
     if buyer_id:
+        logger.info(f"📦 Fetching buyer company with ID: {buyer_id}")
         fetched_data['buyer'] = fetch_by_id(supabase_client, 'buyer_companies', buyer_id)
+        if not fetched_data.get('buyer'):
+            # Also try companies table as fallback
+            fetched_data['buyer'] = fetch_by_id(supabase_client, 'companies', buyer_id)
     
-    # Fetch seller company
-    seller_id = payload.get('seller_id')
+    # Fetch seller company - from payload OR from vessel record
+    seller_id = payload.get('seller_id') or vessel_seller_id
     if seller_id:
+        logger.info(f"📦 Fetching seller company with ID: {seller_id}")
         fetched_data['seller'] = fetch_by_id(supabase_client, 'seller_companies', seller_id)
+        if not fetched_data.get('seller'):
+            # Also try companies table as fallback
+            fetched_data['seller'] = fetch_by_id(supabase_client, 'companies', seller_id)
     
     # Fetch product
     product_id = payload.get('product_id')
     if product_id:
         fetched_data['product'] = fetch_by_id(supabase_client, 'oil_products', product_id)
     
-    # Fetch refinery
-    refinery_id = payload.get('refinery_id')
+    # Fetch refinery - from payload OR from vessel record
+    refinery_id = payload.get('refinery_id') or vessel_refinery_id
     if refinery_id:
         fetched_data['refinery'] = fetch_by_id(supabase_client, 'refineries', refinery_id)
     
@@ -283,8 +316,8 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
             'seller_company_bank_accounts', is_buyer=False
         )
     
-    # Fetch deal
-    deal_id = payload.get('deal_id')
+    # Fetch deal - from payload OR from vessel record
+    deal_id = payload.get('deal_id') or vessel_deal_id
     if deal_id:
         fetched_data['deal'] = fetch_by_id(supabase_client, 'deals', deal_id)
     
