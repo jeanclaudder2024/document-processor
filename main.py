@@ -6974,7 +6974,26 @@ async def generate_document(request: Request):
                             
                             entity_key = entity_map.get(table_lower)
                             logger.info(f"  🔍 Looking up: table='{database_table}' -> entity_key='{entity_key}'")
-                            logger.info(f"  🔍 Available entities: {list(fetched_entities.keys())}")
+                            logger.info(f"  🔍 Available entities in fetched_entities: {list(fetched_entities.keys())}")
+                            
+                            # Debug: Show what's in buyer/seller
+                            if 'buyer' in fetched_entities:
+                                buyer_data = fetched_entities.get('buyer')
+                                if buyer_data:
+                                    logger.info(f"  🔍 DEBUG: fetched_entities['buyer'] = {buyer_data.get('name', 'NO NAME')} (has {len(buyer_data)} fields)")
+                                else:
+                                    logger.warning(f"  🔍 DEBUG: fetched_entities['buyer'] = None or empty!")
+                            else:
+                                logger.warning(f"  🔍 DEBUG: 'buyer' NOT in fetched_entities!")
+                                
+                            if 'seller' in fetched_entities:
+                                seller_data = fetched_entities.get('seller')
+                                if seller_data:
+                                    logger.info(f"  🔍 DEBUG: fetched_entities['seller'] = {seller_data.get('name', 'NO NAME')} (has {len(seller_data)} fields)")
+                                else:
+                                    logger.warning(f"  🔍 DEBUG: fetched_entities['seller'] = None or empty!")
+                            else:
+                                logger.warning(f"  🔍 DEBUG: 'seller' NOT in fetched_entities!")
                             
                             if entity_key and entity_key in fetched_entities:
                                 source_data = fetched_entities.get(entity_key)
