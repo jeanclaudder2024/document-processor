@@ -989,49 +989,12 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    result = {
+    return {
         "status": "healthy",
-        "version": "2.0.1-buyer-test",  # Bump to verify new code is deployed
         "supabase": "connected" if supabase else "disconnected",
         "templates_dir": TEMPLATES_DIR,
         "storage_dir": STORAGE_DIR
     }
-    # Test buyer/seller fetch (diagnostic for document generation)
-    if supabase:
-        try:
-            from id_based_fetcher import fetch_all_entities
-            entities = fetch_all_entities(supabase, {"vessel_imo": "1234567"})
-            buyer = entities.get("buyer")
-            seller = entities.get("seller")
-            result["buyer_seller_test"] = {
-                "buyer": buyer.get("name") if buyer else None,
-                "seller": seller.get("name") if seller else None,
-                "using_service_role": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip())
-            }
-        except Exception as e:
-            result["buyer_seller_test"] = {"error": str(e), "type": type(e).__name__}
-    return result
-
-
-@app.get("/test-buyer-seller")
-@app.get("/api/test-buyer-seller")  # Alias for nginx /api prefix
-async def test_buyer_seller_fetch():
-    """Test endpoint to verify buyer/seller can be fetched from database."""
-    from id_based_fetcher import fetch_all_entities
-    if not supabase:
-        return {"ok": False, "error": "Supabase not connected"}
-    try:
-        entities = fetch_all_entities(supabase, {"vessel_imo": "1234567"})
-        buyer = entities.get("buyer")
-        seller = entities.get("seller")
-        return {
-            "ok": True,
-            "buyer": {"name": buyer.get("name"), "id": str(buyer.get("id"))[:8] + "..."} if buyer else None,
-            "seller": {"name": seller.get("name"), "id": str(seller.get("id"))[:8] + "..."} if seller else None,
-            "using_service_role": bool(SUPABASE_SERVICE_ROLE_KEY)
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
 # ============================================================================
 # VESSELS API (from Supabase)
@@ -7021,27 +6984,6 @@ async def generate_document(request: Request):
                             }
                             
                             entity_key = entity_map.get(table_lower)
-                            logger.info(f"  🔍 Looking up: table='{database_table}' -> entity_key='{entity_key}'")
-                            logger.info(f"  🔍 Available entities in fetched_entities: {list(fetched_entities.keys())}")
-                            
-                            # Debug: Show what's in buyer/seller
-                            if 'buyer' in fetched_entities:
-                                buyer_data = fetched_entities.get('buyer')
-                                if buyer_data:
-                                    logger.info(f"  🔍 DEBUG: fetched_entities['buyer'] = {buyer_data.get('name', 'NO NAME')} (has {len(buyer_data)} fields)")
-                                else:
-                                    logger.warning(f"  🔍 DEBUG: fetched_entities['buyer'] = None or empty!")
-                            else:
-                                logger.warning(f"  🔍 DEBUG: 'buyer' NOT in fetched_entities!")
-                                
-                            if 'seller' in fetched_entities:
-                                seller_data = fetched_entities.get('seller')
-                                if seller_data:
-                                    logger.info(f"  🔍 DEBUG: fetched_entities['seller'] = {seller_data.get('name', 'NO NAME')} (has {len(seller_data)} fields)")
-                                else:
-                                    logger.warning(f"  🔍 DEBUG: fetched_entities['seller'] = None or empty!")
-                            else:
-                                logger.warning(f"  🔍 DEBUG: 'seller' NOT in fetched_entities!")
                             
                             if entity_key and entity_key in fetched_entities:
                                 source_data = fetched_entities.get(entity_key)
@@ -7061,28 +7003,39 @@ async def generate_document(request: Request):
                                     logger.info(f"  ✅ Using fetched destination_port data (fallback from ports)")
                         
                         # FALLBACK: If not in fetched_entities
-                        # CRITICAL FIX: Only fallback to vessel data if configured table is 'vessels'
-                        # Do NOT use vessel data for other tables (buyer_companies, seller_companies, etc.)
-                        # This prevents wrong matches like buyer_email -> vessel's buyer_name
+                        # CRITICAL: NEVER use vessel for buyer/seller - vessel.buyer_name is OLD/WRONG data
+                        # Buyer/seller MUST come from buyer_companies and seller_companies tables only
                         is_vessel_table = database_table and database_table.lower() in ('vessels', 'vessel')
+                        ph_lower = (placeholder or '').lower()
+                        is_buyer_placeholder = 'buyer' in ph_lower and not ph_lower.startswith('buyer_bank')
+                        is_seller_placeholder = 'seller' in ph_lower and not ph_lower.startswith('seller_bank')
                         
                         if not source_data:
                             if database_table and database_table.lower() == 'brokers':
                                 logger.info(f"  ⚠️  Brokers table excluded from mapping; will use cascade (CSV → AI)")
                                 found = False
                                 source_data = None
+                            elif is_buyer_placeholder and fetched_entities.get('buyer'):
+                                source_data = fetched_entities['buyer']
+                                logger.info(f"  📋 Using buyer_companies data (placeholder suggests buyer)")
+                            elif is_seller_placeholder and fetched_entities.get('seller'):
+                                source_data = fetched_entities['seller']
+                                logger.info(f"  📋 Using seller_companies data (placeholder suggests seller)")
                             elif is_vessel_table:
                                 source_data = vessel
                                 logger.info(f"  📋 Using vessel data (table: vessels)")
-                            elif database_table:
-                                # CRITICAL FIX: Don't fallback to vessel data for non-vessel tables
-                                # This was causing wrong matches like buyer_email -> buyer_name (vessel field)
+                            elif database_table and table_lower not in ('buyer_companies', 'seller_companies', 'buyer', 'seller'):
                                 logger.warning(f"  ⚠️  Table '{database_table}' data not available (not fetched)")
-                                logger.warning(f"  ⚠️  Will use cascade (CSV → AI) instead of wrong vessel data")
-                                source_data = None  # Don't use vessel data for non-vessel tables!
+                                source_data = None
+                                found = False
+                            elif is_buyer_placeholder or is_seller_placeholder:
+                                logger.warning(f"  ⚠️  Buyer/seller data not fetched - add SUPABASE_SERVICE_ROLE_KEY to .env")
+                                source_data = None
+                                found = False
+                            elif database_table:
+                                source_data = None
                                 found = False
                             else:
-                                # No table configured - use vessel as default
                                 source_data = vessel
                                 logger.info(f"  📋 Using vessel data (default - no table configured)")
 
