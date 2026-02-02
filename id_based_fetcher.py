@@ -357,37 +357,33 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # ALWAYS fetch random buyer company from companies table (different each time)
+    # ALWAYS fetch random buyer company from buyer_companies table (different each time)
     logger.info(f"=" * 60)
-    logger.info(f"🎲 FETCHING RANDOM BUYER COMPANY FROM companies TABLE...")
+    logger.info(f"🎲 FETCHING RANDOM BUYER FROM buyer_companies TABLE...")
     logger.info(f"=" * 60)
-    fetched_data['buyer'] = fetch_random_company_by_type(supabase_client, 'buyer')
+    fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
     if fetched_data.get('buyer'):
         logger.info(f"✅ BUYER FETCHED: {fetched_data['buyer'].get('name', 'NO NAME')}")
         logger.info(f"   Buyer fields: {list(fetched_data['buyer'].keys())}")
     else:
-        logger.warning(f"❌ NO BUYER with type 'buyer' - trying any company...")
-        fetched_data['buyer'] = fetch_random_row(supabase_client, 'companies', seed=None)
-        if fetched_data.get('buyer'):
-            logger.info(f"✅ BUYER FETCHED (any company): {fetched_data['buyer'].get('name', 'NO NAME')}")
-        else:
-            logger.error(f"❌ FAILED TO FETCH ANY BUYER - companies table may be empty")
+        logger.error(f"❌ FAILED TO FETCH BUYER from buyer_companies table!")
+        logger.error(f"   Possible reasons:")
+        logger.error(f"   1. Table is empty - add buyer companies in Admin Panel")
+        logger.error(f"   2. RLS policy blocking - run SQL: CREATE POLICY \"public_read\" ON buyer_companies FOR SELECT USING (true);")
     
-    # ALWAYS fetch random seller company from companies table (different each time)
+    # ALWAYS fetch random seller company from seller_companies table (different each time)
     logger.info(f"=" * 60)
-    logger.info(f"🎲 FETCHING RANDOM SELLER COMPANY FROM companies TABLE...")
+    logger.info(f"🎲 FETCHING RANDOM SELLER FROM seller_companies TABLE...")
     logger.info(f"=" * 60)
-    fetched_data['seller'] = fetch_random_company_by_type(supabase_client, 'seller')
+    fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
     if fetched_data.get('seller'):
         logger.info(f"✅ SELLER FETCHED: {fetched_data['seller'].get('name', 'NO NAME')}")
         logger.info(f"   Seller fields: {list(fetched_data['seller'].keys())}")
     else:
-        logger.warning(f"❌ NO SELLER with type 'seller' - trying any company...")
-        fetched_data['seller'] = fetch_random_row(supabase_client, 'companies', seed=None)
-        if fetched_data.get('seller'):
-            logger.info(f"✅ SELLER FETCHED (any company): {fetched_data['seller'].get('name', 'NO NAME')}")
-        else:
-            logger.error(f"❌ FAILED TO FETCH ANY SELLER - companies table may be empty")
+        logger.error(f"❌ FAILED TO FETCH SELLER from seller_companies table!")
+        logger.error(f"   Possible reasons:")
+        logger.error(f"   1. Table is empty - add seller companies in Admin Panel")
+        logger.error(f"   2. RLS policy blocking - run SQL: CREATE POLICY \"public_read\" ON seller_companies FOR SELECT USING (true);")
     
     # Fetch product
     product_id = payload.get('product_id')
