@@ -310,18 +310,36 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
     # ALWAYS fetch random buyer company (different each time document is generated)
-    logger.info(f"🎲 Fetching random buyer company...")
+    logger.info(f"=" * 60)
+    logger.info(f"🎲 FETCHING RANDOM BUYER COMPANY...")
+    logger.info(f"=" * 60)
     fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
-    if not fetched_data.get('buyer'):
-        # Fallback to companies table if buyer_companies is empty
+    if fetched_data.get('buyer'):
+        logger.info(f"✅ BUYER FETCHED: {fetched_data['buyer'].get('name', 'NO NAME')}")
+        logger.info(f"   Buyer fields: {list(fetched_data['buyer'].keys())}")
+    else:
+        logger.warning(f"❌ NO BUYER from buyer_companies - trying companies table...")
         fetched_data['buyer'] = fetch_random_row(supabase_client, 'companies', seed=None)
+        if fetched_data.get('buyer'):
+            logger.info(f"✅ BUYER FETCHED from companies: {fetched_data['buyer'].get('name', 'NO NAME')}")
+        else:
+            logger.error(f"❌ FAILED TO FETCH ANY BUYER - tables may be empty or RLS blocking")
     
     # ALWAYS fetch random seller company (different each time document is generated)
-    logger.info(f"🎲 Fetching random seller company...")
+    logger.info(f"=" * 60)
+    logger.info(f"🎲 FETCHING RANDOM SELLER COMPANY...")
+    logger.info(f"=" * 60)
     fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
-    if not fetched_data.get('seller'):
-        # Fallback to companies table if seller_companies is empty
+    if fetched_data.get('seller'):
+        logger.info(f"✅ SELLER FETCHED: {fetched_data['seller'].get('name', 'NO NAME')}")
+        logger.info(f"   Seller fields: {list(fetched_data['seller'].keys())}")
+    else:
+        logger.warning(f"❌ NO SELLER from seller_companies - trying companies table...")
         fetched_data['seller'] = fetch_random_row(supabase_client, 'companies', seed=None)
+        if fetched_data.get('seller'):
+            logger.info(f"✅ SELLER FETCHED from companies: {fetched_data['seller'].get('name', 'NO NAME')}")
+        else:
+            logger.error(f"❌ FAILED TO FETCH ANY SELLER - tables may be empty or RLS blocking")
     
     # Fetch product
     product_id = payload.get('product_id')

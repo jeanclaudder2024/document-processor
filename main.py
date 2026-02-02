@@ -6973,12 +6973,19 @@ async def generate_document(request: Request):
                             }
                             
                             entity_key = entity_map.get(table_lower)
+                            logger.info(f"  🔍 Looking up: table='{database_table}' -> entity_key='{entity_key}'")
+                            logger.info(f"  🔍 Available entities: {list(fetched_entities.keys())}")
+                            
                             if entity_key and entity_key in fetched_entities:
                                 source_data = fetched_entities.get(entity_key)
                                 if source_data:
-                                    logger.info(f"  ✅ Using fetched {entity_key} data (from payload ID, table: {database_table})")
+                                    logger.info(f"  ✅ FOUND {entity_key} data! Name: {source_data.get('name', 'N/A')}")
+                                    logger.info(f"  ✅ Available fields: {list(source_data.keys())[:15]}...")  # Show first 15 fields
+                                else:
+                                    logger.warning(f"  ⚠️  entity_key '{entity_key}' exists but has NO DATA (None)")
                             else:
-                                logger.info(f"  ℹ️  Table '{database_table}' -> entity_key '{entity_key}' not in fetched_entities")
+                                logger.warning(f"  ⚠️  Table '{database_table}' -> entity_key '{entity_key}' NOT FOUND in fetched_entities")
+                                logger.warning(f"  ⚠️  This means buyer/seller was NOT fetched from database!")
                             
                             # Special handling for ports - check both departure and destination
                             if table_lower in ('ports', 'port') and not source_data:
