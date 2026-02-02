@@ -143,58 +143,41 @@ def fetch_by_id(supabase_client: Client, table_name: str, record_id: Union[int, 
 
 def fetch_random_row(supabase_client: Client, table_name: str, seed: str = None) -> Optional[Dict]:
     """
-    Fetch a random row from a table. Uses seed for consistent randomness per vessel.
+    Fetch a random row from a table. Truly random each time (no seed used).
     
     Args:
         supabase_client: Supabase client instance
         table_name: Name of the table
-        seed: Optional seed string (e.g., vessel IMO) for consistent randomness
+        seed: Ignored - kept for API compatibility
     
     Returns:
         Dictionary with record data or None if not found
     """
     import random
-    import hashlib
     
     if not supabase_client:
         logger.warning(f"Supabase client not available, cannot fetch random from {table_name}")
         return None
     
     try:
-        # First, get the count of records
-        response = supabase_client.table(table_name).select('id', count='exact').execute()
+        logger.info(f"🎲 Attempting to fetch random row from {table_name}...")
         
-        if not response.data or response.count == 0:
-            logger.warning(f"❌ No records found in {table_name}")
+        # Method 1: Try to get all records and pick random one
+        # This is more reliable than using count/offset which may fail
+        response = supabase_client.table(table_name).select('*').limit(100).execute()
+        
+        if not response.data or len(response.data) == 0:
+            logger.warning(f"❌ No records found in {table_name} (table may be empty)")
             return None
         
-        total_count = response.count
-        
-        # Use seed for consistent randomness (same vessel = same random row)
-        if seed:
-            # Create a deterministic random based on seed + table name
-            seed_hash = int(hashlib.md5(f"{seed}_{table_name}".encode()).hexdigest(), 16)
-            random.seed(seed_hash)
-        
-        # Pick a random offset
-        random_offset = random.randint(0, total_count - 1)
-        
-        # Reset random seed so it doesn't affect other randomness
-        random.seed()
-        
-        # Fetch the record at that offset
-        response = supabase_client.table(table_name).select('*').range(random_offset, random_offset).execute()
-        
-        if response.data and len(response.data) > 0:
-            data = response.data[0]
-            logger.info(f"🎲 Fetched random record from {table_name}: {data.get('name', data.get('id', 'Unknown'))} (offset {random_offset}/{total_count})")
-            return data
-        else:
-            logger.warning(f"❌ Could not fetch random record from {table_name}")
-            return None
+        # Pick a truly random record from the results
+        random_record = random.choice(response.data)
+        logger.info(f"🎲 SUCCESS: Random record from {table_name}: {random_record.get('name', random_record.get('id', 'Unknown'))} (picked from {len(response.data)} records)")
+        return random_record
             
     except Exception as e:
         logger.error(f"❌ Error fetching random from {table_name}: {e}")
+        logger.error(f"   This might mean the table '{table_name}' doesn't exist or has access issues")
         return None
 
 
@@ -356,16 +339,20 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
         fetched_data['broker'] = fetch_by_id(supabase_client, 'broker_profiles', broker_id)
     
     # Fetch bank accounts (with is_primary logic)
+    # Use the ID from the fetched random buyer/seller
     buyer_bank_id = payload.get('buyer_bank_id')
     seller_bank_id = payload.get('seller_bank_id')
-    if buyer_id:
+    fetched_buyer = fetched_data.get('buyer')
+    fetched_seller = fetched_data.get('seller')
+    
+    if fetched_buyer and fetched_buyer.get('id'):
         fetched_data['buyer_bank'] = fetch_bank_account(
-            supabase_client, buyer_id, buyer_bank_id, 
+            supabase_client, fetched_buyer.get('id'), buyer_bank_id, 
             'buyer_company_bank_accounts', is_buyer=True
         )
-    if seller_id:
+    if fetched_seller and fetched_seller.get('id'):
         fetched_data['seller_bank'] = fetch_bank_account(
-            supabase_client, seller_id, seller_bank_id,
+            supabase_client, fetched_seller.get('id'), seller_bank_id,
             'seller_company_bank_accounts', is_buyer=False
         )
     
