@@ -524,6 +524,19 @@ def get_placeholder_value(placeholder: str, fetched_data: Dict[str, Optional[Dic
         logger.debug(f"✅ Found {placeholder} → {field_name} = {value}")
         return value
     
+    # Field aliases for buyer/seller tables (editor may use old names)
+    FIELD_ALIASES = {
+        'contact_person': 'representative_name',
+        'contact_email': 'representative_email',
+        'company_name': 'name',
+    }
+    alt_field = FIELD_ALIASES.get(field_name.lower())
+    if alt_field and alt_field in entity_data:
+        value = entity_data.get(alt_field)
+        if value is not None:
+            logger.debug(f"✅ Found {placeholder} → {alt_field} (alias of {field_name}) = {value}")
+            return value
+    
     # Try variations (with underscores, etc.)
     variations = [
         field_name,

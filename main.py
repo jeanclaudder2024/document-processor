@@ -1338,48 +1338,54 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
         'buyer_companies': [
             col('id', 'ID', 'uuid'),
             col('name', 'Company Name'),
-            col('company_type', 'Company Type'),
+            col('trade_name', 'Trade Name'),
             col('country', 'Country'),
             col('city', 'City'),
             col('address', 'Address'),
             col('email', 'Email'),
+            col('official_email', 'Official Email'),
+            col('operations_email', 'Operations Email'),
             col('phone', 'Phone'),
             col('website', 'Website'),
-            col('contact_person', 'Contact Person'),
-            col('contact_email', 'Contact Email'),
-            col('contact_phone', 'Contact Phone'),
+            col('representative_name', 'Representative Name'),
+            col('representative_email', 'Representative Email'),
+            col('representative_title', 'Representative Title'),
             col('registration_number', 'Registration Number'),
-            col('tax_id', 'Tax ID'),
+            col('legal_address', 'Legal Address'),
             col('legal_name', 'Legal Name'),
             col('industry', 'Industry'),
             col('description', 'Description'),
-            col('established_year', 'Established Year', 'integer'),
-            col('employee_count', 'Employee Count', 'integer'),
+            col('employees_count', 'Employees Count', 'integer'),
             col('annual_revenue', 'Annual Revenue', 'numeric'),
+            col('founded_year', 'Founded Year', 'integer'),
             col('created_at', 'Created At'),
             col('updated_at', 'Updated At'),
         ],
         'seller_companies': [
             col('id', 'ID', 'uuid'),
             col('name', 'Company Name'),
-            col('company_type', 'Company Type'),
+            col('trade_name', 'Trade Name'),
             col('country', 'Country'),
             col('city', 'City'),
             col('address', 'Address'),
             col('email', 'Email'),
+            col('official_email', 'Official Email'),
+            col('operations_email', 'Operations Email'),
             col('phone', 'Phone'),
             col('website', 'Website'),
-            col('contact_person', 'Contact Person'),
-            col('contact_email', 'Contact Email'),
-            col('contact_phone', 'Contact Phone'),
+            col('representative_name', 'Representative Name'),
+            col('representative_email', 'Representative Email'),
+            col('representative_title', 'Representative Title'),
             col('registration_number', 'Registration Number'),
-            col('tax_id', 'Tax ID'),
+            col('legal_address', 'Legal Address'),
             col('legal_name', 'Legal Name'),
             col('industry', 'Industry'),
             col('description', 'Description'),
-            col('established_year', 'Established Year', 'integer'),
-            col('employee_count', 'Employee Count', 'integer'),
+            col('employees_count', 'Employees Count', 'integer'),
             col('annual_revenue', 'Annual Revenue', 'numeric'),
+            col('founded_year', 'Founded Year', 'integer'),
+            col('refinery_name', 'Refinery Name'),
+            col('refinery_location', 'Refinery Location'),
             col('created_at', 'Created At'),
             col('updated_at', 'Updated At'),
         ],
@@ -7060,6 +7066,23 @@ async def generate_document(request: Request):
                                             matched_value = str(value).strip()
                                             logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}' = '{matched_value}'")
                                             break
+                                
+                                # Strategy 2.5: Field aliases for buyer/seller (contact_person -> representative_name, etc.)
+                                if not matched_field:
+                                    FIELD_ALIASES = {
+                                        'contact_person': 'representative_name',
+                                        'contact_email': 'representative_email',
+                                        'contact_phone': 'representative_phone',
+                                        'company_name': 'name',
+                                        'employee_count': 'employees_count',
+                                    }
+                                    alt_field = FIELD_ALIASES.get(database_field_lower)
+                                    if alt_field and alt_field in source_data:
+                                        val = source_data[alt_field]
+                                        if val is not None and str(val).strip() != '':
+                                            matched_field = alt_field
+                                            matched_value = str(val).strip()
+                                            logger.info(f"  ✅ Alias match: '{database_field}' -> '{alt_field}' = '{matched_value}'")
                                 
                                 # Strategy 3: Try underscore/space variants
                                 if not matched_field:
