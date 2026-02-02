@@ -998,6 +998,7 @@ async def health_check():
 
 
 @app.get("/test-buyer-seller")
+@app.get("/api/test-buyer-seller")  # Alias for nginx /api prefix
 async def test_buyer_seller_fetch():
     """Test endpoint to verify buyer/seller can be fetched from database."""
     from id_based_fetcher import fetch_all_entities
