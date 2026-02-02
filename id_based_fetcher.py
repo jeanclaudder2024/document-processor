@@ -181,6 +181,54 @@ def fetch_random_row(supabase_client: Client, table_name: str, seed: str = None)
         return None
 
 
+def fetch_random_company_by_type(supabase_client: Client, company_type: str) -> Optional[Dict]:
+    """
+    Fetch a random company from the companies table filtered by type.
+    
+    Args:
+        supabase_client: Supabase client instance
+        company_type: Type of company ('buyer', 'seller', 'trader', etc.)
+    
+    Returns:
+        Dictionary with company data or None if not found
+    """
+    import random
+    
+    if not supabase_client:
+        logger.warning(f"Supabase client not available, cannot fetch company by type")
+        return None
+    
+    try:
+        logger.info(f"🎲 Fetching random company with type containing '{company_type}'...")
+        
+        # Try to find companies where type/company_type contains the search term
+        # First try exact match on 'type' column
+        response = supabase_client.table('companies').select('*').ilike('type', f'%{company_type}%').limit(100).execute()
+        
+        if not response.data or len(response.data) == 0:
+            # Try 'company_type' column instead
+            logger.info(f"   No match on 'type' column, trying 'company_type'...")
+            response = supabase_client.table('companies').select('*').ilike('company_type', f'%{company_type}%').limit(100).execute()
+        
+        if not response.data or len(response.data) == 0:
+            # Try name column as last resort (company name might contain 'buyer' or 'seller')
+            logger.info(f"   No match on type columns, trying name column...")
+            response = supabase_client.table('companies').select('*').ilike('name', f'%{company_type}%').limit(100).execute()
+        
+        if not response.data or len(response.data) == 0:
+            logger.warning(f"❌ No companies found with type '{company_type}'")
+            return None
+        
+        # Pick a truly random record
+        random_record = random.choice(response.data)
+        logger.info(f"🎲 SUCCESS: Random {company_type} company: {random_record.get('name', 'Unknown')} (picked from {len(response.data)} records)")
+        return random_record
+            
+    except Exception as e:
+        logger.error(f"❌ Error fetching company by type '{company_type}': {e}")
+        return None
+
+
 def fetch_bank_account(supabase_client: Client, company_id: str, bank_id: Optional[str], 
                        table_name: str, is_buyer: bool = True) -> Optional[Dict]:
     """
@@ -309,37 +357,37 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # ALWAYS fetch random buyer company (different each time document is generated)
+    # ALWAYS fetch random buyer company from companies table (different each time)
     logger.info(f"=" * 60)
-    logger.info(f"🎲 FETCHING RANDOM BUYER COMPANY...")
+    logger.info(f"🎲 FETCHING RANDOM BUYER COMPANY FROM companies TABLE...")
     logger.info(f"=" * 60)
-    fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
+    fetched_data['buyer'] = fetch_random_company_by_type(supabase_client, 'buyer')
     if fetched_data.get('buyer'):
         logger.info(f"✅ BUYER FETCHED: {fetched_data['buyer'].get('name', 'NO NAME')}")
         logger.info(f"   Buyer fields: {list(fetched_data['buyer'].keys())}")
     else:
-        logger.warning(f"❌ NO BUYER from buyer_companies - trying companies table...")
+        logger.warning(f"❌ NO BUYER with type 'buyer' - trying any company...")
         fetched_data['buyer'] = fetch_random_row(supabase_client, 'companies', seed=None)
         if fetched_data.get('buyer'):
-            logger.info(f"✅ BUYER FETCHED from companies: {fetched_data['buyer'].get('name', 'NO NAME')}")
+            logger.info(f"✅ BUYER FETCHED (any company): {fetched_data['buyer'].get('name', 'NO NAME')}")
         else:
-            logger.error(f"❌ FAILED TO FETCH ANY BUYER - tables may be empty or RLS blocking")
+            logger.error(f"❌ FAILED TO FETCH ANY BUYER - companies table may be empty")
     
-    # ALWAYS fetch random seller company (different each time document is generated)
+    # ALWAYS fetch random seller company from companies table (different each time)
     logger.info(f"=" * 60)
-    logger.info(f"🎲 FETCHING RANDOM SELLER COMPANY...")
+    logger.info(f"🎲 FETCHING RANDOM SELLER COMPANY FROM companies TABLE...")
     logger.info(f"=" * 60)
-    fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
+    fetched_data['seller'] = fetch_random_company_by_type(supabase_client, 'seller')
     if fetched_data.get('seller'):
         logger.info(f"✅ SELLER FETCHED: {fetched_data['seller'].get('name', 'NO NAME')}")
         logger.info(f"   Seller fields: {list(fetched_data['seller'].keys())}")
     else:
-        logger.warning(f"❌ NO SELLER from seller_companies - trying companies table...")
+        logger.warning(f"❌ NO SELLER with type 'seller' - trying any company...")
         fetched_data['seller'] = fetch_random_row(supabase_client, 'companies', seed=None)
         if fetched_data.get('seller'):
-            logger.info(f"✅ SELLER FETCHED from companies: {fetched_data['seller'].get('name', 'NO NAME')}")
+            logger.info(f"✅ SELLER FETCHED (any company): {fetched_data['seller'].get('name', 'NO NAME')}")
         else:
-            logger.error(f"❌ FAILED TO FETCH ANY SELLER - tables may be empty or RLS blocking")
+            logger.error(f"❌ FAILED TO FETCH ANY SELLER - companies table may be empty")
     
     # Fetch product
     product_id = payload.get('product_id')
