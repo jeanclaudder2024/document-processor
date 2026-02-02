@@ -141,6 +141,63 @@ def fetch_by_id(supabase_client: Client, table_name: str, record_id: Union[int, 
         return None
 
 
+def fetch_random_row(supabase_client: Client, table_name: str, seed: str = None) -> Optional[Dict]:
+    """
+    Fetch a random row from a table. Uses seed for consistent randomness per vessel.
+    
+    Args:
+        supabase_client: Supabase client instance
+        table_name: Name of the table
+        seed: Optional seed string (e.g., vessel IMO) for consistent randomness
+    
+    Returns:
+        Dictionary with record data or None if not found
+    """
+    import random
+    import hashlib
+    
+    if not supabase_client:
+        logger.warning(f"Supabase client not available, cannot fetch random from {table_name}")
+        return None
+    
+    try:
+        # First, get the count of records
+        response = supabase_client.table(table_name).select('id', count='exact').execute()
+        
+        if not response.data or response.count == 0:
+            logger.warning(f"❌ No records found in {table_name}")
+            return None
+        
+        total_count = response.count
+        
+        # Use seed for consistent randomness (same vessel = same random row)
+        if seed:
+            # Create a deterministic random based on seed + table name
+            seed_hash = int(hashlib.md5(f"{seed}_{table_name}".encode()).hexdigest(), 16)
+            random.seed(seed_hash)
+        
+        # Pick a random offset
+        random_offset = random.randint(0, total_count - 1)
+        
+        # Reset random seed so it doesn't affect other randomness
+        random.seed()
+        
+        # Fetch the record at that offset
+        response = supabase_client.table(table_name).select('*').range(random_offset, random_offset).execute()
+        
+        if response.data and len(response.data) > 0:
+            data = response.data[0]
+            logger.info(f"🎲 Fetched random record from {table_name}: {data.get('name', data.get('id', 'Unknown'))} (offset {random_offset}/{total_count})")
+            return data
+        else:
+            logger.warning(f"❌ Could not fetch random record from {table_name}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Error fetching random from {table_name}: {e}")
+        return None
+
+
 def fetch_bank_account(supabase_client: Client, company_id: str, bank_id: Optional[str], 
                        table_name: str, is_buyer: bool = True) -> Optional[Dict]:
     """
@@ -269,7 +326,10 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # Fetch buyer company - from payload OR from vessel record
+    # Get vessel IMO for random seed (same vessel = same random data)
+    vessel_imo = payload.get('vessel_imo') or (vessel.get('imo') if vessel else None)
+    
+    # Fetch buyer company - from payload OR from vessel record OR random
     buyer_id = payload.get('buyer_id') or vessel_buyer_id
     if buyer_id:
         logger.info(f"📦 Fetching buyer company with ID: {buyer_id}")
@@ -278,7 +338,12 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
             # Also try companies table as fallback
             fetched_data['buyer'] = fetch_by_id(supabase_client, 'companies', buyer_id)
     
-    # Fetch seller company - from payload OR from vessel record
+    # If no buyer found by ID, fetch a random one (seeded by vessel IMO for consistency)
+    if not fetched_data.get('buyer'):
+        logger.info(f"🎲 No buyer ID found, fetching random buyer for vessel {vessel_imo}")
+        fetched_data['buyer'] = fetch_random_row(supabase_client, 'companies', seed=vessel_imo)
+    
+    # Fetch seller company - from payload OR from vessel record OR random
     seller_id = payload.get('seller_id') or vessel_seller_id
     if seller_id:
         logger.info(f"📦 Fetching seller company with ID: {seller_id}")
@@ -286,6 +351,12 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
         if not fetched_data.get('seller'):
             # Also try companies table as fallback
             fetched_data['seller'] = fetch_by_id(supabase_client, 'companies', seller_id)
+    
+    # If no seller found by ID, fetch a random one (seeded by vessel IMO for consistency)
+    if not fetched_data.get('seller'):
+        logger.info(f"🎲 No seller ID found, fetching random seller for vessel {vessel_imo}")
+        # Use different seed for seller to get different company than buyer
+        fetched_data['seller'] = fetch_random_row(supabase_client, 'companies', seed=f"{vessel_imo}_seller")
     
     # Fetch product
     product_id = payload.get('product_id')
