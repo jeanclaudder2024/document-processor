@@ -326,37 +326,19 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # Get vessel IMO for random seed (same vessel = same random data)
-    vessel_imo = payload.get('vessel_imo') or (vessel.get('imo') if vessel else None)
-    
-    # Fetch buyer company - from payload OR from vessel record OR random
-    buyer_id = payload.get('buyer_id') or vessel_buyer_id
-    if buyer_id:
-        logger.info(f"📦 Fetching buyer company with ID: {buyer_id}")
-        fetched_data['buyer'] = fetch_by_id(supabase_client, 'buyer_companies', buyer_id)
-        if not fetched_data.get('buyer'):
-            # Also try companies table as fallback
-            fetched_data['buyer'] = fetch_by_id(supabase_client, 'companies', buyer_id)
-    
-    # If no buyer found by ID, fetch a random one (seeded by vessel IMO for consistency)
+    # ALWAYS fetch random buyer company (different each time document is generated)
+    logger.info(f"🎲 Fetching random buyer company...")
+    fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
     if not fetched_data.get('buyer'):
-        logger.info(f"🎲 No buyer ID found, fetching random buyer for vessel {vessel_imo}")
-        fetched_data['buyer'] = fetch_random_row(supabase_client, 'companies', seed=vessel_imo)
+        # Fallback to companies table if buyer_companies is empty
+        fetched_data['buyer'] = fetch_random_row(supabase_client, 'companies', seed=None)
     
-    # Fetch seller company - from payload OR from vessel record OR random
-    seller_id = payload.get('seller_id') or vessel_seller_id
-    if seller_id:
-        logger.info(f"📦 Fetching seller company with ID: {seller_id}")
-        fetched_data['seller'] = fetch_by_id(supabase_client, 'seller_companies', seller_id)
-        if not fetched_data.get('seller'):
-            # Also try companies table as fallback
-            fetched_data['seller'] = fetch_by_id(supabase_client, 'companies', seller_id)
-    
-    # If no seller found by ID, fetch a random one (seeded by vessel IMO for consistency)
+    # ALWAYS fetch random seller company (different each time document is generated)
+    logger.info(f"🎲 Fetching random seller company...")
+    fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
     if not fetched_data.get('seller'):
-        logger.info(f"🎲 No seller ID found, fetching random seller for vessel {vessel_imo}")
-        # Use different seed for seller to get different company than buyer
-        fetched_data['seller'] = fetch_random_row(supabase_client, 'companies', seed=f"{vessel_imo}_seller")
+        # Fallback to companies table if seller_companies is empty
+        fetched_data['seller'] = fetch_random_row(supabase_client, 'companies', seed=None)
     
     # Fetch product
     product_id = payload.get('product_id')
