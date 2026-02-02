@@ -357,33 +357,53 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # ALWAYS fetch random buyer company from buyer_companies table (different each time)
+    # Fetch buyer: 1) vessel's buyer_company_id if set, 2) random from buyer_companies
+    buyer_id = payload.get('buyer_id') or (vessel.get('buyer_company_id') if vessel else None)
     logger.info(f"=" * 60)
-    logger.info(f"🎲 FETCHING RANDOM BUYER FROM buyer_companies TABLE...")
+    logger.info(f"📦 FETCHING BUYER (vessel buyer_id={buyer_id})...")
     logger.info(f"=" * 60)
-    fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
-    if fetched_data.get('buyer'):
-        logger.info(f"✅ BUYER FETCHED: {fetched_data['buyer'].get('name', 'NO NAME')}")
-        logger.info(f"   Buyer fields: {list(fetched_data['buyer'].keys())}")
-    else:
-        logger.error(f"❌ FAILED TO FETCH BUYER from buyer_companies table!")
-        logger.error(f"   Possible reasons:")
-        logger.error(f"   1. Table is empty - add buyer companies in Admin Panel")
-        logger.error(f"   2. RLS policy blocking - run SQL: CREATE POLICY \"public_read\" ON buyer_companies FOR SELECT USING (true);")
     
-    # ALWAYS fetch random seller company from seller_companies table (different each time)
-    logger.info(f"=" * 60)
-    logger.info(f"🎲 FETCHING RANDOM SELLER FROM seller_companies TABLE...")
-    logger.info(f"=" * 60)
-    fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
-    if fetched_data.get('seller'):
-        logger.info(f"✅ SELLER FETCHED: {fetched_data['seller'].get('name', 'NO NAME')}")
-        logger.info(f"   Seller fields: {list(fetched_data['seller'].keys())}")
+    if buyer_id:
+        fetched_data['buyer'] = fetch_by_id(supabase_client, 'buyer_companies', buyer_id)
+        if not fetched_data.get('buyer'):
+            fetched_data['buyer'] = fetch_by_id(supabase_client, 'companies', buyer_id)
+    
+    if not fetched_data.get('buyer'):
+        logger.info(f"   No buyer by ID, fetching RANDOM from buyer_companies...")
+        fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
+    
+    if not fetched_data.get('buyer'):
+        logger.warning(f"   buyer_companies empty/failed, trying companies table...")
+        fetched_data['buyer'] = fetch_random_row(supabase_client, 'companies', seed=None)
+    
+    if fetched_data.get('buyer'):
+        logger.info(f"✅ BUYER: {fetched_data['buyer'].get('name', 'NO NAME')}")
     else:
-        logger.error(f"❌ FAILED TO FETCH SELLER from seller_companies table!")
-        logger.error(f"   Possible reasons:")
-        logger.error(f"   1. Table is empty - add seller companies in Admin Panel")
-        logger.error(f"   2. RLS policy blocking - run SQL: CREATE POLICY \"public_read\" ON seller_companies FOR SELECT USING (true);")
+        logger.error(f"❌ NO BUYER - Add SUPABASE_SERVICE_ROLE_KEY to .env and add buyer companies in Admin")
+    
+    # Fetch seller: 1) vessel's seller_company_id if set, 2) random from seller_companies
+    seller_id = payload.get('seller_id') or (vessel.get('seller_company_id') if vessel else None)
+    logger.info(f"=" * 60)
+    logger.info(f"📦 FETCHING SELLER (vessel seller_id={seller_id})...")
+    logger.info(f"=" * 60)
+    
+    if seller_id:
+        fetched_data['seller'] = fetch_by_id(supabase_client, 'seller_companies', seller_id)
+        if not fetched_data.get('seller'):
+            fetched_data['seller'] = fetch_by_id(supabase_client, 'companies', seller_id)
+    
+    if not fetched_data.get('seller'):
+        logger.info(f"   No seller by ID, fetching RANDOM from seller_companies...")
+        fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
+    
+    if not fetched_data.get('seller'):
+        logger.warning(f"   seller_companies empty/failed, trying companies table...")
+        fetched_data['seller'] = fetch_random_row(supabase_client, 'companies', seed=None)
+    
+    if fetched_data.get('seller'):
+        logger.info(f"✅ SELLER: {fetched_data['seller'].get('name', 'NO NAME')}")
+    else:
+        logger.error(f"❌ NO SELLER - Add SUPABASE_SERVICE_ROLE_KEY to .env and add seller companies in Admin")
     
     # Fetch product
     product_id = payload.get('product_id')

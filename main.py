@@ -82,9 +82,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Document Processing API", version="2.0.0")
 
-# Load environment variables
+# Load environment variables from script directory (ensures .env loads when run via PM2)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_env_path = os.path.join(_script_dir, '.env')
 try:
-    load_dotenv()
+    load_dotenv(_env_path)
+    if os.path.exists(_env_path):
+        logger.info(f"Loaded .env from {_env_path}")
 except Exception as e:
     logger.warning(f"Could not load .env file: {e}")
 
@@ -991,6 +995,26 @@ async def health_check():
         "templates_dir": TEMPLATES_DIR,
         "storage_dir": STORAGE_DIR
     }
+
+
+@app.get("/test-buyer-seller")
+async def test_buyer_seller_fetch():
+    """Test endpoint to verify buyer/seller can be fetched from database."""
+    from id_based_fetcher import fetch_all_entities
+    if not supabase:
+        return {"ok": False, "error": "Supabase not connected"}
+    try:
+        entities = fetch_all_entities(supabase, {"vessel_imo": "1234567"})
+        buyer = entities.get("buyer")
+        seller = entities.get("seller")
+        return {
+            "ok": True,
+            "buyer": {"name": buyer.get("name"), "id": str(buyer.get("id"))[:8] + "..."} if buyer else None,
+            "seller": {"name": seller.get("name"), "id": str(seller.get("id"))[:8] + "..."} if seller else None,
+            "using_service_role": bool(SUPABASE_SERVICE_ROLE_KEY)
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 # ============================================================================
 # VESSELS API (from Supabase)
@@ -6910,8 +6934,8 @@ async def generate_document(request: Request):
                         found = False  # Fall through to cascade
 
                     elif source == 'database':
-                        database_table = (setting.get('databaseTable') or '').strip()
-                        database_field = (setting.get('databaseField') or '').strip()
+                        database_table = (setting.get('databaseTable') or setting.get('database_table') or '').strip()
+                        database_field = (setting.get('databaseField') or setting.get('database_field') or '').strip()
                         logger.info(f"  🗄️  DATABASE source configured for '{placeholder}'")
                         logger.info(f"     databaseTable='{database_table}'")
                         logger.info(f"     databaseField='{database_field}'")
