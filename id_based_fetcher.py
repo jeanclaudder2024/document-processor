@@ -510,11 +510,21 @@ def get_placeholder_value(placeholder: str, fetched_data: Dict[str, Optional[Dic
         logger.debug(f"✅ Found {placeholder} → {field_name} = {value}")
         return value
     
-    # Field aliases for buyer/seller tables (editor may use old names)
+    # Field aliases for buyer/seller tables (match CMS editor + DB schema)
     FIELD_ALIASES = {
         'contact_person': 'representative_name',
         'contact_email': 'representative_email',
         'company_name': 'name',
+        'registration_number': 'registration_number',
+        'registration_country': 'registration_country',
+        'jurisdiction': 'registration_country',
+        'jurisdiction_of_incorporation': 'registration_country',
+        'legal_address': 'legal_address',
+        'representative_name': 'representative_name',
+        'representative_title': 'representative_title',
+        'address': 'address',
+        'country': 'country',
+        'city': 'city',
     }
     alt_field = FIELD_ALIASES.get(field_name.lower())
     if alt_field and alt_field in entity_data:

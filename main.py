@@ -7074,7 +7074,7 @@ async def generate_document(request: Request):
                                             logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}' = '{matched_value}'")
                                             break
                                 
-                                # Strategy 2.5: Field aliases for buyer/seller (contact_person -> representative_name, etc.)
+                                # Strategy 2.5: Field aliases for buyer/seller (match CMS + DB schema)
                                 if not matched_field:
                                     FIELD_ALIASES = {
                                         'contact_person': 'representative_name',
@@ -7082,6 +7082,11 @@ async def generate_document(request: Request):
                                         'contact_phone': 'representative_phone',
                                         'company_name': 'name',
                                         'employee_count': 'employees_count',
+                                        'registration_number': 'registration_number',
+                                        'registration_country': 'registration_country',
+                                        'jurisdiction': 'registration_country',
+                                        'jurisdiction_of_incorporation': 'registration_country',
+                                        'legal_address': 'legal_address',
                                     }
                                     alt_field = FIELD_ALIASES.get(database_field_lower)
                                     if alt_field and alt_field in source_data:
@@ -7219,14 +7224,18 @@ async def generate_document(request: Request):
                     logger.warning(f"   Will use cascade (DB → CSV → AI) as fallback")
 
             if not found:
-                # Cascade: CSV (CMS config) → smart CSV search → AI (except buyer/seller from DB)
+                # Cascade: CSV (CMS config) → smart CSV search → AI (except buyer/seller - NEVER fake)
                 database_table = (setting.get('databaseTable') or setting.get('database_table') or '').strip().lower() if setting else ''
                 ph_lower = (placeholder or '').lower()
+                # Block AI for ANY buyer/seller placeholder - use DB only, never generate fake names
+                has_buyer_seller_in_name = (
+                    ('buyer' in ph_lower and not ph_lower.startswith('buyer_bank')) or
+                    ('seller' in ph_lower and not ph_lower.startswith('seller_bank'))
+                )
                 is_buyer_seller_db = (
-                    (setting and setting.get('source') == 'database') and
-                    (database_table in ('buyer_companies', 'seller_companies', 'buyer', 'seller') or
-                     ('buyer' in ph_lower and not ph_lower.startswith('buyer_bank')) or
-                     ('seller' in ph_lower and not ph_lower.startswith('seller_bank')))
+                    has_buyer_seller_in_name or
+                    ((setting and setting.get('source') == 'database') and
+                     database_table in ('buyer_companies', 'seller_companies', 'buyer', 'seller'))
                 )
                 if is_buyer_seller_db:
                     # NEVER use AI for buyer/seller when configured from database - use database only
