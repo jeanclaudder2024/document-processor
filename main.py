@@ -989,12 +989,27 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {
+    result = {
         "status": "healthy",
         "supabase": "connected" if supabase else "disconnected",
         "templates_dir": TEMPLATES_DIR,
         "storage_dir": STORAGE_DIR
     }
+    # Test buyer/seller fetch (diagnostic for document generation)
+    if supabase:
+        try:
+            from id_based_fetcher import fetch_all_entities
+            entities = fetch_all_entities(supabase, {"vessel_imo": "1234567"})
+            buyer = entities.get("buyer")
+            seller = entities.get("seller")
+            result["buyer_seller_test"] = {
+                "buyer": buyer.get("name") if buyer else None,
+                "seller": seller.get("name") if seller else None,
+                "using_service_role": bool(SUPABASE_SERVICE_ROLE_KEY)
+            }
+        except Exception as e:
+            result["buyer_seller_test"] = {"error": str(e)}
+    return result
 
 
 @app.get("/test-buyer-seller")
