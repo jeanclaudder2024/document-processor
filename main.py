@@ -991,6 +991,7 @@ async def root():
 async def health_check():
     result = {
         "status": "healthy",
+        "version": "2.0.1-buyer-test",  # Bump to verify new code is deployed
         "supabase": "connected" if supabase else "disconnected",
         "templates_dir": TEMPLATES_DIR,
         "storage_dir": STORAGE_DIR
@@ -1005,10 +1006,10 @@ async def health_check():
             result["buyer_seller_test"] = {
                 "buyer": buyer.get("name") if buyer else None,
                 "seller": seller.get("name") if seller else None,
-                "using_service_role": bool(SUPABASE_SERVICE_ROLE_KEY)
+                "using_service_role": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip())
             }
         except Exception as e:
-            result["buyer_seller_test"] = {"error": str(e)}
+            result["buyer_seller_test"] = {"error": str(e), "type": type(e).__name__}
     return result
 
 
