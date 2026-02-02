@@ -7219,23 +7219,37 @@ async def generate_document(request: Request):
                     logger.warning(f"   Will use cascade (DB → CSV → AI) as fallback")
 
             if not found:
-                # Cascade: CSV (CMS config) → smart CSV search → AI-generated realistic data
-                logger.info(f"  🔍 {placeholder}: Cascade CSV → Smart CSV → AI (realistic fallback)")
-                # 1. CSV (from CMS config) - try configured CSV first
-                csv_val = _try_csv_for_placeholder(setting)
-                if not csv_val:
-                    # 2. Smart CSV search - search all CSVs for matching column
-                    csv_val = _smart_csv_search(placeholder)
-                if csv_val and not _is_value_wrong_for_placeholder(placeholder, csv_val):
-                    data_mapping[placeholder] = _normalize_replacement_value(csv_val, placeholder=placeholder)
+                # Cascade: CSV (CMS config) → smart CSV search → AI (except buyer/seller from DB)
+                database_table = (setting.get('databaseTable') or setting.get('database_table') or '').strip().lower() if setting else ''
+                ph_lower = (placeholder or '').lower()
+                is_buyer_seller_db = (
+                    (setting and setting.get('source') == 'database') and
+                    (database_table in ('buyer_companies', 'seller_companies', 'buyer', 'seller') or
+                     ('buyer' in ph_lower and not ph_lower.startswith('buyer_bank')) or
+                     ('seller' in ph_lower and not ph_lower.startswith('seller_bank')))
+                )
+                if is_buyer_seller_db:
+                    # NEVER use AI for buyer/seller when configured from database - use database only
+                    logger.warning(f"  ⚠️ {placeholder}: Buyer/seller DB source - no AI fallback (add data in Admin)")
+                    data_mapping[placeholder] = "—"
                     found = True
-                    logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
-                if not found:
-                    # 3. Always generate realistic AI data when no match – never use "—"
-                    ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
-                    data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
-                    found = True
-                    logger.info(f"  ✅ AI (realistic fallback): {placeholder} = '{ai_val}'")
+                else:
+                    logger.info(f"  🔍 {placeholder}: Cascade CSV → Smart CSV → AI (realistic fallback)")
+                    # 1. CSV (from CMS config) - try configured CSV first
+                    csv_val = _try_csv_for_placeholder(setting)
+                    if not csv_val:
+                        # 2. Smart CSV search - search all CSVs for matching column
+                        csv_val = _smart_csv_search(placeholder)
+                    if csv_val and not _is_value_wrong_for_placeholder(placeholder, csv_val):
+                        data_mapping[placeholder] = _normalize_replacement_value(csv_val, placeholder=placeholder)
+                        found = True
+                        logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
+                    if not found:
+                        # 3. Generate realistic AI data when no match
+                        ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
+                        data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
+                        found = True
+                        logger.info(f"  ✅ AI (realistic fallback): {placeholder} = '{ai_val}'")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
