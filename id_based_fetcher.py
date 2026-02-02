@@ -357,50 +357,34 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # Fetch buyer: PRIORITIZE companies table (Admin -> Companies, company_type=buyer)
-    # vessel.buyer_company_id = INTEGER -> companies(id), NOT buyer_companies
-    buyer_id = payload.get('buyer_id') or (vessel.get('buyer_company_id') if vessel else None)
+    # Fetch buyer: DIRECT from buyer_companies (not linked to vessel)
+    # Buyer/seller are separate - always take from buyer_companies table
     logger.info(f"=" * 60)
-    logger.info(f"📦 FETCHING BUYER (vessel buyer_company_id={buyer_id})...")
+    logger.info(f"📦 FETCHING BUYER (direct from buyer_companies)...")
     logger.info(f"=" * 60)
     
-    if buyer_id:
-        fetched_data['buyer'] = fetch_by_id(supabase_client, 'companies', buyer_id)
-        if not fetched_data.get('buyer'):
-            fetched_data['buyer'] = fetch_by_id(supabase_client, 'buyer_companies', buyer_id)
+    fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
     
     if not fetched_data.get('buyer'):
-        logger.info(f"   No buyer by ID, fetching from companies table (company_type=buyer)...")
+        logger.info(f"   buyer_companies empty, trying companies (company_type=buyer)...")
         fetched_data['buyer'] = fetch_random_company_by_type(supabase_client, 'buyer')
-    
-    if not fetched_data.get('buyer'):
-        logger.info(f"   companies empty for buyer, trying buyer_companies...")
-        fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
     
     if fetched_data.get('buyer'):
         logger.info(f"✅ BUYER: {fetched_data['buyer'].get('name', 'NO NAME')}")
     else:
         logger.error(f"❌ NO BUYER - Add companies with company_type='buyer' in Admin -> Companies")
     
-    # Fetch seller: PRIORITIZE companies table (Admin -> Companies, company_type=seller)
-    # vessel.seller_company_id = INTEGER -> companies(id), NOT seller_companies
-    seller_id = payload.get('seller_id') or (vessel.get('seller_company_id') if vessel else None)
+    # Fetch seller: DIRECT from seller_companies (not linked to vessel)
+    # Buyer/seller are separate - always take from seller_companies table
     logger.info(f"=" * 60)
-    logger.info(f"📦 FETCHING SELLER (vessel seller_company_id={seller_id})...")
+    logger.info(f"📦 FETCHING SELLER (direct from seller_companies)...")
     logger.info(f"=" * 60)
     
-    if seller_id:
-        fetched_data['seller'] = fetch_by_id(supabase_client, 'companies', seller_id)
-        if not fetched_data.get('seller'):
-            fetched_data['seller'] = fetch_by_id(supabase_client, 'seller_companies', seller_id)
+    fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
     
     if not fetched_data.get('seller'):
-        logger.info(f"   No seller by ID, fetching from companies table (company_type=seller)...")
+        logger.info(f"   seller_companies empty, trying companies (company_type=seller)...")
         fetched_data['seller'] = fetch_random_company_by_type(supabase_client, 'seller')
-    
-    if not fetched_data.get('seller'):
-        logger.info(f"   companies empty for seller, trying seller_companies...")
-        fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
     
     if fetched_data.get('seller'):
         logger.info(f"✅ SELLER: {fetched_data['seller'].get('name', 'NO NAME')}")
