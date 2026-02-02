@@ -373,8 +373,8 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
         fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
     
     if not fetched_data.get('buyer'):
-        logger.warning(f"   buyer_companies empty/failed, trying companies table...")
-        fetched_data['buyer'] = fetch_random_row(supabase_client, 'companies', seed=None)
+        logger.warning(f"   buyer_companies empty/failed, trying companies table (company_type=buyer)...")
+        fetched_data['buyer'] = fetch_random_company_by_type(supabase_client, 'buyer')
     
     if fetched_data.get('buyer'):
         logger.info(f"✅ BUYER: {fetched_data['buyer'].get('name', 'NO NAME')}")
@@ -397,8 +397,8 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
         fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
     
     if not fetched_data.get('seller'):
-        logger.warning(f"   seller_companies empty/failed, trying companies table...")
-        fetched_data['seller'] = fetch_random_row(supabase_client, 'companies', seed=None)
+        logger.warning(f"   seller_companies empty/failed, trying companies table (company_type=seller)...")
+        fetched_data['seller'] = fetch_random_company_by_type(supabase_client, 'seller')
     
     if fetched_data.get('seller'):
         logger.info(f"✅ SELLER: {fetched_data['seller'].get('name', 'NO NAME')}")

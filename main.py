@@ -6990,6 +6990,13 @@ async def generate_document(request: Request):
                             }
                             
                             entity_key = entity_map.get(table_lower)
+                            # When "companies" table is selected for buyer/seller placeholder, use buyer/seller entity
+                            if table_lower == 'companies' and entity_key == 'company':
+                                ph_lower = (placeholder or '').lower()
+                                if 'buyer' in ph_lower and not ph_lower.startswith('buyer_bank'):
+                                    entity_key = 'buyer'
+                                elif 'seller' in ph_lower and not ph_lower.startswith('seller_bank'):
+                                    entity_key = 'seller'
                             
                             if entity_key and entity_key in fetched_entities:
                                 source_data = fetched_entities.get(entity_key)
