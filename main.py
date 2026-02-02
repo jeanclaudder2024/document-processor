@@ -157,13 +157,20 @@ DATA_SOURCES_METADATA_PATH = os.path.join(STORAGE_DIR, 'data_sources.json')
 # Supabase client
 SUPABASE_URL = os.getenv(
     "SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
+# Use service_role key if available - bypasses RLS and allows reading buyer_companies/seller_companies
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 SUPABASE_KEY = os.getenv(
     "SUPABASE_KEY",
-     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
 
+# Prefer service_role key for document processor - it bypasses RLS (required for buyer_companies, seller_companies)
+_key_to_use = SUPABASE_SERVICE_ROLE_KEY if SUPABASE_SERVICE_ROLE_KEY else SUPABASE_KEY
 try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    logger.info("Successfully connected to Supabase")
+    supabase: Client = create_client(SUPABASE_URL, _key_to_use)
+    if SUPABASE_SERVICE_ROLE_KEY:
+        logger.info("Successfully connected to Supabase (using service_role key - full DB access)")
+    else:
+        logger.info("Successfully connected to Supabase (using anon key - add SUPABASE_SERVICE_ROLE_KEY to .env for buyer/seller)")
 except Exception as e:
     logger.error(f"Failed to connect to Supabase: {e}")
     supabase = None
