@@ -30,7 +30,7 @@ import re
 try:
     # Try relative import first (if running as package)
     from .id_based_fetcher import (
-        fetch_all_entities, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
+        fetch_all_entities, fetch_random_row, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
         identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
     )
 except ImportError:
@@ -42,7 +42,7 @@ except ImportError:
         sys.path.insert(0, current_dir)
     try:
         from id_based_fetcher import (
-            fetch_all_entities, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
+            fetch_all_entities, fetch_random_row, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
             identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
         )
     except ImportError as e:
@@ -50,6 +50,8 @@ except ImportError:
         # Create stub functions
         def fetch_all_entities(*args, **kwargs):
             return {}
+        def fetch_random_row(*args, **kwargs):
+            return None
         def get_placeholder_value(*args, **kwargs):
             return None
         def normalize_placeholder_id(*args, **kwargs):
@@ -172,9 +174,9 @@ _key_to_use = SUPABASE_SERVICE_ROLE_KEY if SUPABASE_SERVICE_ROLE_KEY else SUPABA
 try:
     supabase: Client = create_client(SUPABASE_URL, _key_to_use)
     if SUPABASE_SERVICE_ROLE_KEY:
-        logger.info("Successfully connected to Supabase (using service_role key - full DB access)")
+        logger.info("Successfully connected to Supabase (using service_role key - full DB access, buyer/seller tables OK)")
     else:
-        logger.info("Successfully connected to Supabase (using anon key - add SUPABASE_SERVICE_ROLE_KEY to .env for buyer/seller)")
+        logger.warning("Supabase: using anon key. Add SUPABASE_SERVICE_ROLE_KEY to .env for buyer_companies/seller_companies access")
 except Exception as e:
     logger.error(f"Failed to connect to Supabase: {e}")
     supabase = None
@@ -5851,12 +5853,31 @@ def _sanitize_ai_replacement(text: str) -> str:
     return first[:100]
 
 
-def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str = None) -> str:
+def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str = None, fetched_entities: Dict = None) -> str:
     """AI-generated realistic data (OpenAI when available), else improved random. Maritime/oil context."""
     if OPENAI_ENABLED and openai_client:
         try:
             imo = (vessel or {}).get('imo') or vessel_imo or 'N/A'
             pl_lower = (placeholder or '').lower()
+            # Build context from vessel and fetched entities for realistic AI output
+            ctx_parts = []
+            ent = fetched_entities or {}
+            if vessel:
+                if vessel.get('name'):
+                    ctx_parts.append(f"Vessel: {vessel.get('name')}")
+                if vessel.get('imo'):
+                    ctx_parts.append(f"IMO: {vessel.get('imo')}")
+                if vessel.get('cargo_type') or vessel.get('cargo'):
+                    ctx_parts.append(f"Cargo: {vessel.get('cargo_type') or vessel.get('cargo', 'N/A')}")
+                if vessel.get('loading_port') or vessel.get('current_port'):
+                    ctx_parts.append(f"Port: {vessel.get('loading_port') or vessel.get('current_port', 'N/A')}")
+            dep = ent.get('departure_port')
+            if isinstance(dep, dict) and dep.get('name'):
+                ctx_parts.append(f"Loading: {dep.get('name')}")
+            prod = ent.get('product')
+            if isinstance(prod, dict) and prod.get('name'):
+                ctx_parts.append(f"Product: {prod.get('name')}")
+            context_str = '; '.join(ctx_parts) if ctx_parts else 'maritime/oil trading'
             
             # Comprehensive hints for realistic data
             hints = []
@@ -5951,7 +5972,7 @@ def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str =
 
 Placeholder: "{placeholder}"
 Expected format: {hint_str}
-Vessel IMO: {imo}
+Context (use to make value consistent): {context_str}
 
 RULES:
 1. Output ONLY the value - no quotes, no explanation, no extra text
@@ -5961,6 +5982,7 @@ RULES:
 5. For company names: use realistic trading/oil company names
 6. For addresses: include street, city, country
 7. For bank details: use realistic bank names and formats
+8. Match the context above (vessel, cargo, port) - make the value consistent with this specific trade
 
 Output ONLY the value:"""
             
@@ -6872,26 +6894,22 @@ async def generate_document(request: Request):
         logger.info(f"   Final vessel data: {dict(list(vessel.items())[:10])}...")  # Show first 10 fields
         
         # ALWAYS fetch buyer/seller directly from buyer_companies and seller_companies
-        # (matches editor.js selection - table names must match exactly)
+        # Use random row for variety (different buyer/seller each document)
         if SUPABASE_ENABLED and supabase:
             try:
-                r = supabase.table('buyer_companies').select('*').limit(1).execute()
-                if r.data and len(r.data) > 0:
-                    fetched_entities['buyer'] = r.data[0]
+                fetched_entities['buyer'] = fetch_random_row(supabase, 'buyer_companies')
+                if fetched_entities.get('buyer'):
                     logger.info(f"✅ buyer_companies: {fetched_entities['buyer'].get('name', '?')}")
                 else:
-                    fetched_entities['buyer'] = None
                     logger.warning("buyer_companies table empty")
             except Exception as ex:
                 fetched_entities['buyer'] = None
                 logger.warning(f"buyer_companies fetch failed: {ex}")
             try:
-                r = supabase.table('seller_companies').select('*').limit(1).execute()
-                if r.data and len(r.data) > 0:
-                    fetched_entities['seller'] = r.data[0]
+                fetched_entities['seller'] = fetch_random_row(supabase, 'seller_companies')
+                if fetched_entities.get('seller'):
                     logger.info(f"✅ seller_companies: {fetched_entities['seller'].get('name', '?')}")
                 else:
-                    fetched_entities['seller'] = None
                     logger.warning("seller_companies table empty")
             except Exception as ex:
                 fetched_entities['seller'] = None
@@ -6948,8 +6966,8 @@ async def generate_document(request: Request):
                     if entity_data:
                         _CMS_FIELD_ALIASES = {
                             'company_name': 'name', 'contact_person': 'representative_name',
-                            'contact_email': 'representative_email', 'jurisdiction': 'registration_country',
-                            'jurisdiction_of_incorporation': 'registration_country',
+                            'contact_email': 'representative_email', 'jurisdiction': 'country',
+                            'jurisdiction_of_incorporation': 'country', 'registration_country': 'country',
                         }
                         field_lower = db_field.lower().replace(' ', '_')
                         val = entity_data.get(db_field) or entity_data.get(field_lower)
@@ -7193,9 +7211,9 @@ async def generate_document(request: Request):
                                         'company_name': 'name',
                                         'employee_count': 'employees_count',
                                         'registration_number': 'registration_number',
-                                        'registration_country': 'registration_country',
-                                        'jurisdiction': 'registration_country',
-                                        'jurisdiction_of_incorporation': 'registration_country',
+                                        'registration_country': 'country',
+                                        'jurisdiction': 'country',
+                                        'jurisdiction_of_incorporation': 'country',
                                         'legal_address': 'legal_address',
                                     }
                                     alt_field = FIELD_ALIASES.get(database_field_lower)
@@ -7389,7 +7407,7 @@ async def generate_document(request: Request):
                                     found = True
                                     logger.info(f"  ✅ DB last-chance: {placeholder} = '{v}'")
                         if not found:
-                            ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
+                            ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo, fetched_entities)
                             data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
                             found = True
                             logger.info(f"  ✅ AI (realistic fallback): {placeholder} = '{ai_val}'")
@@ -7557,6 +7575,7 @@ async def process_document_legacy(request: Request):
 if __name__ == "__main__":
     import uvicorn
     logger.info("Starting Document Processing API v2.0...")
+    logger.info(f"SUPABASE_SERVICE_ROLE_KEY: {'configured (RLS bypass enabled)' if SUPABASE_SERVICE_ROLE_KEY else 'not set (buyer/seller may fail)'}")
     logger.info(f"Templates directory: {TEMPLATES_DIR}")
     logger.info(f"Storage directory: {STORAGE_DIR}")
     logger.info("AI upload mapping: enabled (database/csv/random per placeholder, disk fallback if no template_id)")
