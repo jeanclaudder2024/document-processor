@@ -996,6 +996,61 @@ async def health_check():
         "storage_dir": STORAGE_DIR
     }
 
+
+@app.get("/diagnose-buyer-seller")
+async def diagnose_buyer_seller():
+    """Diagnose why buyer/seller data may not appear in documents. Run: curl http://localhost:8000/diagnose-buyer-seller"""
+    result = {
+        "service_role_key_set": bool(SUPABASE_SERVICE_ROLE_KEY),
+        "using_service_role": bool(SUPABASE_SERVICE_ROLE_KEY),
+        "buyer_companies": {"count": 0, "error": None, "sample_name": None},
+        "seller_companies": {"count": 0, "error": None, "sample_name": None},
+        "companies_buyer": {"count": 0, "error": None},
+        "companies_seller": {"count": 0, "error": None},
+    }
+    if not supabase:
+        result["error"] = "Supabase not connected"
+        return result
+    # Test buyer_companies
+    try:
+        r = supabase.table("buyer_companies").select("id,name").limit(5).execute()
+        result["buyer_companies"]["count"] = len(r.data or [])
+        if r.data and len(r.data) > 0:
+            result["buyer_companies"]["sample_name"] = r.data[0].get("name")
+    except Exception as e:
+        result["buyer_companies"]["error"] = str(e)
+    # Test seller_companies
+    try:
+        r = supabase.table("seller_companies").select("id,name").limit(5).execute()
+        result["seller_companies"]["count"] = len(r.data or [])
+        if r.data and len(r.data) > 0:
+            result["seller_companies"]["sample_name"] = r.data[0].get("name")
+    except Exception as e:
+        result["seller_companies"]["error"] = str(e)
+    # Test companies (fallback)
+    try:
+        r = supabase.table("companies").select("id,name").or_("company_type.eq.buyer,company_type.eq.buyer_test").limit(5).execute()
+        result["companies_buyer"]["count"] = len(r.data or [])
+    except Exception as e:
+        result["companies_buyer"]["error"] = str(e)
+    try:
+        r = supabase.table("companies").select("id,name").or_("company_type.eq.seller,company_type.eq.seller_test").limit(5).execute()
+        result["companies_seller"]["count"] = len(r.data or [])
+    except Exception as e:
+        result["companies_seller"]["error"] = str(e)
+    result["fix"] = []
+    if not result["service_role_key_set"]:
+        result["fix"].append("Add SUPABASE_SERVICE_ROLE_KEY to .env (Supabase Dashboard -> API -> service_role)")
+    if result["buyer_companies"]["count"] == 0 and not result["buyer_companies"]["error"]:
+        result["fix"].append("buyer_companies table is empty - add data in Admin -> Buyer Companies")
+    elif result["buyer_companies"]["error"]:
+        result["fix"].append("buyer_companies error (likely RLS): " + result["buyer_companies"]["error"][:80])
+    if result["seller_companies"]["count"] == 0 and not result["seller_companies"]["error"]:
+        result["fix"].append("seller_companies table is empty - add data in Admin -> Seller Companies")
+    elif result["seller_companies"]["error"]:
+        result["fix"].append("seller_companies error (likely RLS): " + result["seller_companies"]["error"][:80])
+    return result
+
 # ============================================================================
 # VESSELS API (from Supabase)
 # ============================================================================
