@@ -7348,10 +7348,24 @@ async def generate_document(request: Request):
                      database_table in ('buyer_companies', 'seller_companies', 'buyer', 'seller'))
                 )
                 if is_buyer_seller_db:
-                    # NEVER use AI for buyer/seller when configured from database - use database only
-                    logger.warning(f"  ⚠️ {placeholder}: Buyer/seller DB source - no AI fallback (add data in Admin)")
-                    data_mapping[placeholder] = "—"
-                    found = True
+                    # Use buyer/seller from DB - NEVER use AI for buyer/seller
+                    ent = fetched_entities.get('buyer') if 'buyer' in ph_lower and not ph_lower.startswith('buyer_bank') else fetched_entities.get('seller')
+                    if ent:
+                        db_f = (setting.get('databaseField') or setting.get('database_field') or '').strip()
+                        v = None
+                        if db_f:
+                            aliases = {'company_name': 'name', 'contact_person': 'representative_name'}
+                            v = ent.get(db_f) or ent.get(db_f.replace(' ', '_').lower()) or ent.get(aliases.get(db_f.lower(), db_f))
+                        if v is None:
+                            v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
+                        if v is not None and str(v).strip():
+                            data_mapping[placeholder] = _normalize_replacement_value(str(v).strip(), placeholder=placeholder)
+                            found = True
+                            logger.info(f"  ✅ Buyer/seller from DB: {placeholder} = '{v}'")
+                    if not found:
+                        logger.warning(f"  ⚠️ {placeholder}: No buyer/seller in DB (add in Admin, check SUPABASE_SERVICE_ROLE_KEY)")
+                        data_mapping[placeholder] = "—"
+                        found = True
                 else:
                     logger.info(f"  🔍 {placeholder}: Cascade CSV → Smart CSV → AI (realistic fallback)")
                     # 1. CSV (from CMS config) - try configured CSV first
@@ -7364,11 +7378,21 @@ async def generate_document(request: Request):
                         found = True
                         logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
                     if not found:
-                        # 3. Generate realistic AI data when no match
-                        ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
-                        data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
-                        found = True
-                        logger.info(f"  ✅ AI (realistic fallback): {placeholder} = '{ai_val}'")
+                        # 3. LAST CHANCE: use buyer/seller from DB - NEVER use AI for buyer/seller
+                        ph_low = (placeholder or '').lower()
+                        if ('buyer' in ph_low and not ph_low.startswith('buyer_bank')) or ('seller' in ph_low and not ph_low.startswith('seller_bank')):
+                            ent = fetched_entities.get('buyer') if 'buyer' in ph_low else fetched_entities.get('seller')
+                            if ent:
+                                v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
+                                if v and str(v).strip():
+                                    data_mapping[placeholder] = _normalize_replacement_value(str(v).strip(), placeholder=placeholder)
+                                    found = True
+                                    logger.info(f"  ✅ DB last-chance: {placeholder} = '{v}'")
+                        if not found:
+                            ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo)
+                            data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
+                            found = True
+                            logger.info(f"  ✅ AI (realistic fallback): {placeholder} = '{ai_val}'")
             else:
                 logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
         
