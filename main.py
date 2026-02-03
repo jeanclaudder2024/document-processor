@@ -6075,14 +6075,18 @@ Context (use to make value consistent): {context_str}
 Field to generate: {field_name}
 Requirement: {hint}
 
+CRITICAL - MAKE IT LOOK REAL:
+- NEVER use obvious placeholder numbers like 123, 1, 100, 999. Use varied realistic numbers (e.g. 47, 128, 2500, 12a, 184).
+- Addresses: use real-style street names and building numbers (e.g. "Keizersgracht 184", "47 Shenton Way", "Marina Boulevard 23") - NOT "123 Something Avenue".
+- Registration numbers: use country-appropriate format with varied digits, not 12345678.
+- Everything must look like actual company data, not generated placeholders.
+
 RULES:
 1. Output ONLY the value - no quotes, no explanation, no extra text
 2. Keep it SHORT and professional (max 80 chars for addresses)
-3. Make it look like REAL company data - formats and style must match the country
-4. For registration numbers: use format typical for that country
-5. For addresses: include street, city, country
-6. For names: use realistic full name
-7. For titles: use standard business title
+3. Formats and style must match the country in context
+4. For addresses: real street name + realistic number + city + postal code if common + country
+5. For names/titles: realistic professional style
 
 Output ONLY the value:"""
             r = openai_client.chat.completions.create(
@@ -6099,14 +6103,38 @@ Output ONLY the value:"""
         except Exception as e:
             logger.warning(f"OpenAI for buyer/seller field '{field_name}': {e}")
 
-    # Fallback: build plausible value from context (no OpenAI)
+    # Fallback: build plausible value from context (no OpenAI) - avoid fake-looking 123-style numbers
     import random
     if field_lower in ('registration_number',):
-        return f"{random.randint(10000000, 99999999)}" if not country else f"REG-{country[:2].upper()}{random.randint(100000, 999999)}"
+        # Varied digits, not 12345678-style
+        n = random.randint(40170000, 99889999) if random.random() > 0.5 else random.randint(100000, 999999)
+        return str(n) if not country else f"{country[:2].upper()}{random.randint(400000, 998000)}"
     if field_lower in ('legal_address', 'address'):
-        parts = [f"{random.randint(1, 99)} Trading Street"]
-        if city:
-            parts.append(city)
+        # Realistic street numbers (avoid 1, 123, 100) and varied street names by region
+        num = random.choice([47, 128, 23, 184, 56, 250, 12, 89, 302, 15, 72, 210])
+        streets_nl = ['Keizersgracht', 'Herengracht', 'Rokin', 'Zuidas Boulevard', 'Strawinskylaan']
+        streets_sg = ['Shenton Way', 'Marina Boulevard', 'Raffles Quay', 'Temasek Boulevard', 'One Raffles Place']
+        streets_ae = ['Sheikh Zayed Road', 'Dubai Marina', 'Jumeirah Lakes Towers', 'Emaar Square']
+        streets_uk = ['Canary Wharf', 'Fenchurch Street', 'Leadenhall', 'Minories']
+        country_lower = (country or '').lower()
+        if 'netherlands' in country_lower or 'amsterdam' in country_lower or 'rotterdam' in country_lower:
+            street = random.choice(streets_nl)
+            city_use = city or random.choice(['Amsterdam', 'Rotterdam', 'The Hague', 'Utrecht'])
+        elif 'uae' in country_lower or 'dubai' in country_lower or 'emirates' in country_lower:
+            street = random.choice(streets_ae)
+            city_use = city or random.choice(['Dubai', 'Abu Dhabi'])
+        elif 'singapore' in country_lower:
+            street = random.choice(streets_sg)
+            city_use = city or 'Singapore'
+        elif 'uk' in country_lower or 'united kingdom' in country_lower:
+            street = random.choice(streets_uk)
+            city_use = city or random.choice(['London', 'Manchester'])
+        else:
+            street = random.choice(streets_sg + streets_nl)
+            city_use = city or (country or 'Singapore')
+        parts = [f"{num} {street}"]
+        if city_use:
+            parts.append(city_use)
         parts.append(country or "Singapore")
         return ", ".join(parts)
     if field_lower in ('representative_name',):
