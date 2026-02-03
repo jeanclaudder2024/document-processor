@@ -7058,6 +7058,40 @@ async def generate_document(request: Request):
                     logger.info(f"  ⚠️  CMS configured {db_table}.{db_field or '(inferred)'} but no {entity_key} data fetched")
             
             # ====================================================================
+            # STEP 0b: BUYER/SELLER BY PLACEHOLDER NAME (buyer_company_name, buyer_country, etc.)
+            # ====================================================================
+            # When placeholder is buyer_* or seller_*, use DB directly even if CMS key didn't match
+            if not found:
+                ph_lower = (placeholder or '').lower().replace(' ', '_').replace('-', '_')
+                if (ph_lower.startswith('buyer_') and not ph_lower.startswith('buyer_bank_')) or (ph_lower.startswith('seller_') and not ph_lower.startswith('seller_bank_')):
+                    ent = fetched_entities.get('buyer') if ph_lower.startswith('buyer_') else fetched_entities.get('seller')
+                    if ent:
+                        # Suffix after buyer_ or seller_ -> DB field (e.g. company_name -> name, registration_country -> registration_country)
+                        suffix = ph_lower[6:] if ph_lower.startswith('buyer_') else ph_lower[7:]  # strip "buyer_" or "seller_"
+                        _SUFFIX_TO_FIELD = {
+                            'company_name': 'name', 'name': 'name', 'legal_name': 'legal_name', 'trade_name': 'trade_name',
+                            'country': 'country', 'registration_country': 'registration_country', 'city': 'city',
+                            'legal_address': 'legal_address', 'address': 'address',
+                            'registration_number': 'registration_number',
+                            'representative_name': 'representative_name', 'representative_title': 'representative_title',
+                            'representative_email': 'representative_email', 'representative_phone': 'representative_phone',
+                            'contact_person': 'representative_name', 'contact_email': 'representative_email',
+                            'email': 'email', 'phone': 'phone', 'website': 'website',
+                        }
+                        field_to_use = _SUFFIX_TO_FIELD.get(suffix) or suffix
+                        val = ent.get(field_to_use) or ent.get(suffix)
+                        if val is None and suffix in ('registration_country', 'jurisdiction', 'jurisdiction_of_incorporation'):
+                            val = ent.get('registration_country') or ent.get('country')
+                        if val is None and 'name' in suffix:
+                            val = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
+                        if val is not None and str(val).strip():
+                            data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
+                            found = True
+                            logger.info(f"  ✅✅✅ BUYER/SELLER BY NAME: {placeholder} = '{val}' (from DB suffix '{suffix}')")
+                            matched_placeholders.append(placeholder)
+                            continue
+            
+            # ====================================================================
             # STEP 1: PREFIX-BASED ID FETCHING
             # ====================================================================
             prefix = identify_prefix(placeholder)
