@@ -5688,9 +5688,15 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     if 'company' in pl and 'name' in pl:
         return random.choice(generic_companies)
 
-    # Address
+    # Address (avoid 123-style placeholder numbers; use realistic addresses)
     if 'address' in pl:
-        return random.choice(['123 Maritime St, London', '456 Harbour Rd, Singapore', '55 Raffles Place, Singapore'])
+        return random.choice([
+            '47 Shenton Way, Singapore',
+            '184 Keizersgracht, Amsterdam, Netherlands',
+            '23 Marina Boulevard, Singapore',
+            '56 Fenchurch Street, London, UK',
+            '128 Sheikh Zayed Road, Dubai, UAE'
+        ])
 
     # Numbers / amounts - BEFORE product (cargo_quantity -> MT, not product name)
     if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl or 'weight' in pl:
@@ -5741,9 +5747,9 @@ def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> 
     
     if 'address' in pl:
         return random.choice([
-            '123 Business Center, Singapore 048619',
-            '456 Trade Tower, Dubai, UAE',
-            '789 Commerce Street, London EC1V 9BD'
+            '47 Shenton Way, Singapore 048619',
+            '128 Trade Centre, Dubai, UAE',
+            '56 Leadenhall, London EC1V 9BD'
         ])
     
     if 'email' in pl:
@@ -6098,8 +6104,17 @@ Output ONLY the value:"""
             raw = (r.choices[0].message.content or '').strip()
             out = _sanitize_ai_replacement(raw)
             if out:
-                logger.info(f"  🤖 AI generated realistic '{field_name}' for company '{company_name[:30]}': {out[:50]}...")
-                return out
+                # Reject AI output if it looks like placeholder address (e.g. "123 Energy Avenue, Utrecht, Netherlands")
+                out_lower = out.lower()
+                if field_lower in ('legal_address', 'address'):
+                    if (out_lower.startswith('123 ') or ' 123 ' in out_lower or
+                        'energy avenue' in out_lower or 'trading street' in out_lower or
+                        out_lower.startswith('1 ') and ('avenue' in out_lower or 'street' in out_lower)):
+                        logger.warning(f"  ⚠️ Rejecting AI address (looks placeholder): '{out[:50]}...' - using fallback")
+                        out = None  # fall through to fallback below
+                if out:
+                    logger.info(f"  🤖 AI generated realistic '{field_name}' for company '{company_name[:30]}': {out[:50]}...")
+                    return out
         except Exception as e:
             logger.warning(f"OpenAI for buyer/seller field '{field_name}': {e}")
 
