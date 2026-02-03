@@ -357,39 +357,29 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # Fetch buyer: DIRECT from buyer_companies (not linked to vessel)
-    # Buyer/seller are separate - always take from buyer_companies table
+    # Fetch buyer: ONLY from buyer_companies (never from companies table)
     logger.info(f"=" * 60)
-    logger.info(f"📦 FETCHING BUYER (direct from buyer_companies)...")
+    logger.info(f"📦 FETCHING BUYER (buyer_companies only)...")
     logger.info(f"=" * 60)
     
     fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
     
-    if not fetched_data.get('buyer'):
-        logger.info(f"   buyer_companies empty, trying companies (company_type=buyer)...")
-        fetched_data['buyer'] = fetch_random_company_by_type(supabase_client, 'buyer')
-    
     if fetched_data.get('buyer'):
         logger.info(f"✅ BUYER: {fetched_data['buyer'].get('name', 'NO NAME')}")
     else:
-        logger.error(f"❌ NO BUYER - Add companies with company_type='buyer' in Admin -> Companies")
+        logger.error(f"❌ NO BUYER - Add data in Admin -> Buyer Companies (need SUPABASE_SERVICE_ROLE_KEY in .env)")
     
-    # Fetch seller: DIRECT from seller_companies (not linked to vessel)
-    # Buyer/seller are separate - always take from seller_companies table
+    # Fetch seller: ONLY from seller_companies (never from companies table)
     logger.info(f"=" * 60)
-    logger.info(f"📦 FETCHING SELLER (direct from seller_companies)...")
+    logger.info(f"📦 FETCHING SELLER (seller_companies only)...")
     logger.info(f"=" * 60)
     
     fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
     
-    if not fetched_data.get('seller'):
-        logger.info(f"   seller_companies empty, trying companies (company_type=seller)...")
-        fetched_data['seller'] = fetch_random_company_by_type(supabase_client, 'seller')
-    
     if fetched_data.get('seller'):
         logger.info(f"✅ SELLER: {fetched_data['seller'].get('name', 'NO NAME')}")
     else:
-        logger.error(f"❌ NO SELLER - Add companies with company_type='seller' in Admin -> Companies")
+        logger.error(f"❌ NO SELLER - Add data in Admin -> Seller Companies (need SUPABASE_SERVICE_ROLE_KEY in .env)")
     
     # Fetch product
     product_id = payload.get('product_id')
