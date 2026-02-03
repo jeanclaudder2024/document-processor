@@ -6032,6 +6032,105 @@ Output ONLY the value:"""
             logger.warning(f"OpenAI fallback for '{placeholder}': {e}")
     return generate_realistic_random_data(placeholder, vessel_imo)
 
+
+def generate_realistic_buyer_seller_field(placeholder: str, entity: Dict, field_name: str) -> str:
+    """Generate realistic data for a specific buyer/seller field when DB value is missing.
+    Uses company context (name, country) so output is consistent and professional (very real-looking)."""
+    if not entity or not field_name:
+        return "—"
+    pl_lower = (placeholder or '').lower()
+    field_lower = (field_name or '').lower().replace(' ', '_')
+    company_name = (entity.get('name') or entity.get('trade_name') or entity.get('company_name') or '').strip()
+    country = (entity.get('country') or entity.get('registration_country') or '').strip()
+    city = (entity.get('city') or '').strip()
+    context_str = f"Company: {company_name or 'Trading Company'}"
+    if country:
+        context_str += f", Country: {country}"
+    if city:
+        context_str += f", City: {city}"
+
+    # Field-specific hints for very realistic output
+    field_hints = {
+        'registration_number': 'official company registration number (format appropriate for the country, e.g. UK: 8 digits, Singapore: 9 chars, UAE: number)',
+        'legal_address': 'full legal/business address: street number and name, city, postal code, country',
+        'address': 'business address: street, city, country',
+        'representative_name': 'full name of company representative (realistic First Last, professional)',
+        'representative_title': 'job title (e.g. Trading Director, Operations Manager, Legal Representative)',
+        'representative_email': 'professional business email matching the company',
+        'representative_phone': 'phone with country code (e.g. +65 6123 4567)',
+        'email': 'company email (e.g. legal@company.com)',
+        'phone': 'company phone with country code',
+        'website': 'company website URL',
+        'country': 'country name',
+        'registration_country': 'country of registration',
+        'city': 'city name',
+    }
+    hint = field_hints.get(field_lower) or 'realistic professional value for this field'
+
+    if OPENAI_ENABLED and openai_client:
+        try:
+            prompt = f"""Generate a REALISTIC, PROFESSIONAL value for a maritime/oil trading document.
+
+Context (use to make value consistent): {context_str}
+Field to generate: {field_name}
+Requirement: {hint}
+
+RULES:
+1. Output ONLY the value - no quotes, no explanation, no extra text
+2. Keep it SHORT and professional (max 80 chars for addresses)
+3. Make it look like REAL company data - formats and style must match the country
+4. For registration numbers: use format typical for that country
+5. For addresses: include street, city, country
+6. For names: use realistic full name
+7. For titles: use standard business title
+
+Output ONLY the value:"""
+            r = openai_client.chat.completions.create(
+                model='gpt-4o-mini',
+                messages=[{'role': 'user', 'content': prompt}],
+                max_tokens=100,
+                temperature=0.3,
+            )
+            raw = (r.choices[0].message.content or '').strip()
+            out = _sanitize_ai_replacement(raw)
+            if out:
+                logger.info(f"  🤖 AI generated realistic '{field_name}' for company '{company_name[:30]}': {out[:50]}...")
+                return out
+        except Exception as e:
+            logger.warning(f"OpenAI for buyer/seller field '{field_name}': {e}")
+
+    # Fallback: build plausible value from context (no OpenAI)
+    import random
+    if field_lower in ('registration_number',):
+        return f"{random.randint(10000000, 99999999)}" if not country else f"REG-{country[:2].upper()}{random.randint(100000, 999999)}"
+    if field_lower in ('legal_address', 'address'):
+        parts = [f"{random.randint(1, 99)} Trading Street"]
+        if city:
+            parts.append(city)
+        parts.append(country or "Singapore")
+        return ", ".join(parts)
+    if field_lower in ('representative_name',):
+        first = random.choice(['James', 'Michael', 'David', 'Sarah', 'Emma', 'John', 'Robert', 'Maria', 'Anna', 'Chen'])
+        last = random.choice(['Smith', 'Johnson', 'Williams', 'Brown', 'Lee', 'Wong', 'Kumar', 'Al-Hassan', 'Patel'])
+        return f"{first} {last}"
+    if field_lower in ('representative_title',):
+        return random.choice(['Trading Director', 'Operations Manager', 'Legal Representative', 'Authorized Signatory', 'Commercial Manager'])
+    if field_lower in ('representative_email', 'email'):
+        base = (company_name or 'company').replace(' ', '').lower()[:20]
+        return f"contact@{base}.com" if len(base) > 2 else "contact@trading.com"
+    if field_lower in ('representative_phone', 'phone'):
+        cc = '+65' if country and 'singapore' in country.lower() else '+44' if country and 'uk' in country.lower() else '+971' if country and 'uae' in country.lower() else '+1'
+        return f"{cc} {random.randint(100, 999)} {random.randint(1000, 9999)} {random.randint(1000, 9999)}"
+    if field_lower in ('website',):
+        base = (company_name or 'company').replace(' ', '').lower()[:15]
+        return f"www.{base}.com" if len(base) > 2 else "www.company.com"
+    if field_lower in ('country', 'registration_country'):
+        return country or random.choice(['Singapore', 'United Arab Emirates', 'United Kingdom', 'Netherlands'])
+    if field_lower in ('city',):
+        return city or random.choice(['Singapore', 'Dubai', 'London', 'Rotterdam', 'Houston'])
+    return "—"
+
+
 def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
     """
     Build regex patterns to match a placeholder WITH brackets in the document.
@@ -7038,8 +7137,11 @@ async def generate_document(request: Request):
                             val = entity_data.get(_CMS_FIELD_ALIASES.get(field_lower, field_lower))
                         if val is None and field_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
                             val = entity_data.get('registration_country') or entity_data.get('country')
-                        if val is None:
+                        if val is None and field_lower in ('name', 'company_name', 'legal_name', 'trade_name', 'companyname'):
                             val = entity_data.get('name') or entity_data.get('company_name') or entity_data.get('legal_name') or entity_data.get('trade_name')
+                        if val is None:
+                            # Field missing in DB: generate realistic related data using AI (same company context)
+                            val = generate_realistic_buyer_seller_field(placeholder, entity_data, field_to_use or field_lower)
                         if val is not None and str(val).strip():
                             data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
                             found = True
@@ -7077,6 +7179,9 @@ async def generate_document(request: Request):
                         if val is None and ('name' in suffix or suffix in ('company_name', 'name', 'companyname')):
                             # Try all common DB column names for company name
                             val = ent.get('name') or ent.get('company_name') or ent.get('legal_name') or ent.get('trade_name')
+                        if val is None:
+                            # Field missing in DB: generate realistic related data using AI (same company context)
+                            val = generate_realistic_buyer_seller_field(placeholder, ent, field_to_use or suffix)
                         if val is not None and str(val).strip():
                             data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
                             found = True
@@ -7500,6 +7605,7 @@ async def generate_document(request: Request):
                             'legal_address': 'legal_address', 'address': 'address',
                             'representative_title': 'representative_title',
                         }
+                        ph_field = ph_lower.split('_')[-1] if '_' in ph_lower else ph_lower
                         if db_f:
                             f_lower = db_f.lower().replace(' ', '_')
                             v = ent.get(db_f) or ent.get(f_lower) or ent.get(aliases.get(f_lower, f_lower))
@@ -7508,10 +7614,13 @@ async def generate_document(request: Request):
                                 v = ent.get('registration_country') or ent.get('country')
                         if v is None:
                             # Fallback: infer from placeholder (company_name -> name, etc.)
-                            ph_field = ph_lower.split('_')[-1] if '_' in ph_lower else ph_lower
                             v = ent.get(ph_field) or ent.get(aliases.get(ph_field, ph_field))
-                        if v is None:
+                        requested_field = (f_lower if db_f else ph_field)
+                        if v is None and requested_field in ('name', 'company_name', 'legal_name', 'trade_name', 'companyname'):
                             v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
+                        if v is None:
+                            # Field missing: generate realistic related data using AI (same company context)
+                            v = generate_realistic_buyer_seller_field(placeholder, ent, requested_field)
                         if v is not None and str(v).strip():
                             data_mapping[placeholder] = _normalize_replacement_value(str(v).strip(), placeholder=placeholder)
                             found = True
@@ -7545,20 +7654,26 @@ async def generate_document(request: Request):
                                     'representative_title': 'representative_title', 'address': 'address',
                                 }
                                 v = None
+                                ph_suffix = (ph_low.replace('seller_', '').replace('buyer_', '').strip('_').split('_')[-1] if '_' in ph_low else ph_low.replace('seller_', '').replace('buyer_', '')) or 'name'
                                 if db_f:
                                     f_lower = db_f.lower().replace(' ', '_')
                                     v = ent.get(db_f) or ent.get(f_lower) or ent.get(aliases.get(f_lower, f_lower))
-                                if v is None:
+                                    req_f = f_lower
+                                else:
+                                    req_f = ph_suffix
+                                if v is None and req_f in ('name', 'company_name', 'legal_name', 'trade_name', 'companyname'):
                                     v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
+                                if v is None:
+                                    # Entity exists but field empty: generate realistic related data using AI
+                                    v = generate_realistic_buyer_seller_field(placeholder, ent, req_f)
                                 if v and str(v).strip():
                                     data_mapping[placeholder] = _normalize_replacement_value(str(v).strip(), placeholder=placeholder)
                                     found = True
                                     logger.info(f"  ✅ DB last-chance: {placeholder} = '{v}'")
                                 else:
-                                    # Has buyer/seller entity but no value - use dash, NEVER AI
                                     data_mapping[placeholder] = "—"
                                     found = True
-                                    logger.warning(f"  ⚠️ {placeholder}: Buyer/seller entity exists but field empty, using '—'")
+                                    logger.warning(f"  ⚠️ {placeholder}: Buyer/seller field empty, using '—'")
                         if not found:
                             ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo, fetched_entities)
                             data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
