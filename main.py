@@ -6999,36 +6999,57 @@ async def generate_document(request: Request):
             # STEP 0: CMS DATABASE CONFIG FIRST (respect editor selection)
             # ====================================================================
             # When user explicitly selected buyer_companies/seller_companies in editor, use that first
+            # CRITICAL: Work even when db_field is empty - infer from placeholder name (e.g. "Company Name" -> name)
             db_table = (setting.get('databaseTable') or setting.get('database_table') or '').strip() if setting else ''
             db_field = (setting.get('databaseField') or setting.get('database_field') or '').strip() if setting else ''
-            if setting and source == 'database' and db_table and db_field:
-                table_lower = db_table.lower()
-                if table_lower in ('buyer_companies', 'seller_companies', 'buyer', 'seller'):
-                    entity_key = 'buyer' if table_lower in ('buyer_companies', 'buyer') else 'seller'
-                    entity_data = fetched_entities.get(entity_key)
-                    if entity_data:
-                        _CMS_FIELD_ALIASES = {
-                            'company_name': 'name', 'contact_person': 'representative_name',
-                            'contact_email': 'representative_email',
-                            'jurisdiction': 'registration_country',
-                            'jurisdiction_of_incorporation': 'registration_country',
-                            'registration_country': 'registration_country',
-                        }
-                        field_lower = db_field.lower().replace(' ', '_')
-                        val = entity_data.get(db_field) or entity_data.get(field_lower)
+            table_lower = db_table.lower() if db_table else ''
+            if setting and source == 'database' and table_lower in ('buyer_companies', 'seller_companies', 'buyer', 'seller'):
+                entity_key = 'buyer' if table_lower in ('buyer_companies', 'buyer') else 'seller'
+                entity_data = fetched_entities.get(entity_key)
+                if entity_data:
+                    _CMS_FIELD_ALIASES = {
+                        'company_name': 'name', 'contact_person': 'representative_name',
+                        'contact_email': 'representative_email', 'representative_name': 'representative_name',
+                        'representative_title': 'representative_title', 'representative_email': 'representative_email',
+                        'jurisdiction': 'registration_country',
+                        'jurisdiction_of_incorporation': 'registration_country',
+                        'registration_country': 'registration_country',
+                        'legal_address': 'legal_address', 'address': 'address',
+                        'registration_number': 'registration_number', 'legal_name': 'legal_name', 'trade_name': 'trade_name',
+                    }
+                    # Infer field from placeholder when db_field empty (editor may not have saved field)
+                    field_to_use = db_field
+                    if not field_to_use and placeholder:
+                        ph_lower = placeholder.lower().replace(' ', '_').replace('-', '_')
+                        if 'company' in ph_lower and ('name' in ph_lower or ph_lower.endswith('company')):
+                            field_to_use = 'name'
+                        elif 'contact' in ph_lower or 'representative' in ph_lower:
+                            field_to_use = 'representative_name'
+                        elif 'jurisdiction' in ph_lower or 'registration_country' in ph_lower or 'incorporation' in ph_lower:
+                            field_to_use = 'registration_country'
+                        elif 'address' in ph_lower:
+                            field_to_use = 'legal_address' if 'legal' in ph_lower else 'address'
+                        elif 'registration_number' in ph_lower or 'number' in ph_lower:
+                            field_to_use = 'registration_number'
+                        else:
+                            field_to_use = 'name'  # Default for company-related
+                    if field_to_use:
+                        field_lower = field_to_use.lower().replace(' ', '_')
+                        val = entity_data.get(field_to_use) or entity_data.get(field_lower)
                         if val is None:
                             val = entity_data.get(_CMS_FIELD_ALIASES.get(field_lower, field_lower))
-                        # Jurisdiction: fallback to country if registration_country empty
                         if val is None and field_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
                             val = entity_data.get('registration_country') or entity_data.get('country')
+                        if val is None:
+                            val = entity_data.get('name') or entity_data.get('legal_name') or entity_data.get('trade_name')
                         if val is not None and str(val).strip():
                             data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
                             found = True
-                            logger.info(f"  ✅✅✅ CMS EDITOR MATCH: {placeholder} = '{val}' (from {entity_key}.{db_field})")
+                            logger.info(f"  ✅✅✅ CMS EDITOR MATCH: {placeholder} = '{val}' (from {entity_key}.{field_to_use})")
                             matched_placeholders.append(placeholder)
                             continue
-                    else:
-                        logger.info(f"  ⚠️  CMS configured {db_table}.{db_field} but no {entity_key} data fetched")
+                else:
+                    logger.info(f"  ⚠️  CMS configured {db_table}.{db_field or '(inferred)'} but no {entity_key} data fetched")
             
             # ====================================================================
             # STEP 1: PREFIX-BASED ID FETCHING
