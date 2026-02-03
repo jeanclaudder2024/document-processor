@@ -6950,9 +6950,18 @@ async def generate_document(request: Request):
                 fetched_entities['buyer'] = _fetch_random_from_table('buyer_companies')
             if not fetched_entities.get('seller'):
                 fetched_entities['seller'] = _fetch_random_from_table('seller_companies')
-            # Fetch bank accounts for the buyer/seller we just got (by their IDs)
             buyer = fetched_entities.get('buyer')
             seller = fetched_entities.get('seller')
+            # Log so we can see in pm2 logs if buyer/seller data is present (fix "still same problem")
+            if buyer:
+                logger.info(f"📋 BUYER DATA LOADED: name={buyer.get('name')}, keys={list(buyer.keys())[:15]}")
+            else:
+                logger.warning("⚠️ BUYER DATA IS NONE - check SUPABASE_SERVICE_ROLE_KEY and buyer_companies table")
+            if seller:
+                logger.info(f"📋 SELLER DATA LOADED: name={seller.get('name')}, keys={list(seller.keys())[:15]}")
+            else:
+                logger.warning("⚠️ SELLER DATA IS NONE - check SUPABASE_SERVICE_ROLE_KEY and seller_companies table")
+            # Fetch bank accounts for the buyer/seller we just got (by their IDs)
             if buyer and buyer.get('id'):
                 fetched_entities['buyer_bank'] = fetch_bank_account(
                     supabase, buyer['id'], body.get('buyer_bank_id'),
@@ -7047,7 +7056,7 @@ async def generate_document(request: Request):
                         if val is None and field_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
                             val = entity_data.get('registration_country') or entity_data.get('country')
                         if val is None:
-                            val = entity_data.get('name') or entity_data.get('legal_name') or entity_data.get('trade_name')
+                            val = entity_data.get('name') or entity_data.get('company_name') or entity_data.get('legal_name') or entity_data.get('trade_name')
                         if val is not None and str(val).strip():
                             data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
                             found = True
@@ -7082,14 +7091,17 @@ async def generate_document(request: Request):
                         val = ent.get(field_to_use) or ent.get(suffix)
                         if val is None and suffix in ('registration_country', 'jurisdiction', 'jurisdiction_of_incorporation'):
                             val = ent.get('registration_country') or ent.get('country')
-                        if val is None and 'name' in suffix:
-                            val = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
+                        if val is None and ('name' in suffix or suffix in ('company_name', 'name', 'companyname')):
+                            # Try all common DB column names for company name
+                            val = ent.get('name') or ent.get('company_name') or ent.get('legal_name') or ent.get('trade_name')
                         if val is not None and str(val).strip():
                             data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
                             found = True
                             logger.info(f"  ✅✅✅ BUYER/SELLER BY NAME: {placeholder} = '{val}' (from DB suffix '{suffix}')")
                             matched_placeholders.append(placeholder)
                             continue
+                    else:
+                        logger.warning(f"  ⚠️ STEP 0b: '{placeholder}' is buyer_/seller_ but entity is None (DB fetch failed - check SUPABASE_SERVICE_ROLE_KEY)")
             
             # ====================================================================
             # STEP 1: PREFIX-BASED ID FETCHING
