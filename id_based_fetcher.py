@@ -357,8 +357,27 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # NOTE: Buyer/seller are NOT fetched here - they are fetched directly in main.py
-    # without ID-based logic (random from buyer_companies/seller_companies tables).
+    # Fetch buyer/seller from buyer_companies/seller_companies by UUID (payload buyer_id/seller_id)
+    buyer_id = payload.get('buyer_id')
+    if buyer_id:
+        fetched_data['buyer'] = fetch_by_id(supabase_client, 'buyer_companies', buyer_id)
+    seller_id = payload.get('seller_id')
+    if seller_id:
+        fetched_data['seller'] = fetch_by_id(supabase_client, 'seller_companies', seller_id)
+    
+    # Resolve buyer/seller UUID from vessel via companies (when payload did not provide buyer_id/seller_id)
+    if vessel and not fetched_data.get('buyer') and vessel.get('buyer_company_id') is not None:
+        company_row = fetch_by_id(supabase_client, 'companies', vessel['buyer_company_id'])
+        if company_row and company_row.get('buyer_company_uuid'):
+            fetched_data['buyer'] = fetch_by_id(supabase_client, 'buyer_companies', company_row['buyer_company_uuid'])
+            if fetched_data['buyer']:
+                logger.info(f"   Resolved buyer from vessel -> companies -> buyer_companies (UUID {company_row['buyer_company_uuid']})")
+    if vessel and not fetched_data.get('seller') and vessel.get('seller_company_id') is not None:
+        company_row = fetch_by_id(supabase_client, 'companies', vessel['seller_company_id'])
+        if company_row and company_row.get('seller_company_uuid'):
+            fetched_data['seller'] = fetch_by_id(supabase_client, 'seller_companies', company_row['seller_company_uuid'])
+            if fetched_data['seller']:
+                logger.info(f"   Resolved seller from vessel -> companies -> seller_companies (UUID {company_row['seller_company_uuid']})")
     
     # Fetch product
     product_id = payload.get('product_id')
