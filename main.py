@@ -6055,11 +6055,11 @@ def generate_realistic_buyer_seller_field(placeholder: str, entity: Dict, field_
     if city:
         context_str += f", City: {city}"
 
-    # Field-specific hints for very realistic output
+    # Field-specific hints for very realistic output (buyer/seller - must look like real company data)
     field_hints = {
         'registration_number': 'official company registration number (format appropriate for the country, e.g. UK: 8 digits, Singapore: 9 chars, UAE: number)',
-        'legal_address': 'full legal/business address: street number and name, city, postal code, country',
-        'address': 'business address: street, city, country',
+        'legal_address': 'full legal address: real street name and building number (e.g. 47 Shenton Way or Keizersgracht 184), city, postal code (Singapore: 6 digits, UK: EC3V 4AB style, Netherlands: 4 digits + 2 letters), country. No generic numbers like 123.',
+        'address': 'business address: real street name and number, city, postal code if common, country. No 123 or generic placeholder numbers.',
         'representative_name': 'full name of company representative (realistic First Last, professional)',
         'representative_title': 'job title (e.g. Trading Director, Operations Manager, Legal Representative)',
         'representative_email': 'professional business email matching the company',
@@ -6125,33 +6125,43 @@ Output ONLY the value:"""
         n = random.randint(40170000, 99889999) if random.random() > 0.5 else random.randint(100000, 999999)
         return str(n) if not country else f"{country[:2].upper()}{random.randint(400000, 998000)}"
     if field_lower in ('legal_address', 'address'):
-        # Realistic street numbers (avoid 1, 123, 100) and varied street names by region
+        # Realistic addresses: postal codes, building/floor, region-appropriate format (buyer/seller)
         num = random.choice([47, 128, 23, 184, 56, 250, 12, 89, 302, 15, 72, 210])
-        streets_nl = ['Keizersgracht', 'Herengracht', 'Rokin', 'Zuidas Boulevard', 'Strawinskylaan']
-        streets_sg = ['Shenton Way', 'Marina Boulevard', 'Raffles Quay', 'Temasek Boulevard', 'One Raffles Place']
-        streets_ae = ['Sheikh Zayed Road', 'Dubai Marina', 'Jumeirah Lakes Towers', 'Emaar Square']
-        streets_uk = ['Canary Wharf', 'Fenchurch Street', 'Leadenhall', 'Minories']
         country_lower = (country or '').lower()
-        if 'netherlands' in country_lower or 'amsterdam' in country_lower or 'rotterdam' in country_lower:
-            street = random.choice(streets_nl)
-            city_use = city or random.choice(['Amsterdam', 'Rotterdam', 'The Hague', 'Utrecht'])
-        elif 'uae' in country_lower or 'dubai' in country_lower or 'emirates' in country_lower:
-            street = random.choice(streets_ae)
-            city_use = city or random.choice(['Dubai', 'Abu Dhabi'])
-        elif 'singapore' in country_lower:
-            street = random.choice(streets_sg)
+        # Singapore: building + floor + postal code
+        if 'singapore' in country_lower:
             city_use = city or 'Singapore'
-        elif 'uk' in country_lower or 'united kingdom' in country_lower:
-            street = random.choice(streets_uk)
-            city_use = city or random.choice(['London', 'Manchester'])
-        else:
-            street = random.choice(streets_sg + streets_nl)
-            city_use = city or (country or 'Singapore')
-        parts = [f"{num} {street}"]
-        if city_use:
-            parts.append(city_use)
-        parts.append(country or "Singapore")
-        return ", ".join(parts)
+            opts = [
+                f"{num} Shenton Way, #{random.randint(10, 35)}-{random.randint(1, 5):02d}, {city_use} {random.choice(['048619', '068809', '049318', '038987'])}",
+                f"Marina Boulevard, Tower {random.randint(1, 3)}, Level {random.randint(5, 25)}, {city_use} {random.choice(['018989', '049318'])}",
+                f"Raffles Quay, #{random.randint(15, 42)}-{random.randint(1, 4):02d}, {city_use} {random.choice(['048619', '048583'])}",
+            ]
+            return random.choice(opts)
+        # UK: number + street + city + postcode
+        if 'uk' in country_lower or 'united kingdom' in country_lower:
+            city_use = city or random.choice(['London', 'Manchester', 'Leeds'])
+            postcodes = ['EC3V 4AB', 'EC2M 4AB', 'E1W 1AW', 'M2 3AE', 'LS1 4AP'] if 'London' in city_use else ['M2 3AE', 'M3 4AB', 'LS1 4AP']
+            street = random.choice(['Leadenhall', 'Fenchurch Street', 'Minories', 'Canary Wharf', 'Lime Street'])
+            return f"{num} {street}, {city_use} {random.choice(postcodes)}, United Kingdom"
+        # Netherlands: street name + number, postal + city (Dutch format)
+        if 'netherlands' in country_lower or 'amsterdam' in country_lower or 'rotterdam' in country_lower or 'utrecht' in country_lower:
+            city_use = city or random.choice(['Amsterdam', 'Rotterdam', 'The Hague', 'Utrecht'])
+            street = random.choice(['Keizersgracht', 'Herengracht', 'Rokin', 'Zuidas Boulevard', 'Strawinskylaan', 'Vasteland'])
+            postal = f"{random.randint(1000, 9999)} {random.choice(['AB', 'BR', 'CD', 'DE'])}" if city_use == 'Amsterdam' else f"{random.randint(3000, 3099)} {random.choice(['AB', 'BR'])}"
+            return f"{street} {num}, {postal} {city_use}, Netherlands"
+        # UAE/Dubai: building/tower + street or area
+        if 'uae' in country_lower or 'dubai' in country_lower or 'emirates' in country_lower:
+            city_use = city or random.choice(['Dubai', 'Abu Dhabi'])
+            opts = [
+                f"Building {random.randint(1, 8)}, Sheikh Zayed Road, {city_use}, UAE",
+                f"Level {random.randint(5, 25)}, Emaar Square, Downtown, {city_use}, UAE",
+                f"Tower {random.choice(['A', 'B', 'C'])}{random.randint(1, 4)}, Jumeirah Lakes Towers, {city_use}, UAE",
+            ]
+            return random.choice(opts)
+        # Default: professional format with country
+        city_use = city or (country or 'Singapore')
+        street = random.choice(['Shenton Way', 'Marina Boulevard', 'Keizersgracht', 'Leadenhall', 'Sheikh Zayed Road'])
+        return f"{num} {street}, {city_use}, {country or 'Singapore'}"
     if field_lower in ('representative_name',):
         first = random.choice(['James', 'Michael', 'David', 'Sarah', 'Emma', 'John', 'Robert', 'Maria', 'Anna', 'Chen'])
         last = random.choice(['Smith', 'Johnson', 'Williams', 'Brown', 'Lee', 'Wong', 'Kumar', 'Al-Hassan', 'Patel'])
