@@ -3904,8 +3904,8 @@ async def save_placeholder_settings(request: Request):
                 sanitised_settings[placeholder] = {
                     'source': source,
                     'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
-                    'databaseTable': str(cfg.get('databaseTable', '')).strip() if cfg.get('databaseTable') else '',
-                    'databaseField': str(cfg.get('databaseField', '')).strip() if cfg.get('databaseField') else '',
+                    'databaseTable': str(cfg.get('databaseTable') or cfg.get('database_table') or cfg.get('table') or '').strip(),
+                    'databaseField': str(cfg.get('databaseField') or cfg.get('database_field') or cfg.get('field') or '').strip(),
                     'csvId': str(cfg.get('csvId', '')).strip() if cfg.get('csvId') else '',
                     'csvField': str(cfg.get('csvField', '')).strip() if cfg.get('csvField') else '',
                     'csvRow': int(cfg.get('csvRow', 0)) if cfg.get('csvRow') is not None else 0,
@@ -6854,9 +6854,38 @@ async def generate_document(request: Request):
             logger.info(f"\n🔍 Processing placeholder: '{placeholder}'")
             
             # ====================================================================
-            # STEP 1: PREFIX-BASED ID FETCHING (NEW - MANDATORY)
+            # STEP 0: CMS DATABASE CONFIG FIRST (respect editor selection)
             # ====================================================================
-            # Try prefix-based matching first if IDs were provided in payload
+            # When user explicitly selected buyer_companies/seller_companies in editor, use that first
+            db_table = (setting.get('databaseTable') or setting.get('database_table') or '').strip() if setting else ''
+            db_field = (setting.get('databaseField') or setting.get('database_field') or '').strip() if setting else ''
+            if setting and source == 'database' and db_table and db_field:
+                table_lower = db_table.lower()
+                if table_lower in ('buyer_companies', 'seller_companies', 'buyer', 'seller'):
+                    entity_key = 'buyer' if table_lower in ('buyer_companies', 'buyer') else 'seller'
+                    entity_data = fetched_entities.get(entity_key)
+                    if entity_data:
+                        _CMS_FIELD_ALIASES = {
+                            'company_name': 'name', 'contact_person': 'representative_name',
+                            'contact_email': 'representative_email', 'jurisdiction': 'registration_country',
+                            'jurisdiction_of_incorporation': 'registration_country',
+                        }
+                        field_lower = db_field.lower().replace(' ', '_')
+                        val = entity_data.get(db_field) or entity_data.get(field_lower)
+                        if val is None:
+                            val = entity_data.get(_CMS_FIELD_ALIASES.get(field_lower, field_lower))
+                        if val is not None and str(val).strip():
+                            data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
+                            found = True
+                            logger.info(f"  ✅✅✅ CMS EDITOR MATCH: {placeholder} = '{val}' (from {entity_key}.{db_field})")
+                            matched_placeholders.append(placeholder)
+                            continue
+                    else:
+                        logger.info(f"  ⚠️  CMS configured {db_table}.{db_field} but no {entity_key} data fetched")
+            
+            # ====================================================================
+            # STEP 1: PREFIX-BASED ID FETCHING
+            # ====================================================================
             prefix = identify_prefix(placeholder)
             if prefix:
                 logger.info(f"  🔑 Prefix identified: '{prefix}' → table: {PREFIX_TO_TABLE.get(prefix)}")
