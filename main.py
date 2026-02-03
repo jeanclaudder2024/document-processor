@@ -5899,7 +5899,13 @@ def _sanitize_ai_replacement(text: str) -> str:
 
 
 def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str = None, fetched_entities: Dict = None) -> str:
-    """AI-generated realistic data (OpenAI when available), else improved random. Maritime/oil context."""
+    """AI-generated realistic data (OpenAI when available), else improved random. Maritime/oil context.
+    NEVER used for buyer/seller - those MUST come from buyer_companies/seller_companies tables only."""
+    pl_lower = (placeholder or '').lower()
+    # CRITICAL: Never use AI for buyer/seller - only database lists (Fernandez, MAISAN, Asian Petroleum, etc.)
+    if ('buyer' in pl_lower and not pl_lower.startswith('buyer_bank')) or ('seller' in pl_lower and not pl_lower.startswith('seller_bank')):
+        logger.info(f"  🚫 AI blocked for buyer/seller placeholder '{placeholder}' - use DB only")
+        return "—"
     if OPENAI_ENABLED and openai_client:
         try:
             imo = (vessel or {}).get('imo') or vessel_imo or 'N/A'
