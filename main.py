@@ -4802,43 +4802,24 @@ def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
 def _fetch_random_from_table(table_name: str) -> Optional[Dict]:
     """
     Fetch a random row directly from Supabase table (no id_based_fetcher).
-    Uses main.py supabase client. For buyer_companies/seller_companies.
-    Uses random OFFSET when count available to ensure different selection each request.
+    For buyer_companies/seller_companies - MUST use SUPABASE_SERVICE_ROLE_KEY to bypass RLS.
     """
     import random
     if not supabase:
         logger.warning(f"Supabase not available, cannot fetch from {table_name}")
         return None
     try:
-        logger.info(f"📂 Direct fetch from {table_name} (random row)...")
-        response = None
-        total = None
-        try:
-            count_resp = supabase.table(table_name).select('*', count='exact').limit(1).execute()
-            total = getattr(count_resp, 'count', None)
-            if total is not None and total > 1:
-                offset = random.randint(0, min(total - 1, 9999))
-                response = supabase.table(table_name).select('*').range(offset, offset + 99).execute()
-        except Exception:
-            pass
-        if not response or not response.data:
-            response = supabase.table(table_name).select('*').limit(500).execute()
-        if not response.data or len(response.data) == 0:
-            logger.warning(f"❌ No records in {table_name}")
+        logger.info(f"📂 Fetching from {table_name}...")
+        # Simple fetch only - no count/range (avoids API quirks on some Supabase clients)
+        response = supabase.table(table_name).select("*").limit(500).execute()
+        if not response or not response.data or len(response.data) == 0:
+            logger.warning(f"❌ No records in {table_name} (empty or RLS blocking - use SUPABASE_SERVICE_ROLE_KEY)")
             return None
         row = random.choice(response.data)
         logger.info(f"✅ {table_name}: {row.get('name', row.get('id', '?'))} (from {len(response.data)} rows)")
         return row
     except Exception as e:
-        logger.error(f"❌ Direct fetch {table_name} failed: {e}")
-        try:
-            response = supabase.table(table_name).select('*').limit(500).execute()
-            if response.data:
-                row = random.choice(response.data)
-                logger.info(f"✅ {table_name} (fallback): {row.get('name', row.get('id', '?'))}")
-                return row
-        except Exception as e2:
-            logger.error(f"❌ Fallback fetch also failed: {e2}")
+        logger.error(f"❌ Direct fetch {table_name} failed: {e}", exc_info=True)
         return None
 
 
@@ -7003,6 +6984,8 @@ async def generate_document(request: Request):
         matched_placeholders = []
         unmatched_placeholders = []
         
+        # RULE: Buyer/seller placeholders = REPLACE from database only (buyer_companies, seller_companies).
+        # Never generate from AI - use fetched_entities['buyer']/['seller'] or "—" if no data.
         for placeholder in placeholders:
             found = False
             setting_key, setting = resolve_placeholder_setting(template_settings, placeholder)
@@ -7102,6 +7085,9 @@ async def generate_document(request: Request):
                             continue
                     else:
                         logger.warning(f"  ⚠️ STEP 0b: '{placeholder}' is buyer_/seller_ but entity is None (DB fetch failed - check SUPABASE_SERVICE_ROLE_KEY)")
+                        data_mapping[placeholder] = "—"
+                        found = True
+                        continue
             
             # ====================================================================
             # STEP 1: PREFIX-BASED ID FETCHING
