@@ -6871,6 +6871,32 @@ async def generate_document(request: Request):
         logger.info(f"🔑 Set vessel['imo'] = '{vessel_imo}' (from vessel detail page)")
         logger.info(f"   Final vessel data: {dict(list(vessel.items())[:10])}...")  # Show first 10 fields
         
+        # ALWAYS fetch buyer/seller directly from buyer_companies and seller_companies
+        # (matches editor.js selection - table names must match exactly)
+        if SUPABASE_ENABLED and supabase:
+            try:
+                r = supabase.table('buyer_companies').select('*').limit(1).execute()
+                if r.data and len(r.data) > 0:
+                    fetched_entities['buyer'] = r.data[0]
+                    logger.info(f"✅ buyer_companies: {fetched_entities['buyer'].get('name', '?')}")
+                else:
+                    fetched_entities['buyer'] = None
+                    logger.warning("buyer_companies table empty")
+            except Exception as ex:
+                fetched_entities['buyer'] = None
+                logger.warning(f"buyer_companies fetch failed: {ex}")
+            try:
+                r = supabase.table('seller_companies').select('*').limit(1).execute()
+                if r.data and len(r.data) > 0:
+                    fetched_entities['seller'] = r.data[0]
+                    logger.info(f"✅ seller_companies: {fetched_entities['seller'].get('name', '?')}")
+                else:
+                    fetched_entities['seller'] = None
+                    logger.warning("seller_companies table empty")
+            except Exception as ex:
+                fetched_entities['seller'] = None
+                logger.warning(f"seller_companies fetch failed: {ex}")
+        
         # Extract placeholders
         placeholders = extract_placeholders_from_docx(template_path)
         
