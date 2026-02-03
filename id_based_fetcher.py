@@ -501,14 +501,15 @@ def get_placeholder_value(placeholder: str, fetched_data: Dict[str, Optional[Dic
         return value
     
     # Field aliases for buyer/seller tables (match CMS editor + DB schema)
+    # DB has: name, registration_country, country, legal_address, representative_name, etc.
     FIELD_ALIASES = {
         'contact_person': 'representative_name',
         'contact_email': 'representative_email',
         'company_name': 'name',
         'registration_number': 'registration_number',
-        'registration_country': 'country',
-        'jurisdiction': 'country',
-        'jurisdiction_of_incorporation': 'country',
+        'registration_country': 'registration_country',
+        'jurisdiction': 'registration_country',
+        'jurisdiction_of_incorporation': 'registration_country',
         'legal_address': 'legal_address',
         'representative_name': 'representative_name',
         'representative_title': 'representative_title',
@@ -521,6 +522,12 @@ def get_placeholder_value(placeholder: str, fetched_data: Dict[str, Optional[Dic
         value = entity_data.get(alt_field)
         if value is not None:
             logger.debug(f"✅ Found {placeholder} → {alt_field} (alias of {field_name}) = {value}")
+            return value
+    # Jurisdiction: try registration_country then country
+    if field_name.lower() in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
+        value = entity_data.get('registration_country') or entity_data.get('country')
+        if value is not None:
+            logger.debug(f"✅ Found {placeholder} → registration_country/country = {value}")
             return value
     
     # Try variations (with underscores, etc.)

@@ -1396,9 +1396,12 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
             col('id', 'ID', 'uuid'),
             col('name', 'Company Name'),
             col('trade_name', 'Trade Name'),
+            col('legal_name', 'Legal Name'),
             col('country', 'Country'),
+            col('registration_country', 'Registration Country'),
             col('city', 'City'),
             col('address', 'Address'),
+            col('legal_address', 'Legal Address'),
             col('email', 'Email'),
             col('official_email', 'Official Email'),
             col('operations_email', 'Operations Email'),
@@ -1408,8 +1411,6 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
             col('representative_email', 'Representative Email'),
             col('representative_title', 'Representative Title'),
             col('registration_number', 'Registration Number'),
-            col('legal_address', 'Legal Address'),
-            col('legal_name', 'Legal Name'),
             col('industry', 'Industry'),
             col('description', 'Description'),
             col('employees_count', 'Employees Count', 'integer'),
@@ -1422,9 +1423,12 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
             col('id', 'ID', 'uuid'),
             col('name', 'Company Name'),
             col('trade_name', 'Trade Name'),
+            col('legal_name', 'Legal Name'),
             col('country', 'Country'),
+            col('registration_country', 'Registration Country'),
             col('city', 'City'),
             col('address', 'Address'),
+            col('legal_address', 'Legal Address'),
             col('email', 'Email'),
             col('official_email', 'Official Email'),
             col('operations_email', 'Operations Email'),
@@ -1434,8 +1438,6 @@ def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
             col('representative_email', 'Representative Email'),
             col('representative_title', 'Representative Title'),
             col('registration_number', 'Registration Number'),
-            col('legal_address', 'Legal Address'),
-            col('legal_name', 'Legal Name'),
             col('industry', 'Industry'),
             col('description', 'Description'),
             col('employees_count', 'Employees Count', 'integer'),
@@ -6966,13 +6968,18 @@ async def generate_document(request: Request):
                     if entity_data:
                         _CMS_FIELD_ALIASES = {
                             'company_name': 'name', 'contact_person': 'representative_name',
-                            'contact_email': 'representative_email', 'jurisdiction': 'country',
-                            'jurisdiction_of_incorporation': 'country', 'registration_country': 'country',
+                            'contact_email': 'representative_email',
+                            'jurisdiction': 'registration_country',
+                            'jurisdiction_of_incorporation': 'registration_country',
+                            'registration_country': 'registration_country',
                         }
                         field_lower = db_field.lower().replace(' ', '_')
                         val = entity_data.get(db_field) or entity_data.get(field_lower)
                         if val is None:
                             val = entity_data.get(_CMS_FIELD_ALIASES.get(field_lower, field_lower))
+                        # Jurisdiction: fallback to country if registration_country empty
+                        if val is None and field_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
+                            val = entity_data.get('registration_country') or entity_data.get('country')
                         if val is not None and str(val).strip():
                             data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
                             found = True
@@ -7211,14 +7218,17 @@ async def generate_document(request: Request):
                                         'company_name': 'name',
                                         'employee_count': 'employees_count',
                                         'registration_number': 'registration_number',
-                                        'registration_country': 'country',
-                                        'jurisdiction': 'country',
-                                        'jurisdiction_of_incorporation': 'country',
+                                        'registration_country': 'registration_country',
+                                        'jurisdiction': 'registration_country',
+                                        'jurisdiction_of_incorporation': 'registration_country',
                                         'legal_address': 'legal_address',
                                     }
                                     alt_field = FIELD_ALIASES.get(database_field_lower)
                                     if alt_field and alt_field in source_data:
                                         val = source_data[alt_field]
+                                        if val is None or not str(val).strip():
+                                            if database_field_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
+                                                val = source_data.get('registration_country') or source_data.get('country')
                                         if val is not None and str(val).strip() != '':
                                             matched_field = alt_field
                                             matched_value = str(val).strip()
@@ -7380,16 +7390,22 @@ async def generate_document(request: Request):
                         db_f = (setting.get('databaseField') or setting.get('database_field') or '').strip()
                         v = None
                         # Full alias map: CMS/editor field names -> buyer_companies/seller_companies columns
+                        # DB has: name, registration_country, country, legal_address, representative_name, etc.
                         aliases = {
                             'company_name': 'name', 'contact_person': 'representative_name',
                             'contact_email': 'representative_email', 'contact_phone': 'representative_phone',
-                            'jurisdiction': 'country', 'jurisdiction_of_incorporation': 'country',
-                            'registration_country': 'country', 'legal_address': 'legal_address',
-                            'address': 'address', 'representative_title': 'representative_title',
+                            'jurisdiction': 'registration_country',  # try registration_country first (actual column)
+                            'jurisdiction_of_incorporation': 'registration_country',
+                            'registration_country': 'registration_country',
+                            'legal_address': 'legal_address', 'address': 'address',
+                            'representative_title': 'representative_title',
                         }
                         if db_f:
                             f_lower = db_f.lower().replace(' ', '_')
                             v = ent.get(db_f) or ent.get(f_lower) or ent.get(aliases.get(f_lower, f_lower))
+                            # Jurisdiction: fallback to country if registration_country empty
+                            if v is None and f_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
+                                v = ent.get('registration_country') or ent.get('country')
                         if v is None:
                             # Fallback: infer from placeholder (company_name -> name, etc.)
                             ph_field = ph_lower.split('_')[-1] if '_' in ph_lower else ph_lower
@@ -7424,8 +7440,8 @@ async def generate_document(request: Request):
                                 db_f = (setting.get('databaseField') or setting.get('database_field') or '').strip() if setting else ''
                                 aliases = {
                                     'company_name': 'name', 'contact_person': 'representative_name',
-                                    'jurisdiction': 'country', 'jurisdiction_of_incorporation': 'country',
-                                    'registration_country': 'country', 'legal_address': 'legal_address',
+                                    'jurisdiction': 'registration_country', 'jurisdiction_of_incorporation': 'registration_country',
+                                    'registration_country': 'registration_country', 'legal_address': 'legal_address',
                                     'representative_title': 'representative_title', 'address': 'address',
                                 }
                                 v = None
