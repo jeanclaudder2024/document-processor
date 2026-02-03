@@ -7360,20 +7360,40 @@ async def generate_document(request: Request):
                     ('buyer' in ph_lower and not ph_lower.startswith('buyer_bank')) or
                     ('seller' in ph_lower and not ph_lower.startswith('seller_bank'))
                 )
-                is_buyer_seller_db = (
-                    has_buyer_seller_in_name or
-                    ((setting and setting.get('source') == 'database') and
-                     database_table in ('buyer_companies', 'seller_companies', 'buyer', 'seller'))
+                # Treat as buyer/seller when: name has buyer/seller, OR CMS config says buyer_companies/seller_companies
+                cms_says_buyer_seller = (
+                    setting and database_table in ('buyer_companies', 'seller_companies', 'buyer', 'seller')
                 )
+                is_buyer_seller_db = has_buyer_seller_in_name or cms_says_buyer_seller
                 if is_buyer_seller_db:
                     # Use buyer/seller from DB - NEVER use AI for buyer/seller
-                    ent = fetched_entities.get('buyer') if 'buyer' in ph_lower and not ph_lower.startswith('buyer_bank') else fetched_entities.get('seller')
+                    # Pick entity: from placeholder name OR from CMS database_table config
+                    if 'buyer' in ph_lower and not ph_lower.startswith('buyer_bank'):
+                        ent = fetched_entities.get('buyer')
+                    elif 'seller' in ph_lower and not ph_lower.startswith('seller_bank'):
+                        ent = fetched_entities.get('seller')
+                    elif database_table in ('buyer_companies', 'buyer'):
+                        ent = fetched_entities.get('buyer')
+                    else:
+                        ent = fetched_entities.get('seller')
                     if ent:
                         db_f = (setting.get('databaseField') or setting.get('database_field') or '').strip()
                         v = None
+                        # Full alias map: CMS/editor field names -> buyer_companies/seller_companies columns
+                        aliases = {
+                            'company_name': 'name', 'contact_person': 'representative_name',
+                            'contact_email': 'representative_email', 'contact_phone': 'representative_phone',
+                            'jurisdiction': 'country', 'jurisdiction_of_incorporation': 'country',
+                            'registration_country': 'country', 'legal_address': 'legal_address',
+                            'address': 'address', 'representative_title': 'representative_title',
+                        }
                         if db_f:
-                            aliases = {'company_name': 'name', 'contact_person': 'representative_name'}
-                            v = ent.get(db_f) or ent.get(db_f.replace(' ', '_').lower()) or ent.get(aliases.get(db_f.lower(), db_f))
+                            f_lower = db_f.lower().replace(' ', '_')
+                            v = ent.get(db_f) or ent.get(f_lower) or ent.get(aliases.get(f_lower, f_lower))
+                        if v is None:
+                            # Fallback: infer from placeholder (company_name -> name, etc.)
+                            ph_field = ph_lower.split('_')[-1] if '_' in ph_lower else ph_lower
+                            v = ent.get(ph_field) or ent.get(aliases.get(ph_field, ph_field))
                         if v is None:
                             v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
                         if v is not None and str(v).strip():
@@ -7401,11 +7421,28 @@ async def generate_document(request: Request):
                         if ('buyer' in ph_low and not ph_low.startswith('buyer_bank')) or ('seller' in ph_low and not ph_low.startswith('seller_bank')):
                             ent = fetched_entities.get('buyer') if 'buyer' in ph_low else fetched_entities.get('seller')
                             if ent:
-                                v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
+                                db_f = (setting.get('databaseField') or setting.get('database_field') or '').strip() if setting else ''
+                                aliases = {
+                                    'company_name': 'name', 'contact_person': 'representative_name',
+                                    'jurisdiction': 'country', 'jurisdiction_of_incorporation': 'country',
+                                    'registration_country': 'country', 'legal_address': 'legal_address',
+                                    'representative_title': 'representative_title', 'address': 'address',
+                                }
+                                v = None
+                                if db_f:
+                                    f_lower = db_f.lower().replace(' ', '_')
+                                    v = ent.get(db_f) or ent.get(f_lower) or ent.get(aliases.get(f_lower, f_lower))
+                                if v is None:
+                                    v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
                                 if v and str(v).strip():
                                     data_mapping[placeholder] = _normalize_replacement_value(str(v).strip(), placeholder=placeholder)
                                     found = True
                                     logger.info(f"  ✅ DB last-chance: {placeholder} = '{v}'")
+                                else:
+                                    # Has buyer/seller entity but no value - use dash, NEVER AI
+                                    data_mapping[placeholder] = "—"
+                                    found = True
+                                    logger.warning(f"  ⚠️ {placeholder}: Buyer/seller entity exists but field empty, using '—'")
                         if not found:
                             ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo, fetched_entities)
                             data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
