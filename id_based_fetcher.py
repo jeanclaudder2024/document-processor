@@ -357,29 +357,8 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if destination_port_id:
         fetched_data['destination_port'] = fetch_by_id(supabase_client, 'ports', destination_port_id)
     
-    # Fetch buyer: ONLY from buyer_companies (never from companies table)
-    logger.info(f"=" * 60)
-    logger.info(f"📦 FETCHING BUYER (buyer_companies only)...")
-    logger.info(f"=" * 60)
-    
-    fetched_data['buyer'] = fetch_random_row(supabase_client, 'buyer_companies', seed=None)
-    
-    if fetched_data.get('buyer'):
-        logger.info(f"✅ BUYER: {fetched_data['buyer'].get('name', 'NO NAME')}")
-    else:
-        logger.error(f"❌ NO BUYER - Add data in Admin -> Buyer Companies (need SUPABASE_SERVICE_ROLE_KEY in .env)")
-    
-    # Fetch seller: ONLY from seller_companies (never from companies table)
-    logger.info(f"=" * 60)
-    logger.info(f"📦 FETCHING SELLER (seller_companies only)...")
-    logger.info(f"=" * 60)
-    
-    fetched_data['seller'] = fetch_random_row(supabase_client, 'seller_companies', seed=None)
-    
-    if fetched_data.get('seller'):
-        logger.info(f"✅ SELLER: {fetched_data['seller'].get('name', 'NO NAME')}")
-    else:
-        logger.error(f"❌ NO SELLER - Add data in Admin -> Seller Companies (need SUPABASE_SERVICE_ROLE_KEY in .env)")
+    # NOTE: Buyer/seller are NOT fetched here - they are fetched directly in main.py
+    # without ID-based logic (random from buyer_companies/seller_companies tables).
     
     # Fetch product
     product_id = payload.get('product_id')
@@ -396,23 +375,8 @@ def fetch_all_entities(supabase_client: Client, payload: Dict) -> Dict[str, Opti
     if broker_id:
         fetched_data['broker'] = fetch_by_id(supabase_client, 'broker_profiles', broker_id)
     
-    # Fetch bank accounts (with is_primary logic)
-    # Use the ID from the fetched random buyer/seller
-    buyer_bank_id = payload.get('buyer_bank_id')
-    seller_bank_id = payload.get('seller_bank_id')
-    fetched_buyer = fetched_data.get('buyer')
-    fetched_seller = fetched_data.get('seller')
-    
-    if fetched_buyer and fetched_buyer.get('id'):
-        fetched_data['buyer_bank'] = fetch_bank_account(
-            supabase_client, fetched_buyer.get('id'), buyer_bank_id, 
-            'buyer_company_bank_accounts', is_buyer=True
-        )
-    if fetched_seller and fetched_seller.get('id'):
-        fetched_data['seller_bank'] = fetch_bank_account(
-            supabase_client, fetched_seller.get('id'), seller_bank_id,
-            'seller_company_bank_accounts', is_buyer=False
-        )
+    # NOTE: buyer_bank/seller_bank are fetched in main.py after buyer/seller
+    # (buyer/seller are not ID-based, fetched directly from tables)
     
     # Fetch deal - from payload OR from vessel record
     deal_id = payload.get('deal_id') or vessel_deal_id

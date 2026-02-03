@@ -30,7 +30,7 @@ import re
 try:
     # Try relative import first (if running as package)
     from .id_based_fetcher import (
-        fetch_all_entities, fetch_random_row, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
+        fetch_all_entities, fetch_random_row, fetch_bank_account, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
         identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
     )
 except ImportError:
@@ -42,7 +42,7 @@ except ImportError:
         sys.path.insert(0, current_dir)
     try:
         from id_based_fetcher import (
-            fetch_all_entities, fetch_random_row, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
+            fetch_all_entities, fetch_random_row, fetch_bank_account, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
             identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
         )
     except ImportError as e:
@@ -51,6 +51,8 @@ except ImportError:
         def fetch_all_entities(*args, **kwargs):
             return {}
         def fetch_random_row(*args, **kwargs):
+            return None
+        def fetch_bank_account(*args, **kwargs):
             return None
         def get_placeholder_value(*args, **kwargs):
             return None
@@ -6895,13 +6897,13 @@ async def generate_document(request: Request):
         logger.info(f"🔑 Set vessel['imo'] = '{vessel_imo}' (from vessel detail page)")
         logger.info(f"   Final vessel data: {dict(list(vessel.items())[:10])}...")  # Show first 10 fields
         
-        # ALWAYS fetch buyer/seller directly from buyer_companies and seller_companies
-        # Use random row for variety (different buyer/seller each document)
+        # Fetch buyer/seller DIRECTLY from buyer_companies and seller_companies (NOT id-based)
+        # No IDs needed - random row from tables, like other non-ID database data
         if SUPABASE_ENABLED and supabase:
             try:
                 fetched_entities['buyer'] = fetch_random_row(supabase, 'buyer_companies')
                 if fetched_entities.get('buyer'):
-                    logger.info(f"✅ buyer_companies: {fetched_entities['buyer'].get('name', '?')}")
+                    logger.info(f"✅ buyer_companies (direct): {fetched_entities['buyer'].get('name', '?')}")
                 else:
                     logger.warning("buyer_companies table empty")
             except Exception as ex:
@@ -6910,12 +6912,25 @@ async def generate_document(request: Request):
             try:
                 fetched_entities['seller'] = fetch_random_row(supabase, 'seller_companies')
                 if fetched_entities.get('seller'):
-                    logger.info(f"✅ seller_companies: {fetched_entities['seller'].get('name', '?')}")
+                    logger.info(f"✅ seller_companies (direct): {fetched_entities['seller'].get('name', '?')}")
                 else:
                     logger.warning("seller_companies table empty")
             except Exception as ex:
                 fetched_entities['seller'] = None
                 logger.warning(f"seller_companies fetch failed: {ex}")
+            # Fetch bank accounts for the buyer/seller we just got (by their IDs)
+            buyer = fetched_entities.get('buyer')
+            seller = fetched_entities.get('seller')
+            if buyer and buyer.get('id'):
+                fetched_entities['buyer_bank'] = fetch_bank_account(
+                    supabase, buyer['id'], body.get('buyer_bank_id'),
+                    'buyer_company_bank_accounts', is_buyer=True
+                )
+            if seller and seller.get('id'):
+                fetched_entities['seller_bank'] = fetch_bank_account(
+                    supabase, seller['id'], body.get('seller_bank_id'),
+                    'seller_company_bank_accounts', is_buyer=False
+                )
         
         # Extract placeholders
         placeholders = extract_placeholders_from_docx(template_path)
