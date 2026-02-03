@@ -30,7 +30,7 @@ import re
 try:
     # Try relative import first (if running as package)
     from .id_based_fetcher import (
-        fetch_all_entities, fetch_random_row, fetch_bank_account, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
+        fetch_all_entities, fetch_bank_account, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
         identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
     )
 except ImportError:
@@ -42,7 +42,7 @@ except ImportError:
         sys.path.insert(0, current_dir)
     try:
         from id_based_fetcher import (
-            fetch_all_entities, fetch_random_row, fetch_bank_account, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
+            fetch_all_entities, fetch_bank_account, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
             identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
         )
     except ImportError as e:
@@ -50,8 +50,6 @@ except ImportError:
         # Create stub functions
         def fetch_all_entities(*args, **kwargs):
             return {}
-        def fetch_random_row(*args, **kwargs):
-            return None
         def fetch_bank_account(*args, **kwargs):
             return None
         def get_placeholder_value(*args, **kwargs):
@@ -4801,6 +4799,29 @@ def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
 # STEP 7: DOCUMENT GENERATION (with PDF export)
 # ============================================================================
 
+def _fetch_random_from_table(table_name: str) -> Optional[Dict]:
+    """
+    Fetch a random row directly from Supabase table (no id_based_fetcher).
+    Uses main.py supabase client. For buyer_companies/seller_companies.
+    """
+    import random
+    if not supabase:
+        logger.warning(f"Supabase not available, cannot fetch from {table_name}")
+        return None
+    try:
+        logger.info(f"📂 Direct fetch from {table_name} (no ID)...")
+        response = supabase.table(table_name).select('*').limit(100).execute()
+        if not response.data or len(response.data) == 0:
+            logger.warning(f"❌ No records in {table_name}")
+            return None
+        row = random.choice(response.data)
+        logger.info(f"✅ {table_name}: {row.get('name', row.get('id', '?'))} (from {len(response.data)} rows)")
+        return row
+    except Exception as e:
+        logger.error(f"❌ Direct fetch {table_name} failed: {e}")
+        return None
+
+
 def get_data_from_table(table_name: str, lookup_field: str, lookup_value) -> Optional[Dict]:
     """
     Get data from any database table using a lookup field and value.
@@ -6897,27 +6918,10 @@ async def generate_document(request: Request):
         logger.info(f"🔑 Set vessel['imo'] = '{vessel_imo}' (from vessel detail page)")
         logger.info(f"   Final vessel data: {dict(list(vessel.items())[:10])}...")  # Show first 10 fields
         
-        # Fetch buyer/seller DIRECTLY from buyer_companies and seller_companies (NOT id-based)
-        # No IDs needed - random row from tables, like other non-ID database data
+        # Fetch buyer/seller DIRECTLY via supabase (no id_based_fetcher - no IDs needed)
         if SUPABASE_ENABLED and supabase:
-            try:
-                fetched_entities['buyer'] = fetch_random_row(supabase, 'buyer_companies')
-                if fetched_entities.get('buyer'):
-                    logger.info(f"✅ buyer_companies (direct): {fetched_entities['buyer'].get('name', '?')}")
-                else:
-                    logger.warning("buyer_companies table empty")
-            except Exception as ex:
-                fetched_entities['buyer'] = None
-                logger.warning(f"buyer_companies fetch failed: {ex}")
-            try:
-                fetched_entities['seller'] = fetch_random_row(supabase, 'seller_companies')
-                if fetched_entities.get('seller'):
-                    logger.info(f"✅ seller_companies (direct): {fetched_entities['seller'].get('name', '?')}")
-                else:
-                    logger.warning("seller_companies table empty")
-            except Exception as ex:
-                fetched_entities['seller'] = None
-                logger.warning(f"seller_companies fetch failed: {ex}")
+            fetched_entities['buyer'] = _fetch_random_from_table('buyer_companies')
+            fetched_entities['seller'] = _fetch_random_from_table('seller_companies')
             # Fetch bank accounts for the buyer/seller we just got (by their IDs)
             buyer = fetched_entities.get('buyer')
             seller = fetched_entities.get('seller')
