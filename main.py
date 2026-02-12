@@ -1,7903 +1,2248 @@
-
-"""
-Document Processing API - Clean Rebuild
-Handles Word document processing with vessel data from Supabase
-"""
-
 import os
-import json
-import hashlib
-import uuid
-import tempfile
-import logging
-import traceback
-import csv
-import zipfile
-import io
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
-from urllib.parse import quote
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Depends, Header
+from pathlib import Path
+
+# Load .env from document-processor and project root (for local dev)
+def _load_dotenv():
+    try:
+        from dotenv import load_dotenv
+        for path in [Path(__file__).resolve().parent / ".env", Path(__file__).resolve().parent.parent / ".env"]:
+            if path.exists():
+                try:
+                    load_dotenv(path)
+                except (UnicodeDecodeError, Exception):
+                    pass
+        try:
+            load_dotenv()
+        except (UnicodeDecodeError, Exception):
+            pass
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+_load_dotenv()
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
-from fastapi.staticfiles import StaticFiles
-from dotenv import load_dotenv
-from supabase import create_client, Client
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from docx import Document
+from docx.shared import Pt
+from supabase import create_client
 import re
+import json
+import base64
+from io import BytesIO
+from typing import Optional, List, Dict, Any
+import uuid
+from datetime import datetime, timedelta
+import random
+from pydantic import BaseModel
+import aiofiles
+import pandas as pd
+from openai import OpenAI
+import subprocess
+import tempfile
+from pdf2image import convert_from_path
+import img2pdf
+from PIL import Image
 
-# Import ID-based fetcher
 try:
-    # Try relative import first (if running as package)
-    from .id_based_fetcher import (
-        fetch_all_entities, fetch_bank_account, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
-        identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
-    )
+    from docx2pdf import convert as docx2pdf_convert
+    DOCX2PDF_AVAILABLE = True
 except ImportError:
-    # Fallback for direct execution
-    import sys
-    import os
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    if current_dir not in sys.path:
-        sys.path.insert(0, current_dir)
-    try:
-        from id_based_fetcher import (
-            fetch_all_entities, fetch_bank_account, get_placeholder_value, normalize_placeholder as normalize_placeholder_id,
-            identify_prefix, normalize_replacement_value, PREFIX_TO_TABLE
-        )
-    except ImportError as e:
-        logger.warning(f"Could not import id_based_fetcher: {e}. ID-based fetching will be disabled.")
-        # Create stub functions
-        def fetch_all_entities(*args, **kwargs):
-            return {}
-        def fetch_bank_account(*args, **kwargs):
-            return None
-        def get_placeholder_value(*args, **kwargs):
-            return None
-        def normalize_placeholder_id(*args, **kwargs):
-            return ""
-        def identify_prefix(*args, **kwargs):
-            return None
-        def normalize_replacement_value(*args, **kwargs):
-            return ""
-        PREFIX_TO_TABLE = {}
+    DOCX2PDF_AVAILABLE = False
+    print("[WARNING] docx2pdf not available, will use LibreOffice directly")
 
-# Try to import optional dependencies
-try:
-    import fitz  # PyMuPDF
-    FITZ_AVAILABLE = True
-except ImportError:
-    FITZ_AVAILABLE = False
+app = FastAPI(title="PetroDealHub Document Processor", version="1.0.0")
 
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
+class OpenCORSMiddleware(BaseHTTPMiddleware):
+    """Allow any origin to connect - supports Lovable Settings tab custom domains."""
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin", "")
+        
+        if request.method == "OPTIONS":
+            response = Response(status_code=200)
+            if origin:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+            else:
+                response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            response.headers["Access-Control-Allow-Headers"] = request.headers.get(
+                "Access-Control-Request-Headers", "Content-Type, Authorization, X-Requested-With"
+            )
+            response.headers["Access-Control-Max-Age"] = "86400"
+            response.headers["Vary"] = "Origin"
+            return response
+        
+        response = await call_next(request)
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        else:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Vary"] = "Origin"
+        
+        return response
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+app.add_middleware(OpenCORSMiddleware)
 
-app = FastAPI(title="Document Processing API", version="2.0.0")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Load environment variables from script directory (ensures .env loads when run via PM2)
-_script_dir = os.path.dirname(os.path.abspath(__file__))
-_env_path = os.path.join(_script_dir, '.env')
-try:
-    load_dotenv(_env_path)
-    if os.path.exists(_env_path):
-        logger.info(f"Loaded .env from {_env_path}")
-except Exception as e:
-    logger.warning(f"Could not load .env file: {e}")
-
-# CORS middleware
-ALLOWED_ORIGINS = [
-    "http://127.0.0.1:8080",
-    "http://localhost:8080",
-    "http://127.0.0.1:8081",
-    "http://localhost:8081",
-    "http://127.0.0.1:5173",
-    "http://localhost:5173",
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-    "http://127.0.0.1:3000",
-    "http://localhost:3000",
-    # Allow network IP addresses for development
-    "http://10.193.191.72:5173",
-    "http://10.193.191.72:8081",
-    "http://10.193.191.72:3000",
-    # Allow any local network IP (for development flexibility)
-    "http://0.0.0.0:5173",
-    "http://0.0.0.0:8081",
-    "http://0.0.0.0:3000",
-    "http://10.237.133.72:5173",
-    "http://10.237.133.72:8080",
-    "http://10.237.133.72:8081",
-    "http://10.237.133.72:3000",
-    "https://petrodealhub.com",
-    "https://www.petrodealhub.com",
-    "https://control.petrodealhub.com",
-]
-
-ALLOWED_ORIGIN_REGEX = r"http://(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}|172\\.(1[6-9]|2[0-9]|3[0-1])\\.\\d{1,3}\\.\\d{1,3}):\\d+"
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=600,
-)
-
-# Directories (DATA_DIR overridable via env on VPS)
-BASE_DIR = os.getcwd()
-TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
-TEMP_DIR = os.path.join(BASE_DIR, 'temp')
-DATA_DIR = os.environ.get('DOCUMENT_PROCESSOR_DATA_DIR') or os.path.join(BASE_DIR, 'data')
-STORAGE_DIR = os.path.join(BASE_DIR, 'storage')
-CMS_DIR = os.path.join(BASE_DIR, 'cms')
-
-os.makedirs(TEMPLATES_DIR, exist_ok=True)
-os.makedirs(TEMP_DIR, exist_ok=True)
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(STORAGE_DIR, exist_ok=True)
-logger.info(f"DATA_DIR={DATA_DIR}")
-if os.path.isdir(CMS_DIR):
-    app.mount("/cms", StaticFiles(directory=CMS_DIR, html=True), name="cms")
-
-# Storage paths
-PLACEHOLDER_SETTINGS_PATH = os.path.join(
-    STORAGE_DIR, 'placeholder_settings.json')
-PLANS_PATH = os.path.join(STORAGE_DIR, 'plans.json')
-USERS_PATH = os.path.join(STORAGE_DIR, 'users.json')
-TEMPLATE_METADATA_PATH = os.path.join(STORAGE_DIR, 'template_metadata.json')
-DELETED_TEMPLATES_PATH = os.path.join(STORAGE_DIR, 'deleted_templates.json')
-DATA_SOURCES_METADATA_PATH = os.path.join(STORAGE_DIR, 'data_sources.json')
-
-# Supabase client
-SUPABASE_URL = os.getenv(
-    "SUPABASE_URL", "https://ozjhdxvwqbzcvcywhwjg.supabase.co")
-# Use service_role key if available - bypasses RLS and allows reading buyer_companies/seller_companies
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-SUPABASE_KEY = os.getenv(
-    "SUPABASE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96amhkeHZ3cWJ6Y3ZjeXdod2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU5MDAyNzUsImV4cCI6MjA3MTQ3NjI3NX0.KLAo1KIRR9ofapXPHenoi-ega0PJtkNhGnDHGtniA-Q")
-
-# Prefer service_role key for document processor - it bypasses RLS (required for buyer_companies, seller_companies)
-_key_to_use = SUPABASE_SERVICE_ROLE_KEY if SUPABASE_SERVICE_ROLE_KEY else SUPABASE_KEY
-try:
-    supabase: Client = create_client(SUPABASE_URL, _key_to_use)
-    if SUPABASE_SERVICE_ROLE_KEY:
-        logger.info("Successfully connected to Supabase (using service_role key - full DB access, buyer/seller tables OK)")
-    else:
-        logger.warning("Supabase: using anon key. Add SUPABASE_SERVICE_ROLE_KEY to .env for buyer_companies/seller_companies access")
-except Exception as e:
-    logger.error(f"Failed to connect to Supabase: {e}")
-    supabase = None
-
-SUPABASE_ENABLED = supabase is not None
-
-# OpenAI Configuration - Try Supabase first, then environment variable
-def get_openai_api_key_from_supabase() -> Optional[str]:
-    """Get OpenAI API key from Supabase system_settings table."""
-    if not SUPABASE_ENABLED:
-        return None
-    try:
-        response = supabase.table('system_settings').select('setting_value').eq('setting_key', 'openai_api_key').limit(1).execute()
-        if response.data and len(response.data) > 0:
-            setting_value = response.data[0].get('setting_value')
-            # Handle JSONB - can be string or dict
-            if isinstance(setting_value, str):
-                return setting_value.strip() if setting_value else None
-            elif isinstance(setting_value, dict):
-                # If stored as {"value": "key"} or similar
-                return str(setting_value.get('value', '')).strip() or None
-            return str(setting_value).strip() if setting_value else None
-    except Exception as e:
-        logger.debug(f"Could not retrieve OpenAI API key from Supabase: {e}")
-    return None
-
-# Try Supabase first, then environment variable
-OPENAI_API_KEY = get_openai_api_key_from_supabase() or os.getenv("OPENAI_API_KEY", "")
-OPENAI_ENABLED = OPENAI_AVAILABLE and bool(OPENAI_API_KEY)
+supabase = None
 openai_client = None
 
-if OPENAI_ENABLED:
-    try:
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        key_source = "Supabase" if get_openai_api_key_from_supabase() else "environment variable"
-        logger.info(f"OpenAI client initialized successfully (API key from {key_source})")
-    except Exception as e:
-        logger.warning(f"Failed to initialize OpenAI client: {e}")
-        openai_client = None
-else:
-    if not OPENAI_AVAILABLE:
-        logger.warning("OpenAI library not installed. AI-powered placeholder matching will be disabled.")
-    elif not OPENAI_API_KEY:
-        logger.warning("OpenAI API key not configured (check Supabase system_settings or OPENAI_API_KEY env var). AI-powered placeholder matching will be disabled.")
+supabase_key_to_use = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY
+if SUPABASE_URL and supabase_key_to_use:
+    supabase = create_client(SUPABASE_URL, supabase_key_to_use)
 
+if OPENAI_API_KEY:
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-def encode_bytea(data: bytes) -> str:
-    """Encode raw bytes into Postgres bytea hex format"""
-    if data is None:
-        return None
-    return "\\x" + data.hex()
+TEMPLATES_DIR = "templates"
+CSV_DIR = "csv_data"
+SETTINGS_DIR = "settings"
+FONTS_DIR = "fonts"
 
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+os.makedirs(CSV_DIR, exist_ok=True)
+os.makedirs(SETTINGS_DIR, exist_ok=True)
 
-def decode_bytea(value) -> Optional[bytes]:
-    """Decode Postgres bytea (hex) or raw bytes to bytes"""
-    if value is None:
-        return None
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, str):
-        if value.startswith('\\x'):
-            return bytes.fromhex(value[2:])
-        return value.encode('utf-8')
-    # Fallback: try to convert via bytes constructor
-    try:
-        return bytes(value)
-    except Exception:
-        return None
-
-
-def resolve_template_record(template_name: str) -> Optional[Dict]:
-    """Find a template row in Supabase by various name permutations"""
-    if not SUPABASE_ENABLED:
-        logger.warning("Supabase not enabled, cannot resolve template record")
-        return None
-
-    # Allow direct lookup by UUID string
-    try:
-        template_uuid = uuid.UUID(str(template_name))
-    except (ValueError, TypeError):
-        template_uuid = None
-
-    if template_uuid:
-        try:
-            logger.debug(f"Attempting UUID lookup for template: {template_uuid}")
-            response = supabase.table('document_templates') \
-                .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at, font_family, font_size') \
-                .eq('id', str(template_uuid)) \
-                .limit(1) \
-                .execute()
-            if response.data and len(response.data) > 0:
-                logger.debug(f"✅ Found template by UUID: {template_uuid} -> {response.data[0].get('file_name')}")
-                return response.data[0]
-            else:
-                logger.warning(f"⚠️ No template found in database with UUID: {template_uuid}")
-        except Exception as exc:
-            logger.error(
-                f"❌ Failed to resolve template by ID '{template_name}': {exc}", exc_info=True)
-
-    name_with_ext = template_name if template_name.endswith(
-        '.docx') else f"{template_name}.docx"
-    name_without_ext = template_name[:-
-        5] if template_name.endswith('.docx') else template_name
-
-    candidates = list({name_with_ext, name_without_ext})
-
-    try:
-        response = supabase.table('document_templates') \
-            .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at, font_family, font_size') \
-            .in_('file_name', candidates) \
-            .limit(1) \
-            .execute()
-        if response.data:
-            return response.data[0]
-
-        response = supabase.table('document_templates') \
-            .select('id, title, description, file_name, placeholders, is_active, created_at, updated_at, font_family, font_size') \
-            .in_('title', [name_without_ext, name_with_ext]) \
-            .limit(1) \
-            .execute()
-        if response.data:
-            return response.data[0]
-    except Exception as exc:
-        logger.error(f"Failed to resolve template '{template_name}': {exc}")
-
-    return None
-
-
-def fetch_template_placeholders(template_id: str,
-    template_hint: Optional[str] = None) -> Dict[str,
-    Dict[str,
-     Optional[str]]]:
-    """
-    Fetch placeholder settings for a template from Supabase and disk.
-    Merges settings with priority: Supabase > disk.
-    Returns normalized settings dict.
-    """
-    # Load disk settings first as fallback
-    disk_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-    disk_result = _lookup_placeholder_settings_from_disk(
-        disk_settings, template_id, template_hint)
-
-    if not SUPABASE_ENABLED:
-        logger.info(f"Supabase not enabled, using disk settings only for template {template_id}")
-        return disk_result
-
-    # Try to load from Supabase
-    supabase_settings: Dict[str, Dict[str, Optional[str]]] = {}
-    try:
-        response = supabase.table('template_placeholders').select(
-            'placeholder, source, custom_value, database_table, database_field, csv_id, csv_field, csv_row, random_option'
-        ).eq('template_id', template_id).execute()
-        
-        for row in response.data or []:
-            placeholder_key = row.get('placeholder', '')
-            if not placeholder_key:
-                continue
-                
-            source = row.get('source')
-            if source is None or (isinstance(source, str) and not source.strip()):
-                source = 'database'
-            else:
-                source = str(source).strip()
-            
-            supabase_settings[placeholder_key] = {
-                'source': source,
-                'customValue': str(row.get('custom_value') or '').strip(),
-                'databaseTable': str(row.get('database_table') or '').strip(),
-                'databaseField': str(row.get('database_field') or '').strip(),
-                'csvId': str(row.get('csv_id') or '').strip(),
-                'csvField': str(row.get('csv_field') or '').strip(),
-                'csvRow': int(row['csv_row']) if row.get('csv_row') is not None else 0,
-                'randomOption': row.get('random_option', 'auto') or 'auto'
-            }
-            logger.debug(f"Loaded placeholder setting from Supabase for '{placeholder_key}': source={supabase_settings[placeholder_key]['source']}")
-        
-        if supabase_settings:
-            logger.info(f"Loaded {len(supabase_settings)} placeholder settings from Supabase for template {template_id}")
-    except Exception as exc:
-        logger.error(f"Failed to fetch template placeholders from Supabase for {template_id}: {exc}")
-        logger.info(f"Falling back to disk settings")
-
-    # Merge settings: Supabase takes priority, but fill in missing placeholders from disk
-    merged_settings = {}
+fonts_home = os.path.expanduser("~/.fonts")
+os.makedirs(fonts_home, exist_ok=True)
+if os.path.isdir(FONTS_DIR):
+    import shutil
+    for f in os.listdir(FONTS_DIR):
+        if f.endswith(".ttf"):
+            src = os.path.join(FONTS_DIR, f)
+            dst = os.path.join(fonts_home, f)
+            if not os.path.exists(dst):
+                shutil.copy2(src, dst)
     
-    # First, add all disk settings
-    merged_settings.update(disk_result)
+    fc_dir = os.path.expanduser("~/.config/fontconfig/conf.d")
+    os.makedirs(fc_dir, exist_ok=True)
+    alias_conf = os.path.join(fc_dir, "30-font-aliases.conf")
+    with open(alias_conf, "w") as f:
+        f.write("""<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <alias><family>Arial</family><prefer><family>Liberation Sans</family></prefer></alias>
+  <alias><family>Courier New</family><prefer><family>Liberation Mono</family></prefer></alias>
+  <alias><family>Times New Roman</family><prefer><family>Liberation Serif</family></prefer></alias>
+  <alias><family>Calibri</family><prefer><family>Carlito</family></prefer></alias>
+  <alias><family>Helvetica</family><prefer><family>Liberation Sans</family></prefer></alias>
+  <alias><family>OCR-B 10 BT</family><prefer><family>OCR-B-10-BT</family></prefer></alias>
+  <alias><family>OCR B</family><prefer><family>OCRB</family></prefer></alias>
+</fontconfig>""")
     
-    # Then, override with Supabase settings (higher priority)
-    merged_settings.update(supabase_settings)
-    
-    # Default to 'database' only when source is missing or empty. Preserve explicit random/csv.
-    for placeholder, setting in merged_settings.items():
-        source = setting.get('source')
-        if source is None or (isinstance(source, str) and not source.strip()):
-            setting['source'] = 'database'
-            logger.debug(f"Normalized placeholder '{placeholder}' source to 'database' (was missing)")
-    
-    if merged_settings:
-        logger.info(f"Merged {len(merged_settings)} placeholder settings (Supabase: {len(supabase_settings)}, Disk: {len(disk_result)})")
-    
-    return merged_settings
-
-
-def _lookup_placeholder_settings_from_disk(
-    disk_settings: Dict[str, Dict], template_id: str, template_hint: Optional[str]) -> Dict[str, Dict[str, Optional[str]]]:
-    """
-    Internal helper to find placeholder config from disk storage.
-    Uses unified normalization for consistent matching.
-    """
-    if not disk_settings:
-        return {}
-    
-    candidates = []
-    if template_hint:
-        # Try various formats of template_hint
-        candidates.extend([
-            template_hint,
-            normalize_template_name(template_hint, with_extension=True, for_key=False),
-            normalize_template_name(template_hint, with_extension=False, for_key=False),
-            normalize_template_name(template_hint, with_extension=False, for_key=True),
-        ])
-    if template_id:
-        candidates.append(str(template_id))
-        # Also try normalized versions
-        candidates.append(normalize_template_name(str(template_id), with_extension=True, for_key=False))
-
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_candidates = []
-    for candidate in candidates:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            unique_candidates.append(candidate)
-
-    # Try direct matches first
-    for candidate in unique_candidates:
-        if candidate in disk_settings:
-            logger.debug(f"Found disk settings using direct match: '{candidate}'")
-            return disk_settings[candidate]
-    
-    # Try normalized key matching
-    for candidate in unique_candidates:
-        candidate_key = normalize_template_name(candidate, with_extension=False, for_key=True)
-        if not candidate_key:
-            continue
-        
-        for key in disk_settings.keys():
-            key_normalized = normalize_template_name(key, with_extension=False, for_key=True)
-            if key_normalized == candidate_key:
-                logger.debug(f"Found disk settings using normalized match: '{candidate}' -> '{key}'")
-                return disk_settings[key]
-    
-    logger.debug(f"No disk settings found for template_id={template_id}, template_hint={template_hint}")
-    return {}
-
-
-def upsert_template_placeholders(template_id: str,
-    settings: Dict[str,
-    Dict],
-     template_hint: Optional[str] = None) -> None:
-    """Upsert placeholder settings into Supabase"""
-    if SUPABASE_ENABLED and settings:
-        rows = []
-        for placeholder, cfg in settings.items():
-            source = cfg.get('source')
-            if source is None or (isinstance(source, str) and not source.strip()):
-                source = 'database'
-            else:
-                source = str(source).strip()
-            
-            rows.append({
-                'template_id': template_id,
-                'placeholder': placeholder,
-                'source': source,
-                'custom_value': cfg.get('customValue'),
-                'database_table': cfg.get('databaseTable') or cfg.get('database_table'),
-                'database_field': cfg.get('databaseField') or cfg.get('database_field'),
-                'csv_id': cfg.get('csvId') or cfg.get('csv_id'),
-                'csv_field': cfg.get('csvField') or cfg.get('csv_field'),
-                'csv_row': cfg.get('csvRow') or cfg.get('csv_row', 0),
-                'random_option': cfg.get('randomOption') or cfg.get('random_option', 'auto')
-            })
-
-        try:
-            response = supabase.table('template_placeholders').upsert(
-                rows, on_conflict='template_id,placeholder').execute()
-            if getattr(response, "error", None):
-                logger.error(
-                    f"Supabase error upserting placeholders for {template_id}: {response.error}")
-            else:
-                logger.info(f"Successfully saved {len(rows)} placeholder settings to Supabase for template {template_id}")
-                for row in rows:
-                    logger.debug(f"  Saved: {row['placeholder']} -> source={row['source']}, database_field={row.get('database_field')}, csv_id={row.get('csv_id')}")
-        except Exception as exc:
-            logger.error(f"Failed to upsert placeholder settings: {exc}")
-
-    # Persist to disk as reliable fallback
-    placeholder_key = ensure_docx_filename(
-        template_hint) if template_hint else str(template_id)
-    placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-    placeholder_settings[placeholder_key] = settings
-    write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
-
-
-def fetch_template_file_record(template_id: str,
-     include_data: bool = False) -> Optional[Dict]:
-    """Get the latest template file record from Supabase"""
-    if not SUPABASE_ENABLED:
-        return None
-    try:
-        select_fields = 'filename, mime_type, file_size, sha256, uploaded_at'
-        if include_data:
-            select_fields += ', file_data'
-
-        response = supabase.table('template_files') \
-            .select(select_fields) \
-            .eq('template_id', template_id) \
-            .order('uploaded_at', desc=True) \
-            .limit(1) \
-            .execute()
-        if response.data:
-            return response.data[0]
-    except Exception as exc:
-        logger.error(f"Failed to fetch template file for {template_id}: {exc}")
-        return None
-
-
-def write_temp_docx_from_record(file_record: Dict) -> str:
-    """Persist a template file from Supabase to a temporary DOCX path"""
-    doc_bytes = decode_bytea(file_record.get('file_data'))
-    if not doc_bytes:
-        raise HTTPException(
-            status_code=500, detail="Template file data is empty")
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
-    tmp.write(doc_bytes)
-    tmp.flush()
-    tmp.close()
-    return tmp.name
-
-# ============================================================================
-# STEP 1: STORAGE HELPERS (JSON on disk with atomic writes)
-# ============================================================================
-
-
-def get_deleted_templates() -> set:
-    """Get set of deleted template names"""
-    try:
-        # Ensure file exists
-        if not os.path.exists(DELETED_TEMPLATES_PATH):
-            os.makedirs(os.path.dirname(DELETED_TEMPLATES_PATH), exist_ok=True)
-            initial_data = {"deleted_templates": [], "last_updated": ""}
-            write_json_atomic(DELETED_TEMPLATES_PATH, initial_data)
-            logger.info(f"Created deleted_templates.json file at {DELETED_TEMPLATES_PATH}")
-            return set()
-        
-        deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
-        deleted_names = deleted_data.get('deleted_templates', [])
-        
-        if not deleted_names:
-            logger.debug(f"deleted_templates.json is empty or has no deleted_templates key")
-            return set()
-        
-        # Normalize all names to ensure consistency
-        normalized_names = set()
-        for name in deleted_names:
-            if not name:
-                continue
-            normalized = ensure_docx_filename(str(name))
-            normalized_names.add(normalized)
-            logger.debug(f"Loaded deleted template: {name} -> {normalized}")
-        
-        logger.info(f"Loaded {len(normalized_names)} deleted templates from {DELETED_TEMPLATES_PATH}")
-        return normalized_names
-    except Exception as e:
-        logger.error(f"Could not read deleted templates from {DELETED_TEMPLATES_PATH}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return set()
-
-def mark_template_as_deleted(template_name: str) -> None:
-    """Mark a template as deleted in the deleted templates file"""
-    if not template_name:
-        return
-        
-    try:
-        # Ensure file exists
-        if not os.path.exists(DELETED_TEMPLATES_PATH):
-            os.makedirs(os.path.dirname(DELETED_TEMPLATES_PATH), exist_ok=True)
-        
-        deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
-        deleted_list = deleted_data.get('deleted_templates', [])
-        normalized_name = ensure_docx_filename(template_name)
-        
-        # Normalize existing names for comparison
-        normalized_existing = {ensure_docx_filename(str(name)) for name in deleted_list if name}
-        
-        # Add to list if not already there
-        if normalized_name and normalized_name not in normalized_existing:
-            deleted_list.append(normalized_name)
-            deleted_data['deleted_templates'] = deleted_list
-            deleted_data['last_updated'] = datetime.now().isoformat()
-            write_json_atomic(DELETED_TEMPLATES_PATH, deleted_data)
-            logger.info(f"Marked template as deleted in deleted_templates.json: {normalized_name} (from original: {template_name})")
-        elif normalized_name in normalized_existing:
-            logger.debug(f"Template {normalized_name} already marked as deleted (from original: {template_name})")
-    except Exception as e:
-        logger.error(f"Failed to mark template as deleted: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-def unmark_template_as_deleted(template_name: str) -> None:
-    """Remove a template from the deleted templates file (when re-uploaded)"""
-    if not template_name:
-        return
-        
-    try:
-        if not os.path.exists(DELETED_TEMPLATES_PATH):
-            return  # Nothing to remove if file doesn't exist
-        
-        deleted_data = read_json_file(DELETED_TEMPLATES_PATH, {})
-        deleted_list = deleted_data.get('deleted_templates', [])
-        normalized_name = ensure_docx_filename(template_name)
-        
-        # Remove all variations of the template name (case-insensitive)
-        original_count = len(deleted_list)
-        deleted_list = [
-            name for name in deleted_list 
-            if name and ensure_docx_filename(str(name)).lower() != normalized_name.lower()
-        ]
-        
-        # If we removed anything, save the updated list
-        if len(deleted_list) != original_count:
-            deleted_data['deleted_templates'] = deleted_list
-            deleted_data['last_updated'] = datetime.now().isoformat()
-            write_json_atomic(DELETED_TEMPLATES_PATH, deleted_data)
-            logger.info(f"Unmarked template from deleted_templates.json: {normalized_name} (from original: {template_name}) - removed {original_count - len(deleted_list)} entry/entries")
-    except Exception as e:
-        logger.error(f"Failed to unmark template as deleted: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-def read_json_file(path: str, default=None):
-    """Read JSON file with default fallback"""
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning(f"Error reading {path}: {e}")
-        return default if default is not None else {}
-
-
-def write_json_atomic(path: str, data) -> None:
-    """Write JSON file atomically (write to temp, then rename)"""
-    tmp_path = path + ".tmp"
-    try:
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, path)
-    except Exception as e:
-        logger.error(f"Error writing {path}: {e}")
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
-
-
-def ensure_storage():
-    """Initialize storage files with defaults"""
-    if not os.path.exists(PLANS_PATH):
-        write_json_atomic(PLANS_PATH, {
-            "basic": {
-                "name": "Basic Plan",
-                "can_view_all": True,
-                "can_download": ["ANALYSIS SGS.docx", "ICPO TEMPLATE.docx"],
-                "max_downloads_per_month": 10,
-                "features": ["View all documents", "Download selected templates"]
-            },
-            "premium": {
-                "name": "Premium Plan",
-                "can_view_all": True,
-                "can_download": ["ANALYSIS SGS.docx", "ICPO TEMPLATE.docx", "Commercial_Invoice_Batys_Final.docx", "PERFORMA INVOICE.docx"],
-                "max_downloads_per_month": 100,
-                "features": ["All downloads", "Priority generation"]
-            },
-            "enterprise": {
-                "name": "Enterprise Plan",
-                "can_view_all": True,
-                "can_download": ["*"],
-                "max_downloads_per_month": -1,
-                "features": ["Unlimited", "SLA"]
-            }
-        })
-
-    if not os.path.exists(USERS_PATH):
-        pwd_hash = hashlib.sha256("admin123".encode()).hexdigest()
-        write_json_atomic(USERS_PATH, {
-            "users": [{"username": "admin", "password_hash": pwd_hash}],
-            "sessions": {}
-        })
-
-    if not os.path.exists(TEMPLATE_METADATA_PATH):
-        write_json_atomic(TEMPLATE_METADATA_PATH, {})
-
-    if not os.path.exists(DATA_SOURCES_METADATA_PATH):
-        write_json_atomic(DATA_SOURCES_METADATA_PATH, {})
-
-
-# Initialize storage on startup
-ensure_storage()
-
-# Metadata helpers
-
-
-def load_template_metadata() -> Dict[str, Dict]:
-    """Load template metadata JSON with safe fallback."""
-    metadata = read_json_file(TEMPLATE_METADATA_PATH, {})
-    return metadata if isinstance(metadata, dict) else {}
-
-
-def save_template_metadata(metadata: Dict[str, Dict]) -> None:
-    """Persist template metadata to disk."""
-    write_json_atomic(TEMPLATE_METADATA_PATH, metadata)
-
-
-def update_template_metadata_entry(
-    template_key: str, updates: Dict) -> Dict[str, Dict]:
-    """Merge updates into template metadata entry and persist."""
-    metadata = load_template_metadata()
-    entry = metadata.get(template_key, {})
-    entry.update({k: v for k, v in updates.items() if v is not None})
-    metadata[template_key] = entry
-    save_template_metadata(metadata)
-    return metadata
-
-
-def load_data_sources_metadata() -> Dict[str, Dict]:
-    metadata = read_json_file(DATA_SOURCES_METADATA_PATH, {})
-    return metadata if isinstance(metadata, dict) else {}
-
-
-def save_data_sources_metadata(metadata: Dict[str, Dict]) -> None:
-    write_json_atomic(DATA_SOURCES_METADATA_PATH, metadata)
-
-
-def upsert_data_source_metadata(dataset_id: str, display_name: Optional[str] = None) -> None:
-    metadata = load_data_sources_metadata()
-    entry = metadata.get(dataset_id, {})
-    if display_name:
-        entry['display_name'] = display_name
-    entry['updated_at'] = datetime.utcnow().isoformat()
-    metadata[dataset_id] = entry
-    save_data_sources_metadata(metadata)
-
-
-def remove_data_source_metadata(dataset_id: str) -> None:
-    metadata = load_data_sources_metadata()
-    if dataset_id in metadata:
-        metadata.pop(dataset_id, None)
-        save_data_sources_metadata(metadata)
-
-
-def normalise_dataset_id(value: Optional[str]) -> str:
-    if not value:
-        return ""
-    cleaned = value.strip().lower()
-    cleaned = re.sub(r'[^a-z0-9]+', '_', cleaned)
-    cleaned = re.sub(r'_+', '_', cleaned).strip('_')
-    if not cleaned:
-        return ""
-    return cleaned[:80]
-
-
-def dataset_id_to_filename(dataset_id: str) -> str:
-    return f"{dataset_id}.csv"
-
-
-def list_csv_datasets() -> List[Dict[str, str]]:
-    datasets: List[Dict[str, str]] = []
-    try:
-        if not os.path.exists(DATA_DIR):
-            return datasets
-        metadata = load_data_sources_metadata()
-        for entry in os.listdir(DATA_DIR):
-            if not entry.lower().endswith('.csv'):
-                continue
-            dataset_id = entry[:-4]
-            file_path = os.path.join(DATA_DIR, entry)
-            datasets.append({
-                "id": dataset_id,
-                "filename": entry,
-                "path": file_path,
-                "display_name": metadata.get(dataset_id, {}).get('display_name')
-            })
-    except Exception as e:
-        logger.warning(f"list_csv_datasets error: {e}")
-    return datasets
-
-
-def normalize_template_name(value: Optional[str], with_extension: bool = True, for_key: bool = False) -> str:
-    """
-    Unified template name normalization function.
-    
-    Args:
-        value: Template name (with or without .docx extension)
-        with_extension: If True, ensure .docx extension is present. If False, remove it.
-        for_key: If True, normalize for use as a dictionary key (lowercase, no extension)
-    
-    Returns:
-        Normalized template name
-    """
-    if not value:
-        return ""
-    
-    # Strip whitespace and get basename
-    name = value.strip()
-    name = os.path.basename(name)
-    
-    # Remove extension if present
-    if name.lower().endswith('.docx'):
-        name = name[:-5]
-    
-    # For dictionary keys, return lowercase without extension
-    if for_key:
-        return name.strip().lower()
-    
-    # Add extension if requested
-    if with_extension:
-        return f"{name.strip()}.docx"
-    
-    return name.strip()
-
-
-def normalise_template_key(value: Optional[str]) -> str:
-    """Normalise template identifiers to a consistent filesystem key (deprecated - use normalize_template_name with for_key=True)."""
-    return normalize_template_name(value, with_extension=False, for_key=True)
-
-
-def _normalize_for_match(value: Optional[str]) -> str:
-    """Normalize template name for fuzzy file matching (lower, no .docx, collapsed spaces)."""
-    if not value:
-        return ""
-    s = value.strip().lower()
-    if s.endswith(".docx"):
-        s = s[:-5].strip()
-    return " ".join(s.split())
-
-
-def ensure_docx_filename(value: str) -> str:
-    """Ensure filename ends with .docx (deprecated - use normalize_template_name with with_extension=True)."""
-    return normalize_template_name(value, with_extension=True, for_key=False)
-
-
-# ============================================================================
-# STEP 2: AUTHENTICATION (Simple login with HttpOnly cookies)
-# ============================================================================
-
-def get_current_user(request: Request):
-    """Dependency to check if user is authenticated"""
-    token = request.cookies.get('session')
-    if not token:
-        logger.warning(
-            f"Auth failed: No session cookie. Available cookies: {list(request.cookies.keys())}")
-        raise HTTPException(
-            status_code=401, detail="Not authenticated - Please login")
-
-    users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
-    username = users_data.get("sessions", {}).get(token)
-    if not username:
-        logger.warning(
-            f"Auth failed: Invalid token {token[:10]}... Sessions: {len(users_data.get('sessions', {}))}")
-        raise HTTPException(
-            status_code=401, detail="Invalid session - Please login again")
-
-    logger.info(f"Authenticated user: {username}")
-    return username
-
-
-@app.post("/auth/login")
-async def auth_login(request: Request):
-    """Login endpoint - sets HttpOnly session cookie"""
-    try:
-        data = await request.json()
-        username = data.get('username')
-        password = data.get('password', '')
-
-        users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
-        if not users_data.get("users"):
-            raise HTTPException(status_code=403, detail="No administrators defined. Please create a user in storage/users.json")
-        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
-
-        user_found = any(
-            u.get('username') == username and u.get(
-                'password_hash') == pwd_hash
-            for u in users_data.get('users', [])
-        )
-
-        if not user_found:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-
-        # Create session token
-        token = uuid.uuid4().hex
-        users_data['sessions'][token] = username
-        write_json_atomic(USERS_PATH, users_data)
-
-        # Set HttpOnly cookie - handle localhost vs cross-origin (petrodealhub.com -> control)
-        response = Response(content=json.dumps(
-            {"success": True, "user": username}), media_type="application/json")
-        origin = (request.headers.get('origin') or '').strip().lower()
-        # Cross-origin: petrodealhub.com -> control. SameSite=Lax blocks cookies on DELETE.
-        # Use None + Secure so cross-origin DELETE (doc CMS) sends session.
-        use_cross_site = origin in (
-            'https://petrodealhub.com', 'https://www.petrodealhub.com',
-            'https://control.petrodealhub.com',
-        )
-        kwargs = dict(key='session', value=token, httponly=True, max_age=86400, path='/')
-        if use_cross_site:
-            kwargs['samesite'] = 'none'
-            kwargs['secure'] = True
-        else:
-            kwargs['samesite'] = 'lax'
-        response.set_cookie(**kwargs)
-        return response
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
-
-
-@app.post("/auth/logout")
-async def auth_logout(request: Request):
-    """Logout endpoint - removes session"""
-    try:
-        token = request.cookies.get('session')
-        if token:
-            users_data = read_json_file(
-                USERS_PATH, {"users": [], "sessions": {}})
-            users_data.get("sessions", {}).pop(token, None)
-            write_json_atomic(USERS_PATH, users_data)
-
-        response = Response(content=json.dumps(
-            {"success": True}), media_type="application/json")
-        response.delete_cookie('session')
-        return response
-    except Exception as e:
-        logger.error(f"Logout error: {e}")
-        raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
-
-
-@app.get("/auth/me")
-async def auth_me(request: Request):
-    """Get current user info"""
-    token = request.cookies.get('session')
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    users_data = read_json_file(USERS_PATH, {"users": [], "sessions": {}})
-    username = users_data.get("sessions", {}).get(token)
-    if not username:
-        raise HTTPException(status_code=401, detail="Invalid session")
-
-    return {"success": True, "user": username}
-
-
-def _cors_preflight_headers_auth(request: Request, allowed_methods: str) -> Dict[str, str]:
-    """CORS headers for auth preflight (used before _cors_preflight_headers is defined)."""
-    origin = request.headers.get("origin", "")
-    h: Dict[str, str] = {
-        "Access-Control-Allow-Methods": allowed_methods,
-        "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "Content-Type, Authorization"),
-        "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Max-Age": "600",
-        "Vary": "Origin",
-    }
-    if origin and origin in ALLOWED_ORIGINS:
-        h["Access-Control-Allow-Origin"] = origin
-    elif ALLOWED_ORIGINS:
-        h["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
-    else:
-        h["Access-Control-Allow-Origin"] = "*"
-    return h
-
-
-@app.options("/auth/login")
-async def options_auth_login(request: Request):
-    """CORS preflight for /auth/login."""
-    return Response(status_code=204, headers=_cors_preflight_headers_auth(request, "POST, OPTIONS"))
-
-
-@app.options("/auth/logout")
-async def options_auth_logout(request: Request):
-    """CORS preflight for /auth/logout."""
-    return Response(status_code=204, headers=_cors_preflight_headers_auth(request, "POST, OPTIONS"))
-
-
-@app.options("/auth/me")
-async def options_auth_me(request: Request):
-    """CORS preflight for /auth/me."""
-    return Response(status_code=204, headers=_cors_preflight_headers_auth(request, "GET, POST, OPTIONS"))
-
-
-# ============================================================================
-# BASIC HEALTH & ROOT ENDPOINTS
-# ============================================================================
-
-
-@app.get("/")
-async def root():
-    return {"message": "Document Processing API v2.0", "status": "running"}
-
-
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "supabase": "connected" if supabase else "disconnected",
-        "templates_dir": TEMPLATES_DIR,
-        "storage_dir": STORAGE_DIR
-    }
-
-
-@app.get("/diagnose-buyer-seller")
-async def diagnose_buyer_seller():
-    """Diagnose why buyer/seller data may not appear in documents. Run: curl http://localhost:8000/diagnose-buyer-seller"""
-    result = {
-        "service_role_key_set": bool(SUPABASE_SERVICE_ROLE_KEY),
-        "using_service_role": bool(SUPABASE_SERVICE_ROLE_KEY),
-        "buyer_companies": {"count": 0, "error": None, "sample_name": None},
-        "seller_companies": {"count": 0, "error": None, "sample_name": None},
-        "companies_buyer": {"count": 0, "error": None},
-        "companies_seller": {"count": 0, "error": None},
-    }
-    if not supabase:
-        result["error"] = "Supabase not connected"
-        return result
-    # Test buyer_companies
-    try:
-        r = supabase.table("buyer_companies").select("id,name").limit(5).execute()
-        result["buyer_companies"]["count"] = len(r.data or [])
-        if r.data and len(r.data) > 0:
-            result["buyer_companies"]["sample_name"] = r.data[0].get("name")
-    except Exception as e:
-        result["buyer_companies"]["error"] = str(e)
-    # Test seller_companies
-    try:
-        r = supabase.table("seller_companies").select("id,name").limit(5).execute()
-        result["seller_companies"]["count"] = len(r.data or [])
-        if r.data and len(r.data) > 0:
-            result["seller_companies"]["sample_name"] = r.data[0].get("name")
-    except Exception as e:
-        result["seller_companies"]["error"] = str(e)
-    # Test companies (fallback)
-    try:
-        r = supabase.table("companies").select("id,name").or_("company_type.eq.buyer,company_type.eq.buyer_test").limit(5).execute()
-        result["companies_buyer"]["count"] = len(r.data or [])
-    except Exception as e:
-        result["companies_buyer"]["error"] = str(e)
-    try:
-        r = supabase.table("companies").select("id,name").or_("company_type.eq.seller,company_type.eq.seller_test").limit(5).execute()
-        result["companies_seller"]["count"] = len(r.data or [])
-    except Exception as e:
-        result["companies_seller"]["error"] = str(e)
-    result["fix"] = []
-    if not result["service_role_key_set"]:
-        result["fix"].append("Add SUPABASE_SERVICE_ROLE_KEY to .env (Supabase Dashboard -> API -> service_role)")
-    if result["buyer_companies"]["count"] == 0 and not result["buyer_companies"]["error"]:
-        result["fix"].append("buyer_companies table is empty - add data in Admin -> Buyer Companies")
-    elif result["buyer_companies"]["error"]:
-        result["fix"].append("buyer_companies error (likely RLS): " + result["buyer_companies"]["error"][:80])
-    if result["seller_companies"]["count"] == 0 and not result["seller_companies"]["error"]:
-        result["fix"].append("seller_companies table is empty - add data in Admin -> Seller Companies")
-    elif result["seller_companies"]["error"]:
-        result["fix"].append("seller_companies error (likely RLS): " + result["seller_companies"]["error"][:80])
-    return result
-
-# ============================================================================
-# VESSELS API (from Supabase)
-# ============================================================================
-
-
-@app.get("/vessels")
-async def get_vessels():
-    """Get list of vessels from Supabase"""
-    try:
-        if not supabase:
-            # Return mock data if Supabase not available
-            return {
-                "success": True,
-                "vessels": [
-                    {"id": 1, "imo": "IMO1234567", "name": "Test Vessel 1",
-                        "vessel_type": "Tanker", "flag": "Panama"},
-                    {"id": 2, "imo": "IMO9876543", "name": "Test Vessel 2",
-                        "vessel_type": "Cargo", "flag": "Singapore"}
-                ],
-                "count": 2
-            }
-
-        response = supabase.table('vessels').select(
-            'id, name, imo, vessel_type, flag').limit(50).execute()
-        return {
-            "success": True,
-            "vessels": response.data or [],
-            "count": len(response.data) if response.data else 0
-        }
-    except Exception as e:
-        logger.error(f"Error fetching vessels: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch vessels: {str(e)}")
-
-
-@app.get("/vessel/{imo}")
-async def get_vessel(imo: str):
-    """Get vessel by IMO"""
-    try:
-        if not supabase:
-            raise HTTPException(
-                status_code=503, detail="Supabase not available")
-
-        response = supabase.table('vessels').select(
-            '*').eq('imo', imo).execute()
-        if not response.data or len(response.data) == 0:
-            raise HTTPException(
-                status_code=404, detail=f"Vessel with IMO {imo} not found")
-
-        return {"success": True, "vessel": response.data[0]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching vessel {imo}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/vessel-fields")
-async def get_vessel_fields():
-    """Get list of all available fields in vessels table"""
-    try:
-        # Common vessel fields that might be used in documents
-        # This is a comprehensive list based on the database schema
-        fields = [
-            {'name': 'name', 'label': 'Vessel Name'},
-            {'name': 'imo', 'label': 'IMO Number'},
-            {'name': 'mmsi', 'label': 'MMSI'},
-            {'name': 'vessel_type', 'label': 'Vessel Type'},
-            {'name': 'flag', 'label': 'Flag'},
-            {'name': 'built', 'label': 'Year Built'},
-            {'name': 'deadweight', 'label': 'Deadweight'},
-            {'name': 'cargo_capacity', 'label': 'Cargo Capacity'},
-            {'name': 'length', 'label': 'Length'},
-            {'name': 'width', 'label': 'Width'},
-            {'name': 'beam', 'label': 'Beam'},
-            {'name': 'draft', 'label': 'Draft'},
-            {'name': 'draught', 'label': 'Draught'},
-            {'name': 'gross_tonnage', 'label': 'Gross Tonnage'},
-            {'name': 'engine_power', 'label': 'Engine Power'},
-            {'name': 'fuel_consumption', 'label': 'Fuel Consumption'},
-            {'name': 'crew_size', 'label': 'Crew Size'},
-            {'name': 'speed', 'label': 'Speed'},
-            {'name': 'callsign', 'label': 'Call Sign'},
-            {'name': 'nav_status', 'label': 'Navigation Status'},
-            {'name': 'current_lat', 'label': 'Current Latitude'},
-            {'name': 'current_lng', 'label': 'Current Longitude'},
-            {'name': 'current_region', 'label': 'Current Region'},
-            {'name': 'currentport', 'label': 'Current Port'},
-            {'name': 'departure_port', 'label': 'Departure Port'},
-            {'name': 'destination_port', 'label': 'Destination Port'},
-            {'name': 'loading_port', 'label': 'Loading Port'},
-            {'name': 'departure_date', 'label': 'Departure Date'},
-            {'name': 'arrival_date', 'label': 'Arrival Date'},
-            {'name': 'eta', 'label': 'ETA'},
-            {'name': 'cargo_type', 'label': 'Cargo Type'},
-            {'name': 'cargo_quantity', 'label': 'Cargo Quantity'},
-            {'name': 'oil_type', 'label': 'Oil Type'},
-            {'name': 'oil_source', 'label': 'Oil Source'},
-            {'name': 'quantity', 'label': 'Quantity'},
-            {'name': 'price', 'label': 'Price'},
-            {'name': 'market_price', 'label': 'Market Price'},
-            {'name': 'deal_value', 'label': 'Deal Value'},
-            {'name': 'owner_name', 'label': 'Owner Name'},
-            {'name': 'operator_name', 'label': 'Operator Name'},
-            {'name': 'buyer_name', 'label': 'Buyer Name'},
-            {'name': 'seller_name', 'label': 'Seller Name'},
-            {'name': 'source_company', 'label': 'Source Company'},
-            {'name': 'target_refinery', 'label': 'Target Refinery'},
-            {'name': 'shipping_type', 'label': 'Shipping Type'},
-            {'name': 'route_distance', 'label': 'Route Distance'},
-            {'name': 'route_info', 'label': 'Route Info'},
-        ]
-
-        return {"success": True, "fields": fields}
-    except Exception as e:
-        logger.error(f"Error getting vessel fields: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/database-tables")
-async def get_database_tables(request: Request):
-    """Get list of all available database tables that can be used as data sources"""
-    # Allow unauthenticated access for CMS editor
-    try:
-        # Complete list of all available tables with their display names and descriptions
-        # These match the tables supported by the ID-based fetching system
-        tables = [
-            {'name': 'vessels', 'label': 'Vessels', 'description': 'Vessel information and specifications (INTEGER ID)'},
-            {'name': 'ports', 'label': 'Ports', 'description': 'Port information and details (INTEGER ID)'},
-            {'name': 'companies', 'label': 'Companies', 'description': 'Generic company information (INTEGER ID)'},
-            {'name': 'buyer_companies', 'label': 'Buyer Companies', 'description': 'Buyer company information (UUID ID)'},
-            {'name': 'seller_companies', 'label': 'Seller Companies', 'description': 'Seller company information (UUID ID)'},
-            {'name': 'refineries', 'label': 'Refineries', 'description': 'Refinery information (UUID ID)'},
-            {'name': 'oil_products', 'label': 'Oil Products', 'description': 'Oil product specifications (UUID ID)'},
-            {'name': 'broker_profiles', 'label': 'Broker Profiles', 'description': 'Broker information (UUID ID)'},
-            {'name': 'buyer_company_bank_accounts', 'label': 'Buyer Bank Accounts', 'description': 'Buyer company bank account details (UUID ID)'},
-            {'name': 'seller_company_bank_accounts', 'label': 'Seller Bank Accounts', 'description': 'Seller company bank account details (UUID ID)'},
-            {'name': 'deals', 'label': 'Deals', 'description': 'Deal/transaction information (UUID ID)'},
-        ]
-        
-        logger.info(f"Returning {len(tables)} database tables")
-        return {"success": True, "tables": tables}
-    except Exception as e:
-        logger.error(f"Error getting database tables: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/database-tables/{table_name}/columns")
-async def get_database_table_columns(table_name: str, request: Request):
-    """Get list of columns for a specific database table"""
-    try:
-        if not SUPABASE_ENABLED:
-            raise HTTPException(status_code=503, detail="Supabase not available")
-        
-        # Try to get column information from Supabase
-        # We'll query the table with LIMIT 0 to get column names without data
-        try:
-            # Get a sample row to infer column names
-            response = supabase.table(table_name).select('*').limit(1).execute()
-            
-            if response.data and len(response.data) > 0:
-                # Extract column names from the first row
-                columns = []
-                for key in response.data[0].keys():
-                    # Create a human-readable label
-                    label = key.replace('_', ' ').title()
-                    columns.append({
-                        'name': key,
-                        'label': label,
-                        'type': 'text'  # Default type, could be enhanced with actual type detection
-                    })
-                
-                return {"success": True, "table": table_name, "columns": columns}
-            else:
-                # Table exists but is empty: use predefined columns so editor can still select fields
-                predefined_columns = _get_predefined_table_columns(table_name)
-                return {"success": True, "table": table_name, "columns": predefined_columns}
-        except Exception as table_exc:
-            logger.error(f"Error querying table {table_name}: {table_exc}")
-            # Fallback to predefined column lists for known tables
-            predefined_columns = _get_predefined_table_columns(table_name)
-            if predefined_columns:
-                return {"success": True, "table": table_name, "columns": predefined_columns}
-            else:
-                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found or not accessible")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting table columns for {table_name}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-def _get_predefined_table_columns(table_name: str) -> List[Dict[str, str]]:
-    """Get predefined column list for known tables (fallback). Aligned with real DB schema (types.ts)."""
-
-    def col(n: str, lbl: str, t: str = 'text') -> Dict[str, str]:
-        return {'name': n, 'label': lbl, 'type': t}
-
-    predefined = {
-        'vessels': [
-            col('id', 'ID', 'integer'),
-            col('name', 'Vessel Name'),
-            col('imo', 'IMO Number'),
-            col('mmsi', 'MMSI'),
-            col('vessel_type', 'Vessel Type'),
-            col('flag', 'Flag'),
-            col('built', 'Year Built', 'integer'),
-            col('deadweight', 'Deadweight', 'numeric'),
-            col('cargo_capacity', 'Cargo Capacity', 'numeric'),
-            col('cargo_capacity_bbl', 'Cargo Capacity (bbl)', 'numeric'),
-            col('length', 'Length', 'numeric'),
-            col('width', 'Width', 'numeric'),
-            col('beam', 'Beam'),
-            col('draft', 'Draft'),
-            col('draught', 'Draught', 'numeric'),
-            col('gross_tonnage', 'Gross Tonnage', 'numeric'),
-            col('owner_name', 'Owner Name'),
-            col('operator_name', 'Operator Name'),
-            col('callsign', 'Call Sign'),
-            col('currentport', 'Current Port'),
-            col('loading_port', 'Loading Port'),
-            col('discharge_port', 'Discharge Port'),
-            col('departure_port', 'Departure Port ID', 'integer'),
-            col('destination_port', 'Destination Port ID', 'integer'),
-            col('destination', 'Destination'),
-            col('eta', 'ETA'),
-            col('nav_status', 'Nav Status'),
-            col('status', 'Status'),
-            col('vesselstatus', 'Vessel Status'),
-            col('fuel_consumption', 'Fuel Consumption', 'numeric'),
-            col('engine_power', 'Engine Power', 'numeric'),
-            col('speed', 'Speed'),
-            col('service_speed', 'Service Speed'),
-            col('deal_value', 'Deal Value', 'numeric'),
-            col('dealvalue', 'Deal Value (text)'),
-            col('deal_status', 'Deal Status'),
-            col('deal_reference_id', 'Deal Reference ID'),
-            col('buyer_name', 'Buyer Name'),
-            col('seller_name', 'Seller Name'),
-            col('buyer_company_id', 'Buyer Company ID', 'integer'),
-            col('seller_company_id', 'Seller Company ID', 'integer'),
-            col('company_id', 'Company ID', 'integer'),
-            col('refinery_id', 'Refinery ID'),
-            col('price', 'Price', 'numeric'),
-            col('market_price', 'Market Price', 'numeric'),
-            col('indicative_price', 'Indicative Price', 'numeric'),
-            col('quantity', 'Quantity', 'numeric'),
-            col('cargo_quantity', 'Cargo Quantity', 'numeric'),
-            col('total_shipment_quantity', 'Total Shipment Quantity', 'numeric'),
-            col('cargo_type', 'Cargo Type'),
-            col('oil_type', 'Oil Type'),
-            col('oil_source', 'Oil Source'),
-            col('commodity_name', 'Commodity Name'),
-            col('commodity_category', 'Commodity Category'),
-            col('quality_specification', 'Quality Specification'),
-            col('current_region', 'Current Region'),
-            col('route_info', 'Route Info'),
-            col('route_distance', 'Route Distance', 'numeric'),
-            col('routedistance', 'Route Distance (text)'),
-            col('arrival_date', 'Arrival Date'),
-            col('departure_date', 'Departure Date'),
-            col('payment_method', 'Payment Method'),
-            col('payment_timing', 'Payment Timing'),
-            col('delivery_method', 'Delivery Method'),
-            col('delivery_terms', 'Delivery Terms'),
-            col('shipping_type', 'Shipping Type'),
-            col('contract_type', 'Contract Type'),
-            col('source_company', 'Source Company'),
-            col('source_refinery', 'Source Refinery'),
-            col('target_refinery', 'Target Refinery'),
-            col('voyage_status', 'Voyage Status'),
-            col('voyage_notes', 'Voyage Notes'),
-            col('crew_size', 'Crew Size', 'integer'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-            col('last_updated', 'Last Updated'),
-        ],
-        'ports': [
-            col('id', 'ID', 'integer'),
-            col('name', 'Port Name'),
-            col('country', 'Country'),
-            col('city', 'City'),
-            col('region', 'Region'),
-            col('lat', 'Latitude', 'numeric'),
-            col('lng', 'Longitude', 'numeric'),
-            col('address', 'Address'),
-            col('port_type', 'Port Type'),
-            col('type', 'Type'),
-            col('status', 'Status'),
-            col('description', 'Description'),
-            col('facilities', 'Facilities'),
-            col('services', 'Services'),
-            col('email', 'Email'),
-            col('phone', 'Phone'),
-            col('website', 'Website'),
-            col('operator', 'Operator'),
-            col('owner', 'Owner'),
-            col('port_authority', 'Port Authority'),
-            col('capacity', 'Capacity', 'numeric'),
-            col('timezone', 'Timezone'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-            col('last_updated', 'Last Updated'),
-        ],
-        'refineries': [
-            col('id', 'ID'),
-            col('name', 'Refinery Name'),
-            col('country', 'Country'),
-            col('city', 'City'),
-            col('region', 'Region'),
-            col('address', 'Address'),
-            col('capacity', 'Capacity', 'numeric'),
-            col('processing_capacity', 'Processing Capacity', 'numeric'),
-            col('production_capacity', 'Production Capacity', 'numeric'),
-            col('annual_throughput', 'Annual Throughput', 'numeric'),
-            col('description', 'Description'),
-            col('email', 'Email'),
-            col('phone', 'Phone'),
-            col('operator', 'Operator'),
-            col('owner', 'Owner'),
-            col('status', 'Status'),
-            col('created_at', 'Created At'),
-            col('last_updated', 'Last Updated'),
-        ],
-        'companies': [
-            col('id', 'ID', 'integer'),
-            col('name', 'Company Name'),
-            col('company_type', 'Company Type'),
-            col('country', 'Country'),
-            col('city', 'City'),
-            col('address', 'Address'),
-            col('email', 'Email'),
-            col('phone', 'Phone'),
-            col('owner_name', 'Owner Name'),
-            col('industry', 'Industry'),
-            col('description', 'Description'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-        'buyer_companies': [
-            col('id', 'ID', 'uuid'),
-            col('name', 'Company Name'),
-            col('trade_name', 'Trade Name'),
-            col('legal_name', 'Legal Name'),
-            col('country', 'Country'),
-            col('registration_country', 'Registration Country'),
-            col('city', 'City'),
-            col('address', 'Address'),
-            col('legal_address', 'Legal Address'),
-            col('email', 'Email'),
-            col('official_email', 'Official Email'),
-            col('operations_email', 'Operations Email'),
-            col('phone', 'Phone'),
-            col('website', 'Website'),
-            col('representative_name', 'Representative Name'),
-            col('representative_email', 'Representative Email'),
-            col('representative_title', 'Representative Title'),
-            col('registration_number', 'Registration Number'),
-            col('industry', 'Industry'),
-            col('description', 'Description'),
-            col('employees_count', 'Employees Count', 'integer'),
-            col('annual_revenue', 'Annual Revenue', 'numeric'),
-            col('founded_year', 'Founded Year', 'integer'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-        'seller_companies': [
-            col('id', 'ID', 'uuid'),
-            col('name', 'Company Name'),
-            col('trade_name', 'Trade Name'),
-            col('legal_name', 'Legal Name'),
-            col('country', 'Country'),
-            col('registration_country', 'Registration Country'),
-            col('city', 'City'),
-            col('address', 'Address'),
-            col('legal_address', 'Legal Address'),
-            col('email', 'Email'),
-            col('official_email', 'Official Email'),
-            col('operations_email', 'Operations Email'),
-            col('phone', 'Phone'),
-            col('website', 'Website'),
-            col('representative_name', 'Representative Name'),
-            col('representative_email', 'Representative Email'),
-            col('representative_title', 'Representative Title'),
-            col('registration_number', 'Registration Number'),
-            col('industry', 'Industry'),
-            col('description', 'Description'),
-            col('employees_count', 'Employees Count', 'integer'),
-            col('annual_revenue', 'Annual Revenue', 'numeric'),
-            col('founded_year', 'Founded Year', 'integer'),
-            col('refinery_name', 'Refinery Name'),
-            col('refinery_location', 'Refinery Location'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-        'oil_products': [
-            col('id', 'ID', 'uuid'),
-            col('name', 'Product Name'),
-            col('product_type', 'Product Type'),
-            col('category', 'Category'),
-            col('specification', 'Specification'),
-            col('grade', 'Grade'),
-            col('quality', 'Quality'),
-            col('price', 'Price', 'numeric'),
-            col('unit', 'Unit'),
-            col('quantity', 'Quantity', 'numeric'),
-            col('description', 'Description'),
-            col('api_gravity', 'API Gravity', 'numeric'),
-            col('sulfur_content', 'Sulfur Content', 'numeric'),
-            col('density', 'Density', 'numeric'),
-            col('viscosity', 'Viscosity', 'numeric'),
-            col('flash_point', 'Flash Point', 'numeric'),
-            col('pour_point', 'Pour Point', 'numeric'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-        'broker_profiles': [
-            col('id', 'ID', 'uuid'),
-            col('company_name', 'Company Name'),
-            col('contact_person', 'Contact Person'),
-            col('email', 'Email'),
-            col('phone', 'Phone'),
-            col('address', 'Address'),
-            col('country', 'Country'),
-            col('city', 'City'),
-            col('website', 'Website'),
-            col('status', 'Status'),
-            col('specialization', 'Specialization'),
-            col('description', 'Description'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-        'buyer_company_bank_accounts': [
-            col('id', 'ID', 'uuid'),
-            col('buyer_company_id', 'Buyer Company ID', 'uuid'),
-            col('bank_name', 'Bank Name'),
-            col('account_name', 'Account Name'),
-            col('account_number', 'Account Number'),
-            col('swift_code', 'SWIFT Code'),
-            col('iban', 'IBAN'),
-            col('bank_address', 'Bank Address'),
-            col('bank_country', 'Bank Country'),
-            col('bank_city', 'Bank City'),
-            col('routing_number', 'Routing Number'),
-            col('is_primary', 'Is Primary', 'boolean'),
-            col('currency', 'Currency'),
-            col('account_type', 'Account Type'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-        'seller_company_bank_accounts': [
-            col('id', 'ID', 'uuid'),
-            col('seller_company_id', 'Seller Company ID', 'uuid'),
-            col('bank_name', 'Bank Name'),
-            col('account_name', 'Account Name'),
-            col('account_number', 'Account Number'),
-            col('swift_code', 'SWIFT Code'),
-            col('iban', 'IBAN'),
-            col('bank_address', 'Bank Address'),
-            col('bank_country', 'Bank Country'),
-            col('bank_city', 'Bank City'),
-            col('routing_number', 'Routing Number'),
-            col('is_primary', 'Is Primary', 'boolean'),
-            col('currency', 'Currency'),
-            col('account_type', 'Account Type'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-        'deals': [
-            col('id', 'ID', 'uuid'),
-            col('vessel_id', 'Vessel ID', 'uuid'),
-            col('broker_id', 'Broker ID', 'uuid'),
-            col('buyer_id', 'Buyer ID', 'uuid'),
-            col('seller_id', 'Seller ID', 'uuid'),
-            col('product_id', 'Product ID', 'uuid'),
-            col('refinery_id', 'Refinery ID', 'uuid'),
-            col('status', 'Deal Status'),
-            col('deal_value', 'Deal Value', 'numeric'),
-            col('price', 'Price', 'numeric'),
-            col('quantity', 'Quantity', 'numeric'),
-            col('currency', 'Currency'),
-            col('payment_terms', 'Payment Terms'),
-            col('delivery_terms', 'Delivery Terms'),
-            col('incoterms', 'Incoterms'),
-            col('departure_port_id', 'Departure Port ID', 'integer'),
-            col('destination_port_id', 'Destination Port ID', 'integer'),
-            col('departure_date', 'Departure Date'),
-            col('arrival_date', 'Arrival Date'),
-            col('eta', 'ETA'),
-            col('notes', 'Notes'),
-            col('steps', 'Steps', 'jsonb'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-        'brokers': [
-            col('id', 'ID'),
-            col('company_name', 'Company Name'),
-            col('contact_person', 'Contact Person'),
-            col('email', 'Email'),
-            col('phone', 'Phone'),
-            col('address', 'Address'),
-            col('status', 'Status'),
-            col('created_at', 'Created At'),
-            col('updated_at', 'Updated At'),
-        ],
-    }
-    return predefined.get(table_name.lower(), [])
-
-
-def _get_default_columns(table: str) -> List[str]:
-    """Fallback column lists for each table."""
-    defaults = {
-        'vessels': ['imo', 'name', 'vessel_type', 'flag', 'owner_name', 'operator_name', 
-                   'deadweight', 'gross_tonnage', 'length', 'beam', 'draft', 'built',
-                   'cargo_type', 'cargo_quantity', 'departure_port', 'destination_port',
-                   'currentport', 'loading_port', 'discharge_port', 'email', 'phone', 'address'],
-        'ports': ['name', 'country', 'city', 'latitude', 'longitude'],
-        'companies': ['name', 'email', 'phone', 'country', 'address', 'city', 'website'],
-        'refineries': ['name', 'location', 'capacity', 'products']
-    }
-    return defaults.get(table, [])
-
-
-def _get_sample_value_from_column(table: str, column: str) -> Optional[str]:
-    """Get a sample value from a table column for validation during upload mapping."""
-    try:
-        response = supabase.table(table).select(column).limit(1).execute()
-        if response.data and len(response.data) > 0:
-            val = response.data[0].get(column)
-            return str(val) if val is not None else None
-    except Exception as e:
-        logger.debug(f"Could not fetch sample value for {table}.{column}: {e}")
-    return None
-
-
-def _build_schema_for_mapping() -> Dict[str, List[str]]:
-    """Build {table: [col1, col2, ...]} for ALL supported tables (11 tables total).
-    Tries to fetch real schema from Supabase first, falls back to predefined columns.
-    Includes: vessels, ports, companies, buyer_companies, seller_companies, refineries, 
-    oil_products, broker_profiles, buyer_company_bank_accounts, seller_company_bank_accounts, deals."""
-    # All supported tables - matches id_based_fetcher.py PREFIX_TO_TABLE
-    all_tables = [
-        'vessels', 'ports', 'companies', 
-        'buyer_companies', 'seller_companies', 
-        'refineries', 'oil_products', 
-        'broker_profiles',
-        'buyer_company_bank_accounts', 'seller_company_bank_accounts',
-        'deals'
-    ]
-    schema: Dict[str, List[str]] = {}
-    
-    for table in all_tables:
-        try:
-            # Try to fetch real schema from Supabase
-            response = supabase.table(table).select("*").limit(1).execute()
-            if response.data and len(response.data) > 0:
-                schema[table] = list(response.data[0].keys())
-                logger.debug(f"Fetched schema for {table}: {len(schema[table])} columns")
-            else:
-                # Fallback to predefined columns from _get_predefined_table_columns
-                predefined_cols = _get_predefined_table_columns(table)
-                schema[table] = [col['name'] for col in predefined_cols] if predefined_cols else []
-                if not schema[table]:
-                    # Last resort: use _get_default_columns for old tables
-                    schema[table] = _get_default_columns(table)
-                logger.debug(f"Using predefined schema for {table}: {len(schema[table])} columns")
-        except Exception as e:
-            logger.warning(f"Could not fetch schema for {table}: {e}, using defaults")
-            # Fallback to predefined columns
-            predefined_cols = _get_predefined_table_columns(table)
-            schema[table] = [col['name'] for col in predefined_cols] if predefined_cols else []
-            if not schema[table]:
-                schema[table] = _get_default_columns(table)
-    
-    logger.info(f"Built schema for mapping: {len(schema)} tables, {sum(len(cols) for cols in schema.values())} total columns")
-    return schema
-
-
-def _build_csv_schema_for_mapping() -> Dict[str, List[str]]:
-    """Build {csv_id: [field1, field2, ...]} for available CSVs. Used by AI analysis on upload."""
-    out: Dict[str, List[str]] = {}
-    try:
-        for d in list_csv_datasets():
-            path = d.get("path") or os.path.join(DATA_DIR, d.get("filename", ""))
-            if not os.path.exists(path):
-                continue
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                reader = csv.DictReader(f)
-                names = list(reader.fieldnames or [])
-            out[d["id"]] = [n for n in names if n]
-    except Exception as e:
-        logger.warning(f"_build_csv_schema_for_mapping error: {e}")
-    return out
-
-
-# Rule-based placeholder -> (table, field) for upload-time mapping when OpenAI is unavailable.
-# Extended for ALL 11 tables. Field must exist in predefined columns.
-_UPLOAD_FIELD_MAPPINGS: Dict[str, Tuple[str, str]] = {
-    # ============= VESSELS =============
-    'imonumber': ('vessels', 'imo'), 'imo_number': ('vessels', 'imo'), 'imono': ('vessels', 'imo'), 'imo': ('vessels', 'imo'),
-    'vesselname': ('vessels', 'name'), 'vessel_name': ('vessels', 'name'), 'shipname': ('vessels', 'name'),
-    'vesseltype': ('vessels', 'vessel_type'), 'vessel_type': ('vessels', 'vessel_type'), 'shiptype': ('vessels', 'vessel_type'),
-    'vesselflag': ('vessels', 'flag'), 'vessel_flag': ('vessels', 'flag'),
-    'flagstate': ('vessels', 'flag'), 'flag_state': ('vessels', 'flag'), 'flag': ('vessels', 'flag'),
-    'mmsi': ('vessels', 'mmsi'), 'mmsinumber': ('vessels', 'mmsi'), 'vesselmmsi': ('vessels', 'mmsi'),
-    'lengthoverall': ('vessels', 'length'), 'length_overall': ('vessels', 'length'), 'loa': ('vessels', 'length'), 'vessellength': ('vessels', 'length'),
-    'vesselwidth': ('vessels', 'width'), 'vesselbeam': ('vessels', 'beam'), 'vesseldraft': ('vessels', 'draft'),
-    'width': ('vessels', 'width'), 'beam': ('vessels', 'beam'), 'breadth': ('vessels', 'beam'), 'draft': ('vessels', 'draft'),
-    'deadweight': ('vessels', 'deadweight'), 'dwt': ('vessels', 'deadweight'), 'vesseldeadweight': ('vessels', 'deadweight'),
-    'grosstonnage': ('vessels', 'gross_tonnage'), 'gross_tonnage': ('vessels', 'gross_tonnage'), 'vesselgrosstonnage': ('vessels', 'gross_tonnage'),
-    'ownername': ('vessels', 'owner_name'), 'owner_name': ('vessels', 'owner_name'), 'vesselowner': ('vessels', 'owner_name'),
-    'operatorname': ('vessels', 'operator_name'), 'operator_name': ('vessels', 'operator_name'), 'vesseloperator': ('vessels', 'operator_name'),
-    'callsign': ('vessels', 'callsign'), 'vesselcallsign': ('vessels', 'callsign'),
-    'built': ('vessels', 'built'), 'yearbuilt': ('vessels', 'built'), 'year_built': ('vessels', 'built'), 'vesselbuilt': ('vessels', 'built'),
-    'cargocapacity': ('vessels', 'cargo_capacity'), 'cargo_capacity': ('vessels', 'cargo_capacity'), 'vesselcapacity': ('vessels', 'cargo_capacity'),
-    'currentport': ('vessels', 'currentport'), 'vesselport': ('vessels', 'currentport'),
-    'vesselloadingport': ('vessels', 'loading_port'), 'vesseldischargeport': ('vessels', 'discharge_port'),
-    'cargotype': ('vessels', 'cargo_type'), 'cargo_type': ('vessels', 'cargo_type'), 'vesselcargotype': ('vessels', 'cargo_type'),
-    'oiltype': ('vessels', 'oil_type'), 'oil_type': ('vessels', 'oil_type'), 'vesseloiltype': ('vessels', 'oil_type'),
-    'cargoquantity': ('vessels', 'cargo_quantity'), 'cargo_quantity': ('vessels', 'cargo_quantity'), 'vesselcargoquantity': ('vessels', 'cargo_quantity'),
-    'vesselprice': ('vessels', 'price'), 'vesselquantity': ('vessels', 'quantity'),
-    'vesseldealvalue': ('vessels', 'deal_value'), 'vesselstatus': ('vessels', 'status'),
-    
-    # ============= PORTS =============
-    'portname': ('ports', 'name'), 'port_name': ('ports', 'name'), 'loadingportname': ('ports', 'name'), 'portofloading': ('ports', 'name'),
-    'portofdischarge': ('ports', 'name'), 'departureportname': ('ports', 'name'), 'destinationportname': ('ports', 'name'),
-    'dischargeportname': ('ports', 'name'), 'portloading': ('ports', 'name'), 'portdischarge': ('ports', 'name'),
-    'portcountry': ('ports', 'country'), 'port_country': ('ports', 'country'),
-    'portcity': ('ports', 'city'), 'port_city': ('ports', 'city'),
-    'portaddress': ('ports', 'address'), 'port_address': ('ports', 'address'),
-    'portregion': ('ports', 'region'), 'port_region': ('ports', 'region'),
-    'porttype': ('ports', 'type'), 'port_type': ('ports', 'type'),
-    'portstatus': ('ports', 'status'), 'portemail': ('ports', 'email'), 'portphone': ('ports', 'phone'),
-    
-    # ============= BUYER COMPANIES (buyer_ prefix) =============
-    'buyername': ('buyer_companies', 'name'), 'buyer_name': ('buyer_companies', 'name'),
-    'buyercompanyname': ('buyer_companies', 'name'), 'buyer_company_name': ('buyer_companies', 'name'),
-    'buyercompany': ('buyer_companies', 'name'), 'buyer_company': ('buyer_companies', 'name'),
-    'buyerlegalname': ('buyer_companies', 'legal_name'), 'buyer_legal_name': ('buyer_companies', 'legal_name'),
-    'buyercountry': ('buyer_companies', 'country'), 'buyer_country': ('buyer_companies', 'country'),
-    'buyerregistrationcountry': ('buyer_companies', 'country'), 'buyer_registration_country': ('buyer_companies', 'country'),
-    'buyercity': ('buyer_companies', 'city'), 'buyer_city': ('buyer_companies', 'city'),
-    'buyeraddress': ('buyer_companies', 'address'), 'buyer_address': ('buyer_companies', 'address'),
-    'buyerlegaladdress': ('buyer_companies', 'address'), 'buyer_legal_address': ('buyer_companies', 'address'),
-    'buyeremail': ('buyer_companies', 'email'), 'buyer_email': ('buyer_companies', 'email'),
-    'buyerphone': ('buyer_companies', 'phone'), 'buyer_phone': ('buyer_companies', 'phone'),
-    'buyerwebsite': ('buyer_companies', 'website'), 'buyer_website': ('buyer_companies', 'website'),
-    'buyercontactperson': ('buyer_companies', 'contact_person'), 'buyer_contact_person': ('buyer_companies', 'contact_person'),
-    'buyercontactemail': ('buyer_companies', 'contact_email'), 'buyer_contact_email': ('buyer_companies', 'contact_email'),
-    'buyercontactphone': ('buyer_companies', 'contact_phone'), 'buyer_contact_phone': ('buyer_companies', 'contact_phone'),
-    'buyerregistrationnumber': ('buyer_companies', 'registration_number'), 'buyer_registration_number': ('buyer_companies', 'registration_number'),
-    'buyertaxid': ('buyer_companies', 'tax_id'), 'buyer_tax_id': ('buyer_companies', 'tax_id'),
-    'buyertype': ('buyer_companies', 'company_type'), 'buyer_company_type': ('buyer_companies', 'company_type'),
-    
-    # ============= SELLER COMPANIES (seller_ prefix) =============
-    'sellername': ('seller_companies', 'name'), 'seller_name': ('seller_companies', 'name'),
-    'sellercompanyname': ('seller_companies', 'name'), 'seller_company_name': ('seller_companies', 'name'),
-    'sellercompany': ('seller_companies', 'name'), 'seller_company': ('seller_companies', 'name'),
-    'sellerlegalname': ('seller_companies', 'legal_name'), 'seller_legal_name': ('seller_companies', 'legal_name'),
-    'sellercountry': ('seller_companies', 'country'), 'seller_country': ('seller_companies', 'country'),
-    'sellerregistrationcountry': ('seller_companies', 'country'), 'seller_registration_country': ('seller_companies', 'country'),
-    'sellercity': ('seller_companies', 'city'), 'seller_city': ('seller_companies', 'city'),
-    'selleraddress': ('seller_companies', 'address'), 'seller_address': ('seller_companies', 'address'),
-    'sellerlegaladdress': ('seller_companies', 'address'), 'seller_legal_address': ('seller_companies', 'address'),
-    'selleremail': ('seller_companies', 'email'), 'seller_email': ('seller_companies', 'email'),
-    'sellerphone': ('seller_companies', 'phone'), 'seller_phone': ('seller_companies', 'phone'),
-    'sellerwebsite': ('seller_companies', 'website'), 'seller_website': ('seller_companies', 'website'),
-    'sellercontactperson': ('seller_companies', 'contact_person'), 'seller_contact_person': ('seller_companies', 'contact_person'),
-    'sellercontactemail': ('seller_companies', 'contact_email'), 'seller_contact_email': ('seller_companies', 'contact_email'),
-    'sellercontactphone': ('seller_companies', 'contact_phone'), 'seller_contact_phone': ('seller_companies', 'contact_phone'),
-    'sellerregistrationnumber': ('seller_companies', 'registration_number'), 'seller_registration_number': ('seller_companies', 'registration_number'),
-    'sellertaxid': ('seller_companies', 'tax_id'), 'seller_tax_id': ('seller_companies', 'tax_id'),
-    'sellertype': ('seller_companies', 'company_type'), 'seller_company_type': ('seller_companies', 'company_type'),
-    
-    # ============= GENERIC COMPANIES (company_ prefix) =============
-    'companyname': ('companies', 'name'), 'company_name': ('companies', 'name'),
-    'companycountry': ('companies', 'country'), 'company_country': ('companies', 'country'),
-    'companycity': ('companies', 'city'), 'company_city': ('companies', 'city'),
-    'companyaddress': ('companies', 'address'), 'company_address': ('companies', 'address'),
-    'companyemail': ('companies', 'email'), 'company_email': ('companies', 'email'),
-    'companyphone': ('companies', 'phone'), 'company_phone': ('companies', 'phone'),
-    'companytype': ('companies', 'company_type'), 'company_type': ('companies', 'company_type'),
-    
-    # ============= REFINERIES (refinery_ prefix) =============
-    'refineryname': ('refineries', 'name'), 'refinery_name': ('refineries', 'name'),
-    'refinerycountry': ('refineries', 'country'), 'refinery_country': ('refineries', 'country'),
-    'refinerycity': ('refineries', 'city'), 'refinery_city': ('refineries', 'city'),
-    'refineryaddress': ('refineries', 'address'), 'refinery_address': ('refineries', 'address'),
-    'refinerycapacity': ('refineries', 'capacity'), 'refinery_capacity': ('refineries', 'capacity'),
-    'refineryprocessingcapacity': ('refineries', 'processing_capacity'), 'refinery_processing_capacity': ('refineries', 'processing_capacity'),
-    'refinerystatus': ('refineries', 'status'), 'refinery_status': ('refineries', 'status'),
-    'refineryoperator': ('refineries', 'operator'), 'refinery_operator': ('refineries', 'operator'),
-    'refineryowner': ('refineries', 'owner'), 'refinery_owner': ('refineries', 'owner'),
-    
-    # ============= OIL PRODUCTS (product_ prefix) =============
-    'productname': ('oil_products', 'name'), 'product_name': ('oil_products', 'name'),
-    'producttype': ('oil_products', 'product_type'), 'product_type': ('oil_products', 'product_type'),
-    'productcategory': ('oil_products', 'category'), 'product_category': ('oil_products', 'category'),
-    'productspecification': ('oil_products', 'specification'), 'product_specification': ('oil_products', 'specification'),
-    'productgrade': ('oil_products', 'grade'), 'product_grade': ('oil_products', 'grade'),
-    'productquality': ('oil_products', 'quality'), 'product_quality': ('oil_products', 'quality'),
-    'productprice': ('oil_products', 'price'), 'product_price': ('oil_products', 'price'),
-    'productunit': ('oil_products', 'unit'), 'product_unit': ('oil_products', 'unit'),
-    'productquantity': ('oil_products', 'quantity'), 'product_quantity': ('oil_products', 'quantity'),
-    'apigravity': ('oil_products', 'api_gravity'), 'api_gravity': ('oil_products', 'api_gravity'),
-    'sulfurcontent': ('oil_products', 'sulfur_content'), 'sulfur_content': ('oil_products', 'sulfur_content'),
-    'productviscosity': ('oil_products', 'viscosity'), 'product_viscosity': ('oil_products', 'viscosity'),
-    'productdensity': ('oil_products', 'density'), 'product_density': ('oil_products', 'density'),
-    
-    # ============= BROKER PROFILES (broker_ prefix) =============
-    'brokername': ('broker_profiles', 'company_name'), 'broker_name': ('broker_profiles', 'company_name'),
-    'brokercompanyname': ('broker_profiles', 'company_name'), 'broker_company_name': ('broker_profiles', 'company_name'),
-    'brokercontactperson': ('broker_profiles', 'contact_person'), 'broker_contact_person': ('broker_profiles', 'contact_person'),
-    'brokeremail': ('broker_profiles', 'email'), 'broker_email': ('broker_profiles', 'email'),
-    'brokerphone': ('broker_profiles', 'phone'), 'broker_phone': ('broker_profiles', 'phone'),
-    'brokeraddress': ('broker_profiles', 'address'), 'broker_address': ('broker_profiles', 'address'),
-    'brokercountry': ('broker_profiles', 'country'), 'broker_country': ('broker_profiles', 'country'),
-    'brokercity': ('broker_profiles', 'city'), 'broker_city': ('broker_profiles', 'city'),
-    'brokerstatus': ('broker_profiles', 'status'), 'broker_status': ('broker_profiles', 'status'),
-    
-    # ============= BUYER BANK ACCOUNTS (buyer_bank_ prefix) =============
-    'buyerbankname': ('buyer_company_bank_accounts', 'bank_name'), 'buyer_bank_name': ('buyer_company_bank_accounts', 'bank_name'),
-    'buyerbankaccountname': ('buyer_company_bank_accounts', 'account_name'), 'buyer_bank_account_name': ('buyer_company_bank_accounts', 'account_name'),
-    'buyerbankaccountnumber': ('buyer_company_bank_accounts', 'account_number'), 'buyer_bank_account_number': ('buyer_company_bank_accounts', 'account_number'),
-    'buyerbankswift': ('buyer_company_bank_accounts', 'swift_code'), 'buyer_bank_swift': ('buyer_company_bank_accounts', 'swift_code'),
-    'buyerbankswiftcode': ('buyer_company_bank_accounts', 'swift_code'), 'buyer_bank_swift_code': ('buyer_company_bank_accounts', 'swift_code'),
-    'buyerbankiban': ('buyer_company_bank_accounts', 'iban'), 'buyer_bank_iban': ('buyer_company_bank_accounts', 'iban'),
-    'buyerbankaddress': ('buyer_company_bank_accounts', 'bank_address'), 'buyer_bank_address': ('buyer_company_bank_accounts', 'bank_address'),
-    'buyerbankcountry': ('buyer_company_bank_accounts', 'bank_country'), 'buyer_bank_country': ('buyer_company_bank_accounts', 'bank_country'),
-    'buyerbankcity': ('buyer_company_bank_accounts', 'bank_city'), 'buyer_bank_city': ('buyer_company_bank_accounts', 'bank_city'),
-    'buyerbankcurrency': ('buyer_company_bank_accounts', 'currency'), 'buyer_bank_currency': ('buyer_company_bank_accounts', 'currency'),
-    
-    # ============= SELLER BANK ACCOUNTS (seller_bank_ prefix) =============
-    'sellerbankname': ('seller_company_bank_accounts', 'bank_name'), 'seller_bank_name': ('seller_company_bank_accounts', 'bank_name'),
-    'sellerbankaccountname': ('seller_company_bank_accounts', 'account_name'), 'seller_bank_account_name': ('seller_company_bank_accounts', 'account_name'),
-    'sellerbankaccountnumber': ('seller_company_bank_accounts', 'account_number'), 'seller_bank_account_number': ('seller_company_bank_accounts', 'account_number'),
-    'sellerbankswift': ('seller_company_bank_accounts', 'swift_code'), 'seller_bank_swift': ('seller_company_bank_accounts', 'swift_code'),
-    'sellerbankswiftcode': ('seller_company_bank_accounts', 'swift_code'), 'seller_bank_swift_code': ('seller_company_bank_accounts', 'swift_code'),
-    'sellerbankiban': ('seller_company_bank_accounts', 'iban'), 'seller_bank_iban': ('seller_company_bank_accounts', 'iban'),
-    'sellerbankaddress': ('seller_company_bank_accounts', 'bank_address'), 'seller_bank_address': ('seller_company_bank_accounts', 'bank_address'),
-    'sellerbankcountry': ('seller_company_bank_accounts', 'bank_country'), 'seller_bank_country': ('seller_company_bank_accounts', 'bank_country'),
-    'sellerbankcity': ('seller_company_bank_accounts', 'bank_city'), 'seller_bank_city': ('seller_company_bank_accounts', 'bank_city'),
-    'sellerbankcurrency': ('seller_company_bank_accounts', 'currency'), 'seller_bank_currency': ('seller_company_bank_accounts', 'currency'),
-    
-    # ============= DEALS (deal_ prefix) =============
-    'dealstatus': ('deals', 'status'), 'deal_status': ('deals', 'status'),
-    'dealvalue': ('deals', 'deal_value'), 'deal_value': ('deals', 'deal_value'),
-    'dealprice': ('deals', 'price'), 'deal_price': ('deals', 'price'),
-    'dealquantity': ('deals', 'quantity'), 'deal_quantity': ('deals', 'quantity'),
-    'dealcurrency': ('deals', 'currency'), 'deal_currency': ('deals', 'currency'),
-    'dealpaymentterms': ('deals', 'payment_terms'), 'deal_payment_terms': ('deals', 'payment_terms'),
-    'dealdeliveryterms': ('deals', 'delivery_terms'), 'deal_delivery_terms': ('deals', 'delivery_terms'),
-    'dealincoterms': ('deals', 'incoterms'), 'deal_incoterms': ('deals', 'incoterms'),
-    'dealdeparturedate': ('deals', 'departure_date'), 'deal_departure_date': ('deals', 'departure_date'),
-    'dealarrivaldate': ('deals', 'arrival_date'), 'deal_arrival_date': ('deals', 'arrival_date'),
-    'dealeta': ('deals', 'eta'), 'deal_eta': ('deals', 'eta'),
-    'dealnotes': ('deals', 'notes'), 'deal_notes': ('deals', 'notes'),
+    os.popen("fc-cache -f ~/.fonts/ 2>/dev/null")
+    ttf_count = len([f for f in os.listdir(FONTS_DIR) if f.endswith(".ttf")])
+    print(f"[FONTS] Installed {ttf_count} font files from {FONTS_DIR}/ to ~/.fonts/")
+    print("[FONTS] Font aliases configured: Arial->Liberation Sans, Courier New->Liberation Mono, OCR-B 10 BT->OCR-B-10-BT")
+
+PLACEHOLDER_PATTERNS = [
+    r'\{\{([^}]+)\}\}',
+    r'\{([^}]+)\}',
+    r'\[\[([^\]]+)\]\]',
+    r'\[([^\]]+)\]',
+    r'%([^%]+)%',
+    r'<<([^>]+)>>',
+    r'##([^#]+)##',
+]
+
+DATABASE_TABLES = [
+    "vessels", "ports", "refineries", "buyer_companies", "seller_companies",
+    "oil_products", "broker_profiles", "companies", "buyer_company_bank_accounts",
+    "seller_company_bank_accounts"
+]
+
+PREFIX_TO_TABLE = {
+    "vessel_": "vessels",
+    "port_": "ports",
+    "departure_port_": "ports",
+    "destination_port_": "ports",
+    "buyer_": "buyer_companies",
+    "seller_": "seller_companies",
+    "refinery_": "refineries",
+    "product_": "oil_products",
+    "buyer_bank_": "buyer_company_bank_accounts",
+    "seller_bank_": "seller_company_bank_accounts",
+    "company_": "companies",
 }
 
 
-def _ai_suggest_placeholder_mapping(
-    placeholders: List[str],
-    schema: Dict[str, List[str]],
-    csv_schema: Optional[Dict[str, List[str]]] = None,
-) -> Dict[str, Tuple[str, str]]:
-    """
-    Suggest (table, column) per placeholder using AI or rule-based fallback.
-    Returns {placeholder: (table, column)} for database, or {placeholder: ('csv:csvId', 'field')} for CSV.
-    Skips placeholders with no good match.
-    """
-    result: Dict[str, Tuple[str, str]] = {}
-    csv_schema = csv_schema or {}
-
-    def normalize_key(s: str) -> str:
-        return re.sub(r'[^a-z0-9]', '', (s or '').lower())
-
-    # Rule-based fallback: map to (table, field) using prefix-based matching + _UPLOAD_FIELD_MAPPINGS
-    def rule_based() -> None:
-        # Import prefix matching from id_based_fetcher
-        try:
-            from id_based_fetcher import identify_prefix, normalize_placeholder, PREFIX_TO_TABLE
-        except ImportError:
-            identify_prefix = None
-            PREFIX_TO_TABLE = {}
-        
-        for ph in placeholders:
-            key = normalize_key(ph)
-            if not key:
-                continue
-            
-            # First try prefix-based matching (more accurate for buyer_, seller_, vessel_, etc.)
-            if identify_prefix:
-                prefix = identify_prefix(ph)
-                if prefix and prefix in PREFIX_TO_TABLE:
-                    table_name = PREFIX_TO_TABLE[prefix]
-                    if table_name in schema:
-                        # Extract field name from placeholder (remove prefix)
-                        normalized_ph = normalize_placeholder(ph)
-                        normalized_prefix = normalize_placeholder(prefix)
-                        field_name = normalized_ph[len(normalized_prefix):] if normalized_ph.startswith(normalized_prefix) else normalized_ph
-                        
-                        # Try to find matching column in schema
-                        # Match by exact name, or by partial match (e.g., "name" matches "name", "company_name", etc.)
-                        matching_col = None
-                        for col in schema[table_name]:
-                            col_normalized = normalize_key(col)
-                            if field_name == col_normalized or col_normalized.endswith(field_name) or field_name in col_normalized:
-                                matching_col = col
-                                break
-                        
-                        if matching_col:
-                            result[ph] = (table_name, matching_col)
-                            continue
-            
-            # Fallback to _UPLOAD_FIELD_MAPPINGS
-            mapping = _UPLOAD_FIELD_MAPPINGS.get(key)
-            if mapping:
-                t, col = mapping
-                if t in schema and col in (schema.get(t) or []):
-                    result[ph] = (t, col)
-
-    if OPENAI_ENABLED and openai_client and schema:
-        # Detect template type from placeholders for better context
-        template_hints = []
-        placeholders_lower = [p.lower() for p in placeholders]
-        if any('atsc' in p or 'mandate' in p for p in placeholders_lower):
-            template_hints.append("This is an ATSC (Authority to Sell Cargo) document")
-        if any('icpo' in p for p in placeholders_lower):
-            template_hints.append("This is an ICPO (Irrevocable Corporate Purchase Order) document")
-        if any('invoice' in p or 'commercial' in p for p in placeholders_lower):
-            template_hints.append("This is a Commercial Invoice document")
-        
-        context = " ".join(template_hints) if template_hints else "Maritime/oil trading document"
-        
-        # Include ALL columns from ALL tables (no truncation - we need complete schema for accurate mapping)
-        flat: List[str] = []
-        for t, cols in schema.items():
-            for c in cols:
-                flat.append(f"{t}.{c}")
-        schema_str = ", ".join(flat)  # No limit - send all columns for accurate mapping
-        logger.info(f"Sending {len(flat)} table.column combinations to AI for mapping")
-        
-        # Add CSV columns if available
-        csv_info = ""
-        if csv_schema:
-            csv_cols = []
-            for csv_id, columns in csv_schema.items():
-                csv_cols.extend([f"csv:{csv_id}.{col}" for col in columns[:10]])  # Limit to first 10 columns per CSV
-            if csv_cols:
-                csv_info = f"\n\nAVAILABLE CSV COLUMNS:\n{', '.join(csv_cols[:50])}"
-        
-        ph_list = ", ".join(placeholders[:150])
-        prompt = f"""You are a maritime document expert. Map placeholders to database tables or CSV files.
-
-CONTEXT: {context}
-
-AVAILABLE TABLES.COLUMNS:
-{schema_str}{csv_info}
-
-PLACEHOLDERS TO MAP:
-{ph_list}
-
-STRICT RULES (PRIORITIZE DATABASE - 90%+ should be database):
-1. **Database FIRST (90%+)**:
-   - vessel_* → vessels table (ship/vessel names, IMO, flag, owner, operator, dimensions, cargo)
-   - port_*, departure_port_*, destination_port_* → ports table
-   - buyer_* → buyer_companies table
-   - seller_* → seller_companies table
-   - company_* → companies table
-   - refinery_* → refineries table
-   - product_*, oil_* → oil_products table
-   - broker_* → broker_profiles table
-   - buyer_bank_* → buyer_company_bank_accounts table
-   - seller_bank_* → seller_company_bank_accounts table
-   - deal_* → deals table
-2. **CSV SECOND (5-10%)**: Only use CSV when database has NO matching column
-3. **Random LAST (<5%)**: Only when no database or CSV match
-4. Country/address/title fields MUST map to text columns, NEVER to ID columns
-5. For each placeholder, return ONE best match or "NONE"
-
-OUTPUT FORMAT:
-Return a JSON object: {{ "placeholder1": "table.column", "placeholder2": "csv:file_id.column_name", "placeholder3": "NONE", ... }}
-
-EXAMPLES:
-- vessel_name -> vessels.name
-- registration_country -> companies.country
-- buyer_email -> companies.email (or csv:buyers.email if CSV has better data)
-- port_loading -> ports.name
-- unknown_field -> NONE
-
-Use exact placeholder strings as keys. No other text."""
-
-        try:
-            r = openai_client.chat.completions.create(
-                model='gpt-4o-mini',
-                messages=[{'role': 'user', 'content': prompt}],
-                max_tokens=2000,
-                temperature=0.1,
-            )
-            raw = (r.choices[0].message.content or '').strip()
-            json_match = re.search(r'\{[\s\S]*\}', raw)
-            if json_match:
-                try:
-                    data = json.loads(json_match.group())
-                    for ph, val in data.items():
-                        if ph not in placeholders or not isinstance(val, str):
-                            continue
-                        val = val.strip()
-                        if val.upper() == 'NONE' or not val:
-                            continue
-                        if '.' in val:
-                            t, col = val.split('.', 1)
-                            t, col = t.strip().lower(), col.strip().lower()
-                            # Check if it's a CSV mapping (csv:id.field)
-                            if t.startswith('csv:'):
-                                csv_id = t.replace('csv:', '')
-                                if csv_schema and csv_id in csv_schema and col in csv_schema[csv_id]:
-                                    result[ph] = (t, col)  # Store as ('csv:id', 'field')
-                            # Otherwise database mapping
-                            elif t in schema and col in (schema.get(t) or []):
-                                # Validate mapping by checking sample value
-                                test_value = _get_sample_value_from_column(t, col)
-                                if test_value and _is_value_wrong_for_placeholder(ph, test_value):
-                                    logger.info(f"Rejected AI mapping {ph} -> {t}.{col} (validation failed with sample: {test_value[:50]})")
-                                else:
-                                    result[ph] = (t, col)
-                except json.JSONDecodeError:
-                    pass
-            if not result:
-                rule_based()
-        except Exception as e:
-            logger.warning(f"AI mapping suggestion failed, using rule-based fallback: {e}")
-            rule_based()
-    else:
-        rule_based()
-
-    return result
-
-
-def _ai_analyze_and_map_placeholders(
-    placeholders: List[str],
-    db_schema: Dict[str, List[str]],
-    csv_schema: Dict[str, List[str]],
-    doc_context: Optional[Dict[str, str]] = None,
-) -> Dict[str, Dict]:
-    """
-    AI analyzes placeholders and chooses source (database|csv|random) plus mapping per placeholder.
-    Returns {placeholder: {source, databaseTable, databaseField, csvId, csvField, csvRow, randomOption}}.
-    Uses rule-based database-only fallback on OpenAI error or invalid output.
-    """
-    doc_context = doc_context or {}
-
-    def rule_based_fallback() -> Dict[str, Dict]:
-        suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema, csv_schema)
-        out: Dict[str, Dict] = {}
-        for ph in placeholders:
-            if ph in suggested:
-                t, col = suggested[ph]
-                # Check if it's a CSV mapping (starts with 'csv:')
-                if t.startswith('csv:'):
-                    csv_id = t.replace('csv:', '')
-                    cfg = {
-                        'source': 'csv',
-                        'databaseTable': '',
-                        'databaseField': '',
-                        'csvId': csv_id,
-                        'csvField': col,
-                        'csvRow': 0,
-                        'randomOption': 'auto',
-                        'customValue': '',
-                    }
-                else:
-                    cfg = {
-                        'source': 'database',
-                        'databaseTable': t,
-                        'databaseField': col,
-                        'csvId': '',
-                        'csvField': '',
-                        'csvRow': 0,
-                        'randomOption': 'auto',
-                        'customValue': '',
-                    }
-            else:
-                # No mapping found - use random
-                cfg = {
-                    'source': 'random',
-                    'databaseTable': '',
-                    'databaseField': '',
-                    'csvId': '',
-                    'csvField': '',
-                    'csvRow': 0,
-                    'randomOption': 'auto',
-                    'customValue': '',
-                }
-            out[ph] = cfg
-        return out
-
-    if not (OPENAI_ENABLED and openai_client):
-        return rule_based_fallback()
-
-    db_flat: List[str] = []
-    for t, cols in (db_schema or {}).items():
-        for c in cols:
-            db_flat.append(f"{t}.{c}")
-    csv_flat: List[str] = []
-    for cid, fields in (csv_schema or {}).items():
-        for f in fields:
-            csv_flat.append(f"csv:{cid}.{f}")
-
-    db_str = ", ".join(db_flat[:250])
-    csv_str = ", ".join(csv_flat[:150]) if csv_flat else "(none)"
-    ph_list = ", ".join(placeholders[:120])
-
-    prompt = f"""You are a maritime document expert. Analyse each placeholder and choose the best source.
-
-**Sources:**
-- **database**: vessel/ship/port/refinery/company data. Use table.column from the list.
-- **csv**: data from uploaded CSV files (buyers, sellers, contacts, etc.). Use csvId.field from the list.
-- **random**: no good match; we will generate realistic AI data at runtime.
-
-**Database options (table.column):** {db_str}
-
-**CSV options (csvId.field):** {csv_str}
-
-**Placeholders to map:** {ph_list}
-
-**Lookup order (follow strictly - PRIORITIZE DATABASE 90%+):**
-1. **Database FIRST (90%+ should be database)**: 
-   - Vessel/ship data (IMO, name, flag, owner, dimensions, cargo, port) -> vessels table
-   - Port names, locations -> ports table
-   - Buyer companies (buyer_*, buyer_company_*) -> buyer_companies table
-   - Seller companies (seller_*, seller_company_*) -> seller_companies table
-   - Generic companies (company_*) -> companies table
-   - Refineries (refinery_*) -> refineries table
-   - Products (product_*, oil_*) -> oil_products table
-   - Broker data (broker_*) -> broker_profiles table
-   - Bank accounts (buyer_bank_*, seller_bank_*) -> buyer_company_bank_accounts / seller_company_bank_accounts
-   - Deal data (deal_*) -> deals table
-2. **CSV SECOND (only 5-10%)**: Use CSV ONLY when database has NO matching column AND CSV has exact match (e.g., very specific buyer/seller contact details not in database)
-3. **Random LAST (<5%)**: ONLY when no database or CSV column fits at all. We will generate realistic AI data at runtime.
-
-**Rules (follow strictly):**
-1. **PRIORITY: Database > CSV > Random** - 90%+ should map to database tables
-2. **Prefix-based matching**: 
-   - buyer_* → buyer_companies table
-   - seller_* → seller_companies table  
-   - vessel_* → vessels table
-   - port_*, departure_port_*, destination_port_* → ports table
-   - refinery_* → refineries table
-   - product_* → oil_products table
-   - broker_* → broker_profiles table
-   - buyer_bank_* → buyer_company_bank_accounts table
-   - seller_bank_* → seller_company_bank_accounts table
-   - deal_* → deals table
-3. **Buyer/seller data**: Use **buyer_companies** or **seller_companies** tables FIRST, not CSV. Only use CSV if database table has no matching column.
-4. **Vessel/ship data**: Always use **database** (vessels, ports tables)
-5. **Use CSV** ONLY when database has no matching column AND CSV has exact match
-6. **Use random** ONLY when no database or CSV fit at all (<5% of placeholders)
-
-Return a JSON object only. Each key is an exact placeholder string. Each value is one of:
-{{"source": "database", "table": "vessels", "column": "imo"}}
-{{"source": "csv", "csvId": "<id>", "csvField": "<field>"}}
-{{"source": "random"}}
-
-Use exact placeholder strings as keys. Only valid table.column and csvId.field from the lists above. No other text."""
-
-    result: Dict[str, Dict] = {}
-    try:
-        r = openai_client.chat.completions.create(
-            model='gpt-4o-mini',
-            messages=[{'role': 'user', 'content': prompt}],
-            max_tokens=4000,
-            temperature=0.1,
-        )
-        raw = (r.choices[0].message.content or '').strip()
-        json_match = re.search(r'\{[\s\S]*\}', raw)
-        if not json_match:
-            return rule_based_fallback()
-        try:
-            data = json.loads(json_match.group())
-        except json.JSONDecodeError as je:
-            logger.warning(f"AI analyze-and-map invalid JSON, using rule-based fallback: {je}")
-            return rule_based_fallback()
-    except Exception as e:
-        logger.warning(f"AI analyze-and-map failed, using rule-based fallback: {e}")
-        return rule_based_fallback()
-
-    def _find_ai_value(ph: str, d: dict) -> Optional[dict]:
-        """Get AI value for placeholder, with fuzzy key match."""
-        if not isinstance(d, dict):
-            return None
-        val = d.get(ph)
-        if isinstance(val, dict):
-            return val
-        # Fuzzy match: normalize placeholder for key lookup
-        ph_norm = re.sub(r'[^a-z0-9]', '', (ph or '').lower())
-        for k, v in d.items():
-            if isinstance(v, dict) and re.sub(r'[^a-z0-9]', '', (k or '').lower()) == ph_norm:
-                return v
-        return None
-
-    # Brokers -> companies column mapping (brokers excluded from schema)
-    _BROKERS_TO_COMPANIES = {'company_name': 'name', 'contact_person': 'owner_name', 'email': 'email', 'phone': 'phone', 'address': 'address'}
-
-    for ph in placeholders:
-        cfg: Dict = {
-            'source': 'database',
-            'databaseTable': '',
-            'databaseField': '',
-            'csvId': '',
-            'csvField': '',
-            'csvRow': 0,
-            'randomOption': 'auto',
-        }
-        val = _find_ai_value(ph, data)
-        if not isinstance(val, dict):
-            result[ph] = cfg
-            continue
-        src = (val.get('source') or '').strip().lower()
-        if src == 'random':
-            cfg['source'] = 'random'
-            cfg['randomOption'] = 'ai'
-            result[ph] = cfg
-            continue
-        if src == 'csv':
-            # Before accepting CSV, check if database has a match (prioritize database)
-            # Try prefix-based matching first
-            db_match_found = False
-            try:
-                from id_based_fetcher import identify_prefix, normalize_placeholder, PREFIX_TO_TABLE
-                prefix = identify_prefix(ph) if identify_prefix else None
-                if prefix and prefix in PREFIX_TO_TABLE:
-                    table_name = PREFIX_TO_TABLE[prefix]
-                    if table_name in db_schema:
-                        # Try to find matching column
-                        normalized_ph = normalize_placeholder(ph)
-                        normalized_prefix = normalize_placeholder(prefix)
-                        field_name = normalized_ph[len(normalized_prefix):] if normalized_ph.startswith(normalized_prefix) else normalized_ph
-                        
-                        # Match column
-                        for col in db_schema[table_name]:
-                            col_normalized = re.sub(r'[^a-z0-9]', '', col.lower())
-                            if field_name == col_normalized or col_normalized.endswith(field_name) or field_name in col_normalized:
-                                # Database match found - use database instead of CSV
-                                cfg['source'] = 'database'
-                                cfg['databaseTable'] = table_name
-                                cfg['databaseField'] = col
-                                cfg['csvId'] = ''
-                                cfg['csvField'] = ''
-                                result[ph] = cfg
-                                db_match_found = True
-                                break
-            except ImportError:
-                pass
-            
-            # If database match found, skip CSV
-            if db_match_found:
-                continue
-            
-            # No database match - proceed with CSV if valid
-            cid = (val.get('csvId') or '').strip()
-            fld = (val.get('csvField') or '').strip()
-            if cid in csv_schema and fld in (csv_schema.get(cid) or []):
-                cfg['source'] = 'csv'
-                cfg['csvId'] = cid
-                cfg['csvField'] = fld
-            else:
-                cfg['source'] = 'random'
-                cfg['randomOption'] = 'ai'
-            result[ph] = cfg
-            continue
-        if src == 'database':
-            t = (val.get('table') or '').strip().lower()
-            col = (val.get('column') or '').strip().lower()
-            # Remap brokers to companies (brokers table excluded)
-            if t == 'brokers' and col:
-                col = _BROKERS_TO_COMPANIES.get(col, col)
-                t = 'companies'
-            if t in db_schema and col in (db_schema.get(t) or []):
-                cfg['source'] = 'database'
-                cfg['databaseTable'] = t
-                cfg['databaseField'] = col
-            else:
-                cfg['source'] = 'random'
-                cfg['randomOption'] = 'ai'
-            result[ph] = cfg
-            continue
-        result[ph] = cfg
-
-    # Rescue: for placeholders that ended up as random or CSV, try rule-based database mapping FIRST
-    # Prioritize database over CSV - aim for 90%+ database mappings
-    suggested = _ai_suggest_placeholder_mapping(placeholders, db_schema, csv_schema)
-    rescued_to_db = 0
-    rescued_from_csv = 0
-    
-    for ph in placeholders:
-        current_cfg = result.get(ph, {})
-        current_source = current_cfg.get('source', 'random')
-        
-        # If we have a database mapping suggestion, use it (even if AI chose CSV or random)
-        if ph in suggested:
-            t, col = suggested[ph]
-            # Only use database mappings (skip CSV suggestions if we want 90%+ database)
-            if not t.startswith('csv:'):
-                if t in db_schema and col in (db_schema.get(t) or []):
-                    if current_source == 'random':
-                        rescued_to_db += 1
-                    elif current_source == 'csv':
-                        rescued_from_csv += 1
-                    result[ph] = {
-                        'source': 'database',
-                        'databaseTable': t,
-                        'databaseField': col,
-                        'csvId': '',
-                        'csvField': '',
-                        'csvRow': 0,
-                        'randomOption': 'auto',
-                        'customValue': '',
-                    }
-    
-    if rescued_to_db or rescued_from_csv:
-        logger.info(f"AI mapping rescue: {rescued_to_db} placeholders remapped from random to database, {rescued_from_csv} from CSV to database via rule-based")
-
-    return result
-
-
-# ============================================================================
-# STEP 3: PLACEHOLDER EXTRACTION (from DOCX files)
-# ============================================================================
-
-
-def find_placeholders(text: str) -> List[str]:
-    """
-    Extract placeholders from text using multiple formats.
-    Only extracts COMPLETE placeholders (with both opening and closing brackets).
-    """
-    patterns = [
-        (r'\{\{([^}]+)\}\}', '{{}}'),      # {{placeholder}}
-        (r'\{([^}]+)\}', '{}'),            # {placeholder} - MOST COMMON
-        (r'\[\[([^\]]+)\]\]', '[[]]'),     # [[placeholder]]
-        (r'\[([^\]]+)\]', '[]'),           # [placeholder]
-        (r'%([^%]+)%', '%%'),              # %placeholder%
-        (r'<([^>]+)>', '<>'),              # <placeholder>
-        (r'__([^_]+)__', '__'),            # __placeholder__
-        (r'##([^#]+)##', '##'),            # ##placeholder##
-    ]
-
-    placeholders = set()
-    for pattern, wrapper_type in patterns:
-        matches = re.findall(pattern, text)
-        for match in matches:
-            # Clean up match - replace newlines with spaces, remove extra whitespace
-            cleaned = match.strip().replace('\n', ' ').replace('\r', ' ')
-            cleaned = ' '.join(cleaned.split())  # Remove extra spaces
-            
-            # Only add if placeholder is not empty and doesn't contain unclosed brackets
-            if cleaned and not any(char in cleaned for char in ['{', '}', '[', ']', '<', '>']):
-                placeholders.add(cleaned)
-                logger.debug(f"Found placeholder: '{cleaned}' (format: {wrapper_type})")
-
-    return sorted(list(placeholders))
-
-
-def extract_placeholders_from_docx(file_path: str) -> List[str]:
-    """Extract all placeholders from a DOCX file"""
-    try:
-        doc = Document(file_path)
-        all_placeholders = set()
-
-        # Extract from paragraphs
-        for paragraph in doc.paragraphs:
-            placeholders = find_placeholders(paragraph.text)
-            all_placeholders.update(placeholders)
-
-        # Extract from tables
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for paragraph in cell.paragraphs:
-                        placeholders = find_placeholders(paragraph.text)
-                        all_placeholders.update(placeholders)
-
-        return sorted(list(all_placeholders))
-    except Exception as e:
-        logger.error(f"Error extracting placeholders from {file_path}: {e}")
-        return []
-
-
-def normalise_placeholder_key(value: Optional[str]) -> str:
-    """
-    Normalise placeholder identifiers for matching (case and punctuation insensitive).
-    Handles spaces, underscores, hyphens, and special characters.
-    """
-    if not value:
-        return ""
-    
-    # Strip and lowercase
-    cleaned = value.strip().lower()
-    
-    # Replace all whitespace (spaces, tabs, newlines) with underscores
-    cleaned = re.sub(r'\s+', '_', cleaned)
-    
-    # Replace hyphens and other common separators with underscores
-    cleaned = re.sub(r'[-–—]+', '_', cleaned)
-    
-    # Remove all non-alphanumeric characters except underscores
-    cleaned = re.sub(r'[^a-z0-9_]', '', cleaned)
-    
-    # Collapse multiple underscores into one
-    cleaned = re.sub(r'_+', '_', cleaned)
-    
-    # Remove leading/trailing underscores
-    cleaned = cleaned.strip('_')
-    
-    return cleaned
-
-
-def resolve_placeholder_setting(
-    template_settings: Dict[str, Dict], placeholder: str) -> Tuple[Optional[str], Optional[Dict]]:
-    """
-    Resolve a placeholder setting using multiple normalisation strategies.
-    Returns the matched key and the setting dict.
-    
-    Matching strategies (in order of priority):
-    1. Direct exact match
-    2. Case-insensitive match
-    3. Space/underscore/hyphen variant matches
-    4. Normalized key comparison
-    5. Fuzzy matching (contains/contained in)
-    """
-    if not template_settings or not placeholder:
-        return None, None
-
-    # Strategy 1: Direct exact match
-    if placeholder in template_settings:
-        return placeholder, template_settings[placeholder]
-
-    # Strategy 2: Case-insensitive direct match
-    placeholder_lower = placeholder.lower()
-    for key in template_settings.keys():
-        if key.lower() == placeholder_lower:
-            return key, template_settings[key]
-
-    # Strategy 3: Common variants (spaces, underscores, hyphens)
-    variants = [
-        placeholder.replace(' ', '_'),
-        placeholder.replace('_', ' '),
-        placeholder.replace('-', '_'),
-        placeholder.replace('_', '-'),
-        placeholder.replace(' ', '-'),
-        placeholder.replace('-', ' '),
-        placeholder.replace(' ', '_').lower(),
-        placeholder.replace('_', ' ').lower(),
-        placeholder.replace('-', '_').lower(),
-        placeholder.replace('_', '-').lower(),
-    ]
-    
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_variants = []
-    for variant in variants:
-        if variant not in seen and variant != placeholder:
-            seen.add(variant)
-            unique_variants.append(variant)
-    
-    for variant in unique_variants:
-        if variant in template_settings:
-            return variant, template_settings[variant]
-        # Also try case-insensitive variant match
-        variant_lower = variant.lower()
-        for key in template_settings.keys():
-            if key.lower() == variant_lower:
-                return key, template_settings[key]
-
-    # Strategy 4: Normalised comparison
-    target_norm = normalise_placeholder_key(placeholder)
-    if target_norm:
-        for key, value in template_settings.items():
-            key_norm = normalise_placeholder_key(key)
-            if key_norm == target_norm:
-                return key, value
-
-    # Strategy 5: Fuzzy matching (one contains the other, minimum 4 chars)
-    if len(target_norm) >= 4:
-        for key, value in template_settings.items():
-            key_norm = normalise_placeholder_key(key)
-            if key_norm and len(key_norm) >= 4:
-                # Check if one is contained in the other
-                if target_norm in key_norm or key_norm in target_norm:
-                    # Additional check: ensure significant overlap (at least 70% of shorter string)
-                    shorter = min(len(target_norm), len(key_norm))
-                    longer = max(len(target_norm), len(key_norm))
-                    if shorter >= longer * 0.7:
-                        return key, value
-
-    return None, None
-
-# ============================================================================
-# STEP 4: TEMPLATES API (upload, list, get, delete)
-# ============================================================================
-
-
-def _cors_preflight_headers(
-    request: Request, allowed_methods: str) -> Dict[str, str]:
-    origin = request.headers.get("origin", "")
-    headers: Dict[str, str] = {
-        "Access-Control-Allow-Methods": allowed_methods,
-        "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*"),
-        "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Max-Age": "600",
-        "Vary": "Origin",
-    }
-    if origin:
-        headers["Access-Control-Allow-Origin"] = origin
-    elif ALLOWED_ORIGINS:
-        headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
-    else:
-        headers["Access-Control-Allow-Origin"] = "*"
-    return headers
-
-
-@app.options("/templates")
-async def options_templates(request: Request):
-    """Handle CORS preflight for templates endpoint"""
-    return Response(
-    status_code=200,
-    headers=_cors_preflight_headers(
-        request,
-         "GET, POST, OPTIONS"))
-
-
-@app.get("/templates")
-async def get_templates(request: Request):
-    """List all available templates with placeholders"""
-    # Try to get current user, but don't require authentication
-    current_user = None
-    try:
-        current_user = get_current_user(request)
-    except HTTPException:
-        # Allow unauthenticated access for public template listing
-        pass
-    try:
-        templates = []
-        templates_by_key: Dict[str, Dict] = {}
-        metadata_map = load_template_metadata()
-
-        # FIRST: Get deleted templates list BEFORE loading from Supabase or filesystem
-        # This ensures we don't add deleted templates back
-        deleted_template_names = set()  # Track templates that were soft-deleted in Supabase
-        deleted_template_names_lower = set()  # Case-insensitive lookup
-        
-        # Get hard-deleted templates from deleted_templates.json (for hard delete support)
-        hard_deleted_templates = get_deleted_templates()
-        deleted_template_names.update(hard_deleted_templates)
-        deleted_template_names_lower.update({name.lower() for name in hard_deleted_templates})
-        if hard_deleted_templates:
-            logger.info(f"Loaded {len(hard_deleted_templates)} deleted templates from deleted_templates.json: {list(hard_deleted_templates)[:5]}")
-        else:
-            logger.debug(f"No deleted templates found in deleted_templates.json")
-        
-        if SUPABASE_ENABLED:
-            try:
-                # Also check for soft-deleted templates in Supabase (for backward compatibility)
-                soft_deleted_templates = supabase.table('document_templates').select('file_name').eq('is_active', False).execute()
-                if soft_deleted_templates.data:
-                    soft_deleted_names = {ensure_docx_filename(t.get('file_name', '')) for t in soft_deleted_templates.data if t.get('file_name')}
-                    deleted_template_names.update(soft_deleted_names)
-                    deleted_template_names_lower.update({name.lower() for name in soft_deleted_names})
-                    logger.info(f"Loaded {len(soft_deleted_names)} soft-deleted templates from Supabase")
-            except Exception as exc:
-                logger.warning(f"Could not check deleted templates from Supabase: {exc}")
-
-        # Load templates from Supabase (only active templates)
-        if SUPABASE_ENABLED:
-            try:
-                db_templates = supabase.table('document_templates').select(
-                    'id, title, description, file_name, placeholders, is_active, created_at, font_family, font_size'
-                ).eq('is_active', True).execute()
-
-                for record in db_templates.data or []:
-                    template_id = record.get('id')
-                    placeholders = record.get('placeholders') or []
-
-                    file_meta = fetch_template_file_record(template_id)
-                    size = file_meta.get('file_size') if file_meta else None
-                    created_at = (file_meta or {}).get(
-                        'uploaded_at') or record.get('created_at')
-
-                    # Normalise names for the frontend
-                    file_name = ensure_docx_filename(record.get(
-                        'file_name') or record.get('title') or 'template')
-
-                    # Skip if this template is marked as deleted
-                    file_name_lower = file_name.lower()
-                    if file_name in deleted_template_names or file_name_lower in deleted_template_names_lower:
-                        logger.info(f"Skipping deleted template from Supabase: {file_name}")
-                        continue
-
-                    # If size is not available from Supabase, try to get it from local file
-                    if not size or size == 0:
-                        local_file_path = os.path.join(TEMPLATES_DIR, file_name)
-                        if os.path.exists(local_file_path):
-                            try:
-                                size = os.path.getsize(local_file_path)
-                                logger.debug(f"Got file size from local file for {file_name}: {size} bytes")
-                            except OSError:
-                                size = 0
-                                logger.warning(f"Could not get file size from local file for {file_name}")
-                        else:
-                            size = 0
-                            logger.warning(f"File size not available for {file_name} (not in Supabase file_record and local file doesn't exist)")
-
-                    # Get display_name from metadata first, then Supabase title, then fallback
-                    metadata_entry = metadata_map.get(file_name, {})
-                    display_name = (
-                        metadata_entry.get('display_name') or 
-                        record.get('title') or 
-                        file_name.replace('.docx', '')
-                    )
-                    
-                    # Update Supabase title if metadata has a different display_name
-                    if metadata_entry.get('display_name') and metadata_entry.get('display_name') != record.get('title'):
-                        try:
-                            supabase.table('document_templates').update({'title': metadata_entry.get('display_name')}).eq('id', template_id).execute()
-                            logger.debug(f"Synced display_name from metadata to Supabase for {file_name}")
-                        except Exception as sync_exc:
-                            logger.warning(f"Could not sync display_name to Supabase: {sync_exc}")
-
-                    # Get font settings - prioritize database, then metadata
-                    font_family = record.get('font_family') or metadata_entry.get('font_family')
-                    font_size = record.get('font_size') or metadata_entry.get('font_size')
-                    
-                    template_payload = {
-                        "id": str(template_id),
-                        "name": file_name,
-                        "title": display_name,
-                        "file_name": file_name.replace('.docx', ''),
-                        "file_with_extension": file_name,
-                        "description": metadata_entry.get('description') or record.get('description') or '',
-                        "metadata": {
-                            "display_name": display_name,  # Use the resolved display_name
-                            "description": metadata_entry.get('description') or record.get('description') or '',
-                            "font_family": font_family,
-                            "font_size": font_size
-                        },
-                        "font_family": font_family,  # Also include at top level for easy access
-                        "font_size": font_size,  # Also include at top level for easy access
-                        "size": size or 0,
-                        "created_at": created_at,
-                        "placeholders": placeholders,
-                        "placeholder_count": len(placeholders),
-                        "is_active": record.get('is_active', True)
-                    }
-                    templates.append(template_payload)
-                    templates_by_key[file_name] = template_payload
-            except Exception as exc:
-                logger.error(f"Failed to load templates from Supabase: {exc}")
-
-        # Include local filesystem templates as fallback / supplement
-        # But only if they don't exist in Supabase AND are not marked as deleted
-        
-        for filename in os.listdir(TEMPLATES_DIR):
-            if not filename.lower().endswith('.docx'):
-                continue
-        
-            file_name = ensure_docx_filename(filename)
-            
-            # Skip if already loaded from Supabase
-            if file_name in templates_by_key:
-                logger.debug(f"Template {file_name} already loaded from Supabase, skipping local file")
-                continue
-            
-            # Skip templates that were deleted (hard delete or soft delete)
-            # Check both exact match and case-insensitive match
-            file_name_lower = file_name.lower()
-            filename_lower = filename.lower()
-            
-            # Check multiple variations
-            is_deleted = (
-                file_name in deleted_template_names or 
-                file_name_lower in deleted_template_names_lower or
-                filename in deleted_template_names or
-                filename_lower in deleted_template_names_lower
-            )
-            
-            # Also check without .docx extension
-            file_name_no_ext = file_name.replace('.docx', '').replace('.DOCX', '')
-            filename_no_ext = filename.replace('.docx', '').replace('.DOCX', '')
-            if not is_deleted:
-                for deleted_name in deleted_template_names:
-                    deleted_no_ext = deleted_name.replace('.docx', '').replace('.DOCX', '')
-                    if (file_name_no_ext.lower() == deleted_no_ext.lower() or 
-                        filename_no_ext.lower() == deleted_no_ext.lower()):
-                        is_deleted = True
-                        logger.debug(f"Matched deleted template by name without extension: {file_name} matches {deleted_name}")
-                        break
-            
-            if is_deleted:
-                logger.info(f"Skipping deleted template (from deleted_templates.json or Supabase): {file_name} (original: {filename})")
-                # Delete the local file if it's marked as deleted
-                file_path_to_delete = os.path.join(TEMPLATES_DIR, file_name)
-                # Also check original filename
-                original_file_path = os.path.join(TEMPLATES_DIR, filename)
-                
-                for path_to_check in [file_path_to_delete, original_file_path]:
-                    if os.path.exists(path_to_check):
-                        try:
-                            os.remove(path_to_check)
-                            logger.info(f"Removed orphaned local file for deleted template: {path_to_check}")
-                        except Exception as delete_exc:
-                            logger.warning(f"Could not remove orphaned local file {path_to_check}: {delete_exc}")
-                continue
-
-            file_path = os.path.join(TEMPLATES_DIR, file_name)
-            
-            # Check if file exists before processing
-            if not os.path.exists(file_path):
-                logger.warning(f"Template file not found, skipping: {file_path}")
-                continue
-            
-            try:
-                file_size = os.path.getsize(file_path)
-            except OSError:
-                logger.warning(f"Could not get file size for {file_path}, skipping")
-                continue
-                
-            try:
-                created_at = datetime.fromtimestamp(
-                    os.path.getctime(file_path)).isoformat()
-            except OSError:
-                logger.warning(f"Could not get creation time for {file_path}, using current time")
-                created_at = datetime.now().isoformat()
-                
-            try:
-                placeholders = extract_placeholders_from_docx(file_path)
-            except Exception as ph_exc:
-                logger.error(f"Failed to extract placeholders from {file_path}: {ph_exc}")
-                # Continue with empty placeholders rather than failing completely
-                placeholders = []
-                
-            metadata_entry = metadata_map.get(file_name, {})
-
-            template_id = hashlib.md5(file_name.encode()).hexdigest()[:12]
-            template_payload = {
-                "id": template_id,
-                "name": file_name,
-                "title": metadata_entry.get('display_name') or file_name.replace('.docx', ''),
-                "file_name": file_name.replace('.docx', ''),
-                "file_with_extension": file_name,
-                "description": metadata_entry.get('description') or f"Template: {file_name.replace('.docx', '')}",
-                "metadata": {
-                    "display_name": metadata_entry.get('display_name') or file_name.replace('.docx', ''),
-                    "description": metadata_entry.get('description'),
-                    "font_family": metadata_entry.get('font_family'),
-                    "font_size": metadata_entry.get('font_size')
-                },
-                "size": file_size,
-                "created_at": created_at,
-                "placeholders": placeholders,
-                "placeholder_count": len(placeholders),
-                "is_active": True
-            }
-            templates.append(template_payload)
-            templates_by_key[file_name] = template_payload
-
-        return {"templates": templates}
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        logger.error(f"Error listing templates: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        # Return empty list instead of crashing - allows UI to still function
-        return {"templates": [], "error": str(e), "warning": "Some templates could not be loaded"}
-
-
-@app.get("/plans-db")
-async def get_plans_db():
-    """Get all plans from database with template permissions"""
-    try:
-        if not supabase:
-            # Fallback to JSON
-            plans = read_json_file(PLANS_PATH, {})
-            return {"success": True, "plans": plans, "source": "json"}
-
-        try:
-            # Get plans from database
-            plans_res = supabase.table('subscription_plans').select(
-                '*').eq('is_active', True).order('sort_order').execute()
-
-            if not plans_res.data:
-                # Fallback to JSON if no database plans
-                plans = read_json_file(PLANS_PATH, {})
-                return {
-    "success": True,
-    "plans": plans,
-     "source": "json_fallback"}
-
-            # Get all templates (may not exist yet, so handle gracefully)
-            template_map = {}
-            try:
-                templates_res = supabase.table('document_templates').select(
-                    'id, file_name, title').eq('is_active', True).execute()
-                template_map = {t['id']: t for t in (templates_res.data or [])}
-            except Exception as e:
-                logger.warning(f"Could not fetch templates from database: {e}")
-
-            # Get permissions for each plan
-            plans_dict = {}
-            for plan in plans_res.data:
-                plan_tier = plan['plan_tier']
-
-                # Get permissions for this plan (may not exist yet)
-                allowed_templates = []
-                try:
-                    permissions_res = supabase.table('plan_template_permissions').select(
-                        'template_id, can_download').eq('plan_id', plan['id']).execute()
-
-                    if permissions_res.data:
-                        for perm in permissions_res.data:
-                            if perm['can_download']:
-                                template_id = perm['template_id']
-                                template_info = template_map.get(template_id)
-                                if template_info:
-                                    allowed_templates.append(
-                                        template_info.get('file_name', ''))
-                except Exception as e:
-                    logger.warning(
-                        f"Could not fetch permissions for plan {plan_tier}: {e}")
-                    # Default to all templates if permissions table doesn't
-                    # exist
-                    allowed_templates = ['*']
-
-                # If no permissions set, default to all templates
-                if not allowed_templates:
-                    allowed_templates = ['*']
-
-                # Normalize template names (remove .docx if present)
-                normalized_templates = []
-                if allowed_templates:
-                    for t in allowed_templates:
-                        if t == '*':
-                            normalized_templates.append('*')
-                        elif isinstance(t, str):
-                            normalized_templates.append(
-                                ensure_docx_filename(t))
-                        else:
-                            normalized_templates.append(str(t))
-
-                plans_dict[plan_tier] = {
-                    "id": str(plan['id']),
-                    "name": plan['plan_name'],
-                    "plan_tier": plan_tier,
-                    "description": plan.get('description', ''),
-                    "monthly_price": float(plan.get('monthly_price', 0)),
-                    "annual_price": float(plan.get('annual_price', 0)),
-                    "max_downloads_per_month": plan.get('max_downloads_per_month', 10),
-                    "can_download": normalized_templates if normalized_templates else ['*'],
-                    "features": list(plan.get('features', [])) if isinstance(plan.get('features'), (list, tuple)) else (plan.get('features', []) if plan.get('features') else []),
-                    "is_active": plan.get('is_active', True)
-                }
-            
-            return {"success": True, "plans": plans_dict, "source": "database"}
-        except Exception as db_error:
-            logger.warning(f"Database query failed, falling back to JSON: {db_error}")
-            # Fallback to JSON
-            plans = read_json_file(PLANS_PATH, {})
-            return {"success": True, "plans": plans, "source": "json_fallback"}
-    except Exception as e:
-        logger.error(f"Error getting plans: {e}")
-        # Final fallback
-        try:
-            plans = read_json_file(PLANS_PATH, {})
-            return {"success": True, "plans": plans, "source": "json_error_fallback"}
-        except Exception as final_exc:
-            raise HTTPException(status_code=500, detail=str(final_exc))
-
-@app.get("/templates/{template_name}")
-async def get_template(template_name: str, current_user: str = Depends(get_current_user)):
-    """Get details for a specific template"""
-    try:
-        metadata_map = load_template_metadata()
-        docx_name = ensure_docx_filename(template_name)
-
-        if SUPABASE_ENABLED:
-            template_record = resolve_template_record(template_name)
-            if template_record:
-                docx_name = ensure_docx_filename(template_record.get('file_name') or template_name)
-                placeholders = template_record.get('placeholders') or []
-                placeholder_settings = fetch_template_placeholders(template_record['id'], docx_name)
-                file_meta = fetch_template_file_record(template_record['id']) or {}
-                metadata_entry = metadata_map.get(docx_name, {})
-
-                # Get font settings - prioritize database, then metadata
-                font_family = template_record.get('font_family') or metadata_entry.get('font_family')
-                font_size = template_record.get('font_size') or metadata_entry.get('font_size')
-                
-                response = {
-                    "id": str(template_record['id']),
-                    "template_id": str(template_record['id']),  # Also include as template_id for consistency
-                    "name": docx_name,
-                    "title": metadata_entry.get('display_name') or template_record.get('title') or docx_name.replace('.docx', ''),
-                    "file_name": docx_name.replace('.docx', ''),
-                    "file_with_extension": docx_name,
-                    "size": file_meta.get('file_size', 0),
-                    "created_at": file_meta.get('uploaded_at') or template_record.get('created_at'),
-                    "placeholders": placeholders,
-                    "placeholder_count": len(placeholders),
-                    "settings": placeholder_settings,
-                    "description": metadata_entry.get('description') or template_record.get('description') or '',
-                    "font_family": font_family,
-                    "font_size": font_size,
-                    "metadata": {
-                        "display_name": metadata_entry.get('display_name') or template_record.get('title'),
-                        "description": metadata_entry.get('description') or template_record.get('description') or '',
-                        "font_family": font_family,
-                        "font_size": font_size
-                    }
-                }
-                return response
-
-        # Filesystem fallback
-        file_path = os.path.join(TEMPLATES_DIR, docx_name)
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="Template not found")
-
-        file_size = os.path.getsize(file_path)
-        created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
-        placeholders = extract_placeholders_from_docx(file_path)
-        metadata_entry = metadata_map.get(docx_name, {})
-        
-        # Load placeholder settings - try multiple template name formats
-        placeholder_settings_raw = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-        placeholder_settings = {}
-        
-        # Try to find settings using various template name formats
-        candidates = [
-            docx_name,
-            normalize_template_name(docx_name, with_extension=True, for_key=False),
-            normalize_template_name(docx_name, with_extension=False, for_key=False),
-        ]
-        
-        for candidate in candidates:
-            if candidate in placeholder_settings_raw:
-                placeholder_settings = placeholder_settings_raw[candidate]
-                logger.debug(f"Found placeholder settings for template using key: '{candidate}'")
-                break
-        
-        # If still not found, try normalized key matching
-        if not placeholder_settings:
-            docx_key = normalize_template_name(docx_name, with_extension=False, for_key=True)
-            for key in placeholder_settings_raw.keys():
-                key_normalized = normalize_template_name(key, with_extension=False, for_key=True)
-                if key_normalized == docx_key:
-                    placeholder_settings = placeholder_settings_raw[key]
-                    logger.debug(f"Found placeholder settings for template using normalized key: '{key}' -> '{docx_key}'")
-                    break
-        
-        # Also try to load from Supabase if available
-        if SUPABASE_ENABLED:
-            template_record = resolve_template_record(docx_name)
-            if template_record:
-                supabase_settings = fetch_template_placeholders(template_record['id'], docx_name)
-                # Merge: Supabase settings override disk settings
-                placeholder_settings.update(supabase_settings)
-                logger.debug(f"Merged Supabase placeholder settings for template {docx_name}")
-
-        return {
-            "name": docx_name,
-            "title": metadata_entry.get('display_name') or docx_name.replace('.docx', ''),
-            "file_name": docx_name.replace('.docx', ''),
-            "file_with_extension": docx_name,
-            "size": file_size,
-            "created_at": created_at,
-            "placeholders": placeholders,
-            "placeholder_count": len(placeholders),
-            "settings": placeholder_settings,
-            "metadata": {
-                "display_name": metadata_entry.get('display_name') or docx_name.replace('.docx', ''),
-                "description": metadata_entry.get('description'),
-                "font_family": metadata_entry.get('font_family'),
-                "font_size": metadata_entry.get('font_size')
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting template: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/templates/{template_id}/metadata")
-async def update_template_metadata(
-    request: Request,
-    template_id: str,
-    current_user: str = Depends(get_current_user)
-):
-    """Update template metadata (display name, description, fonts, plan assignments)."""
-    try:
-        body = await request.json()
-        payload = body if isinstance(body, dict) else {}
-        display_name = (payload.get('display_name') or payload.get('name') or "").strip()
-        description = (payload.get('description') or "").strip()
-        font_family = (payload.get('font_family') or "").strip() or None
-        font_size_raw = payload.get('font_size')
-        font_size = None
-        if font_size_raw not in (None, ""):
-            try:
-                font_size = int(font_size_raw)
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="font_size must be an integer")
-        
-        # Only touch plan permissions when explicitly sent (Plans tab). Metadata-only save must not wipe them.
-        plan_ids_raw = payload.get('plan_ids') if 'plan_ids' in payload else None
-        plan_ids = plan_ids_raw if isinstance(plan_ids_raw, list) else []
-        
-        # Convert plan_tiers to plan_ids (UUIDs) if needed
-        resolved_plan_ids = []
-        if plan_ids and SUPABASE_ENABLED:
-            for plan_identifier in plan_ids:
-                if not plan_identifier:
-                    continue
-                try:
-                    # Try to parse as UUID first
-                    plan_uuid = uuid.UUID(str(plan_identifier))
-                    resolved_plan_ids.append(str(plan_uuid))
-                except (ValueError, TypeError):
-                    # Not a UUID, treat as plan_tier and look up plan_id
-                    try:
-                        plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', str(plan_identifier)).eq('is_active', True).limit(1).execute()
-                        if plan_res.data and len(plan_res.data) > 0:
-                            resolved_plan_ids.append(str(plan_res.data[0]['id']))
-                            logger.debug(f"Converted plan_tier '{plan_identifier}' to plan_id: {plan_res.data[0]['id']}")
-                        else:
-                            logger.warning(f"Could not find plan with plan_tier: {plan_identifier}")
-                    except Exception as e:
-                        logger.warning(f"Error looking up plan for '{plan_identifier}': {e}")
-
-        plan_ids = resolved_plan_ids  # Use resolved UUIDs
-
-        # Update Supabase metadata when available
-        template_record = None
-        if SUPABASE_ENABLED:
-            # Try to resolve by template_id (UUID) first
-            try:
-                template_uuid = uuid.UUID(str(template_id))
-                response = supabase.table('document_templates').select('id, title, description, file_name, font_family, font_size').eq('id', str(template_uuid)).limit(1).execute()
-                if response.data:
-                    template_record = response.data[0]
-            except (ValueError, TypeError):
-                # If not a UUID, try by file_name
-                template_record = resolve_template_record(template_id)
-            
-            if template_record:
-                template_id_uuid = template_record['id']
-                update_data = {}
-                if display_name:
-                    update_data['title'] = display_name
-                    logger.info(f"Updating Supabase title for template {template_id_uuid} to: {display_name}")
-                if description:
-                    update_data['description'] = description
-                    logger.info(f"Updating Supabase description for template {template_id_uuid}")
-                if font_family is not None:
-                    update_data['font_family'] = font_family
-                    logger.info(f"Updating Supabase font_family for template {template_id_uuid} to: {font_family}")
-                if font_size is not None:
-                    update_data['font_size'] = font_size
-                    logger.info(f"Updating Supabase font_size for template {template_id_uuid} to: {font_size}")
-                
-                if update_data:
-                    try:
-                        result = supabase.table('document_templates').update(update_data).eq('id', template_id_uuid).execute()
-                        if result.data:
-                            logger.info(f"Successfully updated Supabase metadata for template {template_id_uuid}: {update_data}")
-                        else:
-                            logger.warning(f"Supabase update returned no data for template {template_id_uuid}")
-                    except Exception as exc:
-                        logger.error(f"Failed to update template metadata in Supabase: {exc}")
-                        import traceback
-                        logger.error(traceback.format_exc())
-                
-                # Update plan assignments only when plan_ids was explicitly sent
-                if 'plan_ids' in payload:
-                    try:
-                        supabase.table('plan_template_permissions').delete().eq('template_id', template_id_uuid).execute()
-                        if resolved_plan_ids:
-                            permission_rows = []
-                            for plan_id in resolved_plan_ids:
-                                if plan_id:  # Only add non-empty plan IDs
-                                    permission_rows.append({
-                                        'plan_id': str(plan_id),
-                                        'template_id': str(template_id_uuid),
-                                        'can_download': True,
-                                        'max_downloads_per_template': None  # Per-template limit (NULL = unlimited, use plan default)
-                                    })
-                            
-                            if permission_rows:
-                                permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
-                                if getattr(permissions_response, "error", None):
-                                    logger.error(f"Plan permissions insert error: {permissions_response.error}")
-                                else:
-                                    logger.info(f"Updated plan permissions for {len(permission_rows)} plans")
-                    except Exception as perm_exc:
-                        logger.error(f"Error updating plan permissions: {perm_exc}")
-            else:
-                raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
-
-        # Also update local metadata file if template_record has file_name
-        if template_record and template_record.get('file_name'):
-            docx_name = ensure_docx_filename(template_record['file_name'])
-            metadata_updates = {
-                "display_name": display_name or None,
-                "description": description or None,
-                "font_family": font_family,
-                "font_size": font_size,
-                "updated_at": datetime.utcnow().isoformat()
-            }
-            update_template_metadata_entry(docx_name, {k: v for k, v in metadata_updates.items() if v is not None})
-
-        return {
-            "success": True,
-            "template_id": str(template_record['id']) if template_record else template_id,
-            "template": template_record.get('file_name') if template_record else template_id,
-            "metadata": {
-                "display_name": display_name or None,
-                "description": description or None,
-                "font_family": font_family,
-                "font_size": font_size
-            },
-            "plan_ids": plan_ids
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(f"Error updating template metadata: {exc}")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-@app.post("/upload-template")
-async def upload_template(
-    file: UploadFile = File(...),
-    name: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    font_family: Optional[str] = Form(None),
-    font_size: Optional[str] = Form(None),
-    plan_ids: Optional[str] = Form(None),  # JSON array string of plan IDs
-    current_user: str = Depends(get_current_user)
-):
-    """Upload a new template"""
-    try:
-        if not file.filename or not file.filename.lower().endswith('.docx'):
-            raise HTTPException(status_code=400, detail="Only .docx files are allowed")
-        
-        # Read file bytes - ensure we get the full file
-        file_bytes = await file.read()
-        if not file_bytes or len(file_bytes) == 0:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty or could not be read")
-        
-        logger.info(f"Received file: {file.filename}, size: {len(file_bytes)} bytes")
-
-        # Write to temp file to extract placeholders
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
-            tmp.write(file_bytes)
-            tmp.flush()  # Ensure data is written to disk
-            os.fsync(tmp.fileno())  # Force write to disk
-            tmp_path = tmp.name
-
-        # Verify the temp file was written correctly
-        if os.path.getsize(tmp_path) == 0:
-            os.remove(tmp_path)
-            raise HTTPException(status_code=400, detail="File write failed - file is empty")
-
-        placeholders = extract_placeholders_from_docx(tmp_path)
-        placeholders = list(dict.fromkeys(placeholders))
-        os.remove(tmp_path)
-
-        logger.info(f"Template uploaded: {file.filename} ({len(placeholders)} placeholders)")
-
-        warnings: List[str] = []
-        safe_filename = os.path.basename(file.filename)
-        docx_filename = ensure_docx_filename(safe_filename)
-        inferred_title = docx_filename[:-5]
-        title_value = (name or "").strip() or inferred_title
-        description_value = (description or "").strip() or f"Template: {title_value}"
-
-        # Persist a local copy as authoritative fallback
-        file_path = os.path.join(TEMPLATES_DIR, docx_filename)
-        try:
-            with open(file_path, 'wb') as f:
-                f.write(file_bytes)
-                f.flush()  # Ensure data is written
-                os.fsync(f.fileno())  # Force write to disk
-            
-            # Verify the file was written correctly
-            written_size = os.path.getsize(file_path)
-            if written_size == 0 or written_size != len(file_bytes):
-                logger.error(f"File size mismatch: expected {len(file_bytes)}, got {written_size}")
-                raise HTTPException(status_code=500, detail=f"File write verification failed: expected {len(file_bytes)} bytes, got {written_size}")
-            
-            logger.info(f"Template file written successfully: {docx_filename} ({written_size} bytes)")
-        except Exception as exc:
-            logger.error(f"Failed to write template to disk: {exc}")
-            raise HTTPException(status_code=500, detail=f"Failed to write template to disk: {str(exc)}")
-
-        template_id = None
-        template_record = None
-
-        # Parse font settings
-        font_family_value = (font_family or "").strip() or None
-        font_size_value: Optional[int] = None
-        if font_size is not None and font_size != "":
-            try:
-                font_size_value = int(font_size)
-            except ValueError:
-                warnings.append("Invalid font size value; ignored")
-                font_size_value = None
-
-        # Parse plan_ids (JSON array string)
-        plan_ids_list = []
-        if plan_ids:
-            try:
-                plan_ids_list = json.loads(plan_ids)
-                if not isinstance(plan_ids_list, list):
-                    plan_ids_list = []
-            except (json.JSONDecodeError, TypeError):
-                warnings.append("Invalid plan_ids format; ignoring")
-                plan_ids_list = []
-
-        if SUPABASE_ENABLED:
-            try:
-                existing_record = resolve_template_record(docx_filename)
-                template_payload = {
-                    'title': title_value,
-                    'description': description_value,
-                    'file_name': docx_filename,
-                    'placeholders': placeholders,
-                    'is_active': True,
-                    'updated_at': datetime.utcnow().isoformat()
-                }
-                
-                # Add font settings to database if provided
-                if font_family_value:
-                    template_payload['font_family'] = font_family_value
-                if font_size_value is not None:
-                    template_payload['font_size'] = font_size_value
-
-                upsert_response = supabase.table('document_templates').upsert(
-                    template_payload,
-                    on_conflict='file_name',
-                    returning='representation'
-                ).execute()
-
-                if upsert_response.data:
-                    template_record = upsert_response.data[0]
-                elif existing_record:
-                    template_record = existing_record
-                else:
-                    template_record = resolve_template_record(docx_filename)
-
-                if template_record:
-                    template_id = template_record['id']
-                    file_payload = {
-                        'template_id': template_id,
-                        'filename': docx_filename,
-                        'mime_type': file.content_type or 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                        'file_size': len(file_bytes),
-                        'file_data': encode_bytea(file_bytes),
-                        'sha256': hashlib.sha256(file_bytes).hexdigest(),
-                        'uploaded_at': datetime.utcnow().isoformat()
-                    }
-                    file_response = supabase.table('template_files').upsert(file_payload, on_conflict='template_id').execute()
-                    if getattr(file_response, "error", None):
-                        warnings.append("Supabase file storage error; using local copy")
-                        logger.error(f"Supabase file upsert error: {file_response.error}")
-
-                    # Create plan_template_permissions entries for selected plans
-                    if plan_ids_list and template_id:
-                        try:
-                            # Delete existing permissions first
-                            supabase.table('plan_template_permissions').delete().eq('template_id', template_id).execute()
-                            
-                            # Insert new permissions
-                            permission_rows = []
-                            for plan_id in plan_ids_list:
-                                if plan_id:  # Only add non-empty plan IDs
-                                    permission_rows.append({
-                                        'plan_id': str(plan_id),
-                                        'template_id': str(template_id),
-                                        'can_download': True,
-                                        'max_downloads_per_template': None  # Per-template limit (NULL = unlimited, use plan default)
-                                    })
-                            
-                            if permission_rows:
-                                permissions_response = supabase.table('plan_template_permissions').insert(permission_rows).execute()
-                                if getattr(permissions_response, "error", None):
-                                    warnings.append("Failed to set plan permissions")
-                                    logger.error(f"Plan permissions insert error: {permissions_response.error}")
-                                else:
-                                    logger.info(f"Set plan permissions for {len(permission_rows)} plans")
-                        except Exception as perm_exc:
-                            warnings.append(f"Failed to set plan permissions: {str(perm_exc)}")
-                            logger.error(f"Error setting plan permissions: {perm_exc}")
-                else:
-                    warnings.append("Supabase metadata sync failed; template served from local storage")
-                    logger.warning("Unable to retrieve template metadata after Supabase upsert")
-            except Exception as exc:
-                warnings.append("Supabase sync failed; template available locally")
-                logger.error(f"Failed to store template in Supabase: {exc}")
-
-        # AI analysis on upload: choose source (database|csv|random) and mapping per placeholder, persist.
-        mapped_count = 0
-        database_count = 0
-        csv_count = 0
-        random_count = 0
-        if placeholders:
-            db_schema = _build_schema_for_mapping()
-            csv_schema = _build_csv_schema_for_mapping()
-            analyzed = _ai_analyze_and_map_placeholders(placeholders, db_schema, csv_schema)
-            default_settings: Dict[str, Dict] = {}
-            for ph in placeholders:
-                cfg = (analyzed.get(ph) or {}).copy()
-                cfg.setdefault('source', 'database')
-                cfg.setdefault('databaseTable', '')
-                cfg.setdefault('databaseField', '')
-                cfg.setdefault('csvId', '')
-                cfg.setdefault('csvField', '')
-                cfg.setdefault('csvRow', 0)
-                cfg.setdefault('randomOption', 'auto')
-                if 'customValue' not in cfg:
-                    cfg['customValue'] = ''
-                default_settings[ph] = cfg
-                # Count only when there's an actual mapping (not empty strings)
-                src = cfg.get('source')
-                if src == 'database' and cfg.get('databaseTable') and cfg.get('databaseField'):
-                    database_count += 1
-                elif src == 'csv' and cfg.get('csvId') and cfg.get('csvField'):
-                    csv_count += 1
-                else:
-                    random_count += 1
-            mapped_count = database_count + csv_count + random_count
-            # Supabase template_placeholders uses UUID FK; only upsert when we have template_id.
-            if template_id:
-                upsert_template_placeholders(str(template_id), default_settings, docx_filename)
-                logger.info(f"AI mapping created: db={database_count} csv={csv_count} random={random_count} (template_id={template_id})")
-            else:
-                # No template_id (e.g. Supabase sync failed): persist to disk only so editor can still load.
-                placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-                key = ensure_docx_filename(docx_filename)
-                placeholder_settings[key] = default_settings
-                write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
-                logger.warning(f"AI mapping saved to disk only (no template_id): db={database_count} csv={csv_count} random={random_count} key={key}")
-                warnings.append("AI mapping saved to disk only (no Supabase template_id). Open editor by template name to see mappings.")
-
-        # Remove template from deleted list if it was previously deleted (re-upload scenario)
-        unmark_template_as_deleted(docx_filename)
-        unmark_template_as_deleted(safe_filename)
-        if title_value and title_value != inferred_title:
-            unmark_template_as_deleted(title_value)
-        logger.info(f"Removed {docx_filename} from deleted templates list (if present)")
-
-        # Persist metadata locally (font settings already parsed above)
-        metadata_payload = {
-            "display_name": title_value,
-            "description": description_value,
-            "font_family": font_family_value,
-            "font_size": font_size_value,
-            "updated_at": datetime.utcnow().isoformat()
-        }
-        update_template_metadata_entry(docx_filename, {k: v for k, v in metadata_payload.items() if v is not None})
-
-        response_payload = {
-            "success": True,
-            "filename": docx_filename,
-            "placeholders": placeholders,
-            "placeholder_count": len(placeholders),
-            "metadata": {
-                "display_name": title_value,
-                "description": description_value,
-                "font_family": font_family_value,
-                "font_size": font_size_value
-            }
-        }
-        if template_id:
-            response_payload["template_id"] = str(template_id)
-        if placeholders:
-            response_payload["mapping_created"] = True
-            response_payload["mapped_count"] = mapped_count
-            response_payload["ai_analysis"] = True
-            response_payload["database_count"] = database_count if placeholders else 0
-            response_payload["csv_count"] = csv_count if placeholders else 0
-            response_payload["random_count"] = random_count if placeholders else 0
-        if warnings:
-            response_payload["warnings"] = warnings
-
-        return response_payload
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error uploading template: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/templates/{template_name}")
-async def delete_template(
-    template_name: str,
-    current_user: str = Depends(get_current_user)
-):
-    """Delete a template"""
-    try:
-        resolved_name = template_name
-        warnings: List[str] = []
-        template_id = None
-
-        supabase_deleted = False
-        if SUPABASE_ENABLED:
-            try:
-                template_record = resolve_template_record(template_name)
-                if template_record:
-                    template_id = template_record['id']
-                    resolved_name = template_record.get('file_name') or template_name
-                    
-                    # Validate template_id
-                    if not template_id:
-                        logger.error(f"Template record found but ID is empty: {template_record}")
-                        warnings.append("Template record has no ID - cannot delete from Supabase")
-                    else:
-                        logger.info(f"Found template in Supabase: ID={template_id} (type: {type(template_id).__name__}), file_name={resolved_name}")
-
-                    try:
-                        # Ensure template_id is properly formatted (UUID string)
-                        template_id_str = str(template_id)
-                        logger.info(f"Attempting to delete template with ID: {template_id_str} (type: {type(template_id).__name__})")
-                        
-                        # Hard delete: Remove from plan permissions first (foreign key constraint)
-                        try:
-                            perm_result = supabase.table('plan_template_permissions').delete().eq('template_id', template_id_str).execute()
-                            deleted_perms = len(perm_result.data) if perm_result.data else 0
-                            logger.info(f"Deleted plan permissions for template {template_id_str}: {deleted_perms} rows")
-                        except Exception as perm_exc:
-                            error_msg = str(perm_exc)
-                            logger.warning(f"Could not delete plan permissions: {error_msg}")
-                            warnings.append(f"Plan permissions deletion failed: {error_msg}")
-                        
-                        # Delete related records
-                        try:
-                            file_result = supabase.table('template_files').delete().eq('template_id', template_id_str).execute()
-                            deleted_files = len(file_result.data) if file_result.data else 0
-                            logger.info(f"Deleted template files for template {template_id_str}: {deleted_files} rows")
-                        except Exception as file_exc:
-                            error_msg = str(file_exc)
-                            logger.warning(f"Could not delete template files: {error_msg}")
-                            warnings.append(f"Template files deletion failed: {error_msg}")
-                        
-                        try:
-                            placeholder_result = supabase.table('template_placeholders').delete().eq('template_id', template_id_str).execute()
-                            deleted_placeholders = len(placeholder_result.data) if placeholder_result.data else 0
-                            logger.info(f"Deleted template placeholders for template {template_id_str}: {deleted_placeholders} rows")
-                        except Exception as placeholder_exc:
-                            error_msg = str(placeholder_exc)
-                            logger.warning(f"Could not delete template placeholders: {error_msg}")
-                            warnings.append(f"Template placeholders deletion failed: {error_msg}")
-                        
-                        # Finally, hard delete the template record itself
-                        try:
-                            delete_result = supabase.table('document_templates').delete().eq('id', template_id_str).execute()
-                            deleted_count = len(delete_result.data) if delete_result.data else 0
-                            
-                            if deleted_count > 0:
-                                logger.info(f"✓ Hard deleted template record {template_id_str} from Supabase document_templates table ({deleted_count} row(s))")
-                                supabase_deleted = True
-                                
-                                # Verify deletion
-                                try:
-                                    verify_result = supabase.table('document_templates').select('id').eq('id', template_id_str).execute()
-                                    if verify_result.data and len(verify_result.data) > 0:
-                                        logger.error(f"⚠ WARNING: Template {template_id_str} still exists in Supabase after deletion attempt!")
-                                        warnings.append("Template deletion verification failed - template may still exist in database")
-                                    else:
-                                        logger.info(f"✓ Verified: Template {template_id_str} successfully deleted from Supabase")
-                                except Exception as verify_exc:
-                                    logger.warning(f"Could not verify template deletion: {verify_exc}")
-                                    # Don't fail if verification fails - deletion might have succeeded
-                            else:
-                                logger.warning(f"Template delete query executed but no rows were deleted for ID {template_id_str}")
-                                warnings.append(f"Template not found in Supabase database (ID: {template_id_str}) - may have been already deleted")
-                        except Exception as delete_exc:
-                            error_msg = str(delete_exc)
-                            logger.error(f"✗ Failed to delete template record from Supabase: {error_msg}")
-                            import traceback
-                            logger.error(traceback.format_exc())
-                            warnings.append(f"Failed to delete template from Supabase: {error_msg}")
-                            
-                    except Exception as exc:
-                        error_msg = str(exc)
-                        logger.error(f"✗ Failed to delete template from Supabase: {error_msg}")
-                        import traceback
-                        logger.error(traceback.format_exc())
-                        warnings.append(f"Supabase delete failed: {error_msg}")
-                else:
-                    logger.warning(f"Template not found in Supabase: {template_name}, proceeding with local deletion only")
-            except Exception as supabase_exc:
-                logger.error(f"✗ Error checking Supabase for template: {supabase_exc}")
-                import traceback
-                logger.error(traceback.format_exc())
-                warnings.append(f"Could not check Supabase: {str(supabase_exc)}")
-
-        docx_name = ensure_docx_filename(resolved_name)
-        file_path = os.path.join(TEMPLATES_DIR, docx_name)
-        
-        # Try to delete local file - check multiple possible filename variations
-        deleted_local = False
-        file_variations = [
-            docx_name,
-            docx_name.lower(),
-            docx_name.upper(),
-            resolved_name,
-            ensure_docx_filename(resolved_name.lower()),
-            ensure_docx_filename(resolved_name.upper()),
-            template_name,  # Original template name
-            ensure_docx_filename(template_name),  # Original with .docx
-        ]
-        
-        # Also check without .docx extension
-        if not resolved_name.endswith('.docx'):
-            file_variations.append(ensure_docx_filename(resolved_name))
-        if not template_name.endswith('.docx'):
-            file_variations.append(ensure_docx_filename(template_name))
-        
-        for file_variant in set(file_variations):  # Use set to avoid duplicates
-            if not file_variant:
-                continue
-            variant_path = os.path.join(TEMPLATES_DIR, file_variant)
-            if os.path.exists(variant_path):
-                try:
-                    os.remove(variant_path)
-                    logger.info(f"Deleted local template file: {file_variant}")
-                    deleted_local = True
-                except Exception as exc:
-                    logger.warning(f"Failed to delete template file {file_variant}: {exc}")
-        
-        # If template not in DB and no file deleted yet: try matching by normalized name (list dir)
-        file_exists = any(os.path.exists(os.path.join(TEMPLATES_DIR, var)) for var in set(file_variations) if var)
-        if not template_id and not deleted_local and not file_exists:
-            try:
-                target_key = _normalize_for_match(template_name)
-                target_key_docx = _normalize_for_match(docx_name)
-                for f in os.listdir(TEMPLATES_DIR):
-                    if not f.lower().endswith(".docx"):
-                        continue
-                    p = os.path.join(TEMPLATES_DIR, f)
-                    if not os.path.isfile(p):
-                        continue
-                    k = _normalize_for_match(f)
-                    if k and (k == target_key or k == target_key_docx):
-                        try:
-                            os.remove(p)
-                            logger.info(f"Deleted local template file (normalized match): {f}")
-                            deleted_local = True
-                            break
-                        except Exception as exc:
-                            logger.warning(f"Failed to delete matched file {f}: {exc}")
-            except Exception as exc:
-                logger.warning(f"Dir-listing fallback for delete failed: {exc}")
-
-        # Never 404 on delete: always mark deleted + clean config so template disappears from list
-        if not deleted_local and not template_id:
-            logger.info(f"Template not found in DB or as file; marking deleted and cleaning config: {template_name}")
-        elif not deleted_local and template_id:
-            logger.warning(f"No local template file found to delete for {docx_name} (but marked as deleted in tracking file)")
-
-        # Clean up placeholder settings
-        placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-        if placeholder_settings:
-            removed = False
-            if docx_name in placeholder_settings:
-                placeholder_settings.pop(docx_name, None)
-                removed = True
-            else:
-                normalised_key = normalise_template_key(docx_name)
-                for key in list(placeholder_settings.keys()):
-                    if normalise_template_key(key) == normalised_key:
-                        placeholder_settings.pop(key, None)
-                        removed = True
-            if removed:
-                write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
-
-        # Clean up metadata
-        metadata = load_template_metadata()
-        if metadata:
-            removed_meta = False
-            if docx_name in metadata:
-                metadata.pop(docx_name, None)
-                removed_meta = True
-            else:
-                normalised_key = normalise_template_key(docx_name)
-                for key in list(metadata.keys()):
-                    if normalise_template_key(key) == normalised_key:
-                        metadata.pop(key, None)
-                        removed_meta = True
-            if removed_meta:
-                save_template_metadata(metadata)
-
-        # Clean up from plans.json if template exists in any plan
-        try:
-            plans = read_json_file(PLANS_PATH, {})
-            if plans:
-                template_name_without_ext = docx_name.replace('.docx', '')
-                updated = False
-                for plan_tier, plan_data in plans.items():
-                    if isinstance(plan_data, dict) and 'can_download' in plan_data:
-                        can_download = plan_data.get('can_download', [])
-                        if isinstance(can_download, list):
-                            # Remove template from plan's can_download list
-                            original_length = len(can_download)
-                            can_download = [t for t in can_download if t and ensure_docx_filename(t) != docx_name and t != template_name_without_ext]
-                            if len(can_download) != original_length:
-                                plan_data['can_download'] = can_download
-                                updated = True
-                                logger.info(f"Removed template {docx_name} from plan {plan_tier}")
-                if updated:
-                    write_json_atomic(PLANS_PATH, plans)
-                    logger.info(f"Updated plans.json to remove template {docx_name}")
-        except Exception as plans_exc:
-            logger.warning(f"Could not update plans.json: {plans_exc}")
-
-        # Mark template as deleted in deleted templates file (to prevent re-addition from local filesystem)
-        # Mark all variations to ensure we catch it regardless of how it's named
-        mark_template_as_deleted(docx_name)
-        if resolved_name != docx_name:
-            mark_template_as_deleted(resolved_name)
-        if template_name != docx_name and template_name != resolved_name:
-            mark_template_as_deleted(template_name)
-        
-        # Also mark case variations
-        mark_template_as_deleted(docx_name.lower())
-        mark_template_as_deleted(docx_name.upper())
-
-        logger.info(f"Template deletion completed: {docx_name}")
-        if supabase_deleted:
-            logger.info(f"✓ Template successfully deleted from Supabase and local filesystem: {docx_name}")
-        elif SUPABASE_ENABLED and not supabase_deleted and template_id:
-            logger.warning(f"⚠ Template deleted locally but may not have been deleted from Supabase: {docx_name}")
-
-        forgotten = not template_id and not deleted_local
-        response = {
-            "success": True,
-            "message": (
-                f"Template {docx_name} marked as deleted and config cleaned (it was not in DB or as a file)."
-                if forgotten
-                else f"Template {docx_name} deleted completely"
-            ),
-            "deleted_from_supabase": supabase_deleted if SUPABASE_ENABLED else None,
-        }
-        if forgotten:
-            response["forgotten"] = True
-        if warnings:
-            response["warnings"] = warnings
-        return response
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting template: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.options("/api/templates/{template_name}")
-async def options_delete_template_api(request: Request, template_name: str):
-    """CORS preflight for DELETE /api/templates/{template_name} (VPS Nginx /api prefix)."""
-    return Response(
-        status_code=204,
-        headers=_cors_preflight_headers(request, "DELETE, OPTIONS"),
-    )
-
-
-@app.delete("/api/templates/{template_name}")
-async def delete_template_api(
-    template_name: str,
-    current_user: str = Depends(get_current_user),
-):
-    """Delete template (same as /templates/{name}) for Nginx /api-prefixed requests."""
-    return await delete_template(template_name, current_user)
-
-
-@app.post("/templates/{template_id}/ai-scan-placeholders")
-async def ai_scan_placeholders(template_id: str):
-    """AI scan all placeholders for a template, map to database/CSV/random, return settings.
-    Used by CMS editor 'AI Scan' button. No auth required (CMS editor)."""
-    try:
-        template_record = resolve_template_record(template_id)
-        if not template_record:
-            raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
-        placeholders = list(template_record.get("placeholders") or [])
-        if not placeholders:
-            return {"success": True, "settings": {}, "message": "No placeholders to scan"}
-        db_schema = _build_schema_for_mapping()
-        csv_schema = _build_csv_schema_for_mapping()
-        analyzed = _ai_analyze_and_map_placeholders(placeholders, db_schema, csv_schema)
-        settings: Dict[str, Dict] = {}
-        for ph in placeholders:
-            cfg = (analyzed.get(ph) or {}).copy()
-            cfg.setdefault("source", "database")
-            cfg.setdefault("databaseTable", "")
-            cfg.setdefault("databaseField", "")
-            cfg.setdefault("csvId", "")
-            cfg.setdefault("csvField", "")
-            cfg.setdefault("csvRow", 0)
-            cfg.setdefault("randomOption", "auto")
-            cfg.setdefault("customValue", "")
-            settings[ph] = cfg
-        logger.info(f"AI scan placeholders for template {template_id}: {len(settings)} mapped")
-        return {"success": True, "settings": settings}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"AI scan placeholders error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/templates/{template_id}/ai-scan-placeholders")
-async def ai_scan_placeholders_api(template_id: str):
-    """AI scan placeholders (same as POST /templates/{id}/ai-scan-placeholders) for Nginx /api prefix."""
-    return await ai_scan_placeholders(template_id)
-
-
-@app.post("/templates/forget")
-async def forget_template(
-    request: Request,
-    current_user: str = Depends(get_current_user),
-):
-    """Remove an orphan template by name: mark deleted, clean placeholder_settings, metadata, plans.
-    Use when a template is not in DB, causes problems, and normal delete fails."""
-    try:
-        body = await request.json()
-        name = (body.get("name") or body.get("template_name") or "").strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="Missing 'name' or 'template_name' in JSON body")
-
-        docx_name = ensure_docx_filename(name)
-        removed_settings = False
-        removed_meta = False
-
-        placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-        if placeholder_settings:
-            if docx_name in placeholder_settings:
-                placeholder_settings.pop(docx_name, None)
-                removed_settings = True
-            else:
-                nk = normalise_template_key(docx_name)
-                for key in list(placeholder_settings.keys()):
-                    if normalise_template_key(key) == nk:
-                        placeholder_settings.pop(key, None)
-                        removed_settings = True
-                        break
-            if removed_settings:
-                write_json_atomic(PLACEHOLDER_SETTINGS_PATH, placeholder_settings)
-
-        metadata = load_template_metadata()
-        if metadata:
-            if docx_name in metadata:
-                metadata.pop(docx_name, None)
-                removed_meta = True
-            else:
-                nk = normalise_template_key(docx_name)
-                for key in list(metadata.keys()):
-                    if normalise_template_key(key) == nk:
-                        metadata.pop(key, None)
-                        removed_meta = True
-                        break
-            if removed_meta:
-                save_template_metadata(metadata)
-
-        plans = read_json_file(PLANS_PATH, {})
-        plan_updated = False
-        if isinstance(plans, dict) and plans:
-            no_ext = docx_name.replace(".docx", "")
-            for _plan_tier, plan_data in plans.items():
-                if not isinstance(plan_data, dict) or "can_download" not in plan_data:
-                    continue
-                can = plan_data.get("can_download", [])
-                if not isinstance(can, list):
-                    continue
-                orig = len(can)
-                can = [t for t in can if t and ensure_docx_filename(t) != docx_name and t != no_ext]
-                if len(can) != orig:
-                    plan_data["can_download"] = can
-                    plan_updated = True
-            if plan_updated:
-                write_json_atomic(PLANS_PATH, plans)
-
-        for v in [docx_name, name, docx_name.lower(), docx_name.upper()]:
-            if v:
-                mark_template_as_deleted(v)
-
-        logger.info(f"Forget template completed: {name} (placeholder_settings={removed_settings}, metadata={removed_meta}, plans={plan_updated})")
-        return {
-            "success": True,
-            "message": f"Template '{name}' forgotten (marked deleted, config cleaned)",
-            "removed_from_placeholder_settings": removed_settings,
-            "removed_from_metadata": removed_meta,
-            "plans_updated": plan_updated,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error forgetting template: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/templates/forget")
-async def forget_template_api(
-    request: Request,
-    current_user: str = Depends(get_current_user),
-):
-    """Forget template (same as POST /templates/forget) for Nginx /api prefix."""
-    return await forget_template(request, current_user)
-
-
-@app.get("/api/database-tables")
-async def get_database_tables_api(request: Request):
-    """CMS editor: /api/database-tables (Nginx forwards with /api prefix)."""
-    return await get_database_tables(request)
-
-
-@app.get("/api/database-tables/{table_name}/columns")
-async def get_database_table_columns_api(table_name: str, request: Request):
-    """CMS editor: /api/database-tables/{table_name}/columns."""
-    return await get_database_table_columns(table_name, request)
-
-
-@app.get("/api/csv-files")
-async def get_csv_files_api(request: Request):
-    """CMS editor: /api/csv-files."""
-    return await get_csv_files(request)
-
-
-@app.get("/api/csv-fields/{csv_id}")
-async def get_csv_fields_api(csv_id: str, request: Request):
-    """CMS editor: /api/csv-fields/{csv_id}."""
-    return await get_csv_fields(csv_id, request)
-
-
-@app.get("/api/plans-db")
-async def get_plans_db_api():
-    """CMS editor: /api/plans-db."""
-    return await get_plans_db()
-
-
-@app.get("/api/plans")
-async def get_plans_api():
-    """CMS editor fallback: /api/plans."""
-    return await get_plans()
-
-
-# ============================================================================
-# STEP 5: PLACEHOLDER SETTINGS API (JSON-backed)
-# ============================================================================
-
-@app.get("/placeholder-settings")
-@app.get("/cmsplaceholder-settings")  # Alias for nginx rewrite compatibility
-async def get_placeholder_settings(
-    request: Request,
-    template_name: Optional[str] = None,
+class TemplateMetadata(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    font_family: Optional[str] = None
+    font_size: Optional[int] = None
+    plan_ids: Optional[List[str]] = None
+
+
+class PlaceholderSettingsRequest(BaseModel):
+    template_name: str
     template_id: Optional[str] = None
-):
-    """Get placeholder settings (all or per-template) - allows unauthenticated access for CMS editor"""
+    settings: Dict[str, Any]
+
+
+class ProcessDocumentRequest(BaseModel):
+    template_name: str
+    vessel_id: Optional[int] = None
+    buyer_id: Optional[str] = None
+    seller_id: Optional[str] = None
+    product_id: Optional[str] = None
+    refinery_id: Optional[str] = None
+    departure_port_id: Optional[int] = None
+    destination_port_id: Optional[int] = None
+    buyer_bank_id: Optional[str] = None
+    seller_bank_id: Optional[str] = None
+    output_format: str = "base64"
+
+
+class GenerateDocumentRequest(BaseModel):
+    template_name: str
+    vessel_imo: Optional[str] = None
+    vessel_id: Optional[int] = None
+    buyer_id: Optional[str] = None
+    seller_id: Optional[str] = None
+    product_id: Optional[str] = None
+    refinery_id: Optional[str] = None
+    departure_port_id: Optional[int] = None
+    destination_port_id: Optional[int] = None
+    buyer_bank_id: Optional[str] = None
+    seller_bank_id: Optional[str] = None
+
+
+class PlanUpdateRequest(BaseModel):
+    plan_id: str
+    plan_data: Dict[str, Any]
+
+
+def is_valid_uuid(val: str) -> bool:
+    """Check if a string is a valid UUID format"""
+    if not val:
+        return False
     try:
-        if SUPABASE_ENABLED and (template_name or template_id):
-            template_record = None
-            search_identifier = template_id or template_name
-            logger.info(f"🔍 Looking up placeholder settings for template_id={template_id}, template_name={template_name}")
-            
-            if template_id:
-                template_record = resolve_template_record(template_id)
-                if template_record:
-                    logger.info(f"✅ Found template by ID: {template_id} -> {template_record.get('file_name')}")
-                else:
-                    logger.warning(f"⚠️ Template not found by ID: {template_id}")
-            
-            if not template_record and template_name:
-                template_record = resolve_template_record(template_name)
-                if template_record:
-                    logger.info(f"✅ Found template by name: {template_name} -> {template_record.get('file_name')}")
-                else:
-                    logger.warning(f"⚠️ Template not found by name: {template_name}")
-            
-            if not template_record:
-                error_msg = f"Template not found: template_id={template_id}, template_name={template_name}"
-                logger.error(f"❌ {error_msg}")
-                raise HTTPException(status_code=404, detail=error_msg)
-            
-            settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
-            
-            # Preserve explicit 'random' and 'csv'. Only default to 'database' when source is missing or empty.
-            for placeholder, setting in settings.items():
-                s = setting.get('source')
-                if s is None or (isinstance(s, str) and not s.strip()):
-                    setting['source'] = 'database'
-                    logger.debug(f"🔧 Defaulted placeholder '{placeholder}' source to 'database' (was missing)")
-            
-            logger.info(f"✅ Loaded {len(settings)} placeholder settings for template {template_record.get('file_name')}")
-            return {
-                "template": template_record.get('file_name') or template_name,
-                "settings": settings,
-                "template_id": str(template_record['id'])
-            }
-
-        if SUPABASE_ENABLED and not template_name:
-            response = supabase.table('template_placeholders').select(
-                'template_id, placeholder, source, custom_value, database_table, database_field, csv_id, csv_field, csv_row, random_option'
-            ).execute()
-
-            aggregated: Dict[str, Dict[str, Dict]] = {}
-            for row in response.data or []:
-                template_id = str(row['template_id'])
-                source = row.get('source')
-                if source is None or (isinstance(source, str) and not source.strip()):
-                    source = 'database'
-                else:
-                    source = str(source).strip()
-                aggregated.setdefault(template_id, {})[row['placeholder']] = {
-                    'source': source,
-                    'customValue': row.get('custom_value') or '',
-                    'databaseTable': row.get('database_table') or '',
-                    'databaseField': row.get('database_field') or '',
-                    'csvId': row.get('csv_id') or '',
-                    'csvField': row.get('csv_field') or '',
-                    'csvRow': row['csv_row'] if row.get('csv_row') is not None else 0,
-                    'randomOption': row.get('random_option', 'auto') or 'auto'
-                }
-            return {"settings": aggregated}
-
-        if not SUPABASE_ENABLED:
-            settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-            if template_name:
-                template_settings = settings.get(template_name, {})
-                return {"template": template_name, "settings": template_settings}
-            return {"settings": settings}
-
-        raise HTTPException(status_code=404, detail="Template not found")
-    except Exception as e:
-        logger.error(f"Error getting placeholder settings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/placeholder-settings/fix-random-defaults")
-async def fix_random_defaults(current_user: str = Depends(get_current_user)):
-    """Fix existing placeholder settings that have source='random' to source='database'."""
-    if not SUPABASE_ENABLED:
-        raise HTTPException(status_code=503, detail="Supabase not available")
-    
-    try:
-        # Find all placeholders with source='random' or null/empty
-        response = supabase.table('template_placeholders').select('template_id, placeholder, source').execute()
-        
-        fixed_count = 0
-        for row in response.data or []:
-            source = row.get('source')
-            if not source or source == '' or source == 'random':
-                template_id = row['template_id']
-                placeholder = row['placeholder']
-                supabase.table('template_placeholders').update({
-                    'source': 'database'
-                }).eq('template_id', template_id).eq('placeholder', placeholder).execute()
-                fixed_count += 1
-        
-        return {"success": True, "fixed_count": fixed_count, "message": f"Fixed {fixed_count} placeholder settings to use 'database' as default"}
-    except Exception as e:
-        logger.error(f"Failed to fix random defaults: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fix defaults: {str(e)}")
-
-
-@app.post("/placeholder-settings")
-@app.post("/cmsplaceholder-settings")  # Alias for nginx rewrite compatibility
-async def save_placeholder_settings(request: Request):
-    """Save placeholder settings for a template"""
-    # Allow unauthenticated access for CMS editor
-    try:
-        data = await request.json()
-        template_name = data.get('template_name')
-        template_id_override = data.get('template_id')
-        new_settings = data.get('settings', {})
-        
-        logger.info(f"💾 Saving placeholder settings: template_id={template_id_override}, template_name={template_name}, settings_count={len(new_settings)}")
-        
-        if not template_name and not template_id_override:
-            raise HTTPException(status_code=400, detail="template_name or template_id is required")
-
-        if SUPABASE_ENABLED:
-            template_record = None
-            if template_id_override:
-                template_record = resolve_template_record(template_id_override)
-            if not template_record and template_name:
-                template_record = resolve_template_record(template_name)
-            if not template_record:
-                raise HTTPException(status_code=404, detail="Template not found")
-
-            template_id = template_record['id']
-
-            # Normalise payload to Supabase schema then upsert. Preserve explicit random/csv.
-            sanitised_settings: Dict[str, Dict] = {}
-            for placeholder, cfg in new_settings.items():
-                if not placeholder:
-                    continue
-                source = cfg.get('source')
-                if source is None or (isinstance(source, str) and not source.strip()):
-                    source = 'database'
-                    logger.debug(f"Defaulted placeholder '{placeholder}' source to 'database' (was missing)")
-                else:
-                    source = str(source).strip()
-                
-                sanitised_settings[placeholder] = {
-                    'source': source,
-                    'customValue': str(cfg.get('customValue', '')).strip() if cfg.get('customValue') else '',
-                    'databaseTable': str(cfg.get('databaseTable') or cfg.get('database_table') or cfg.get('table') or '').strip(),
-                    'databaseField': str(cfg.get('databaseField') or cfg.get('database_field') or cfg.get('field') or '').strip(),
-                    'csvId': str(cfg.get('csvId', '')).strip() if cfg.get('csvId') else '',
-                    'csvField': str(cfg.get('csvField', '')).strip() if cfg.get('csvField') else '',
-                    'csvRow': int(cfg.get('csvRow', 0)) if cfg.get('csvRow') is not None else 0,
-                    'randomOption': cfg.get('randomOption', 'auto') or 'auto'
-                }
-                logger.debug(f"Sanitized setting for '{placeholder}': source={sanitised_settings[placeholder]['source']}, databaseTable={sanitised_settings[placeholder]['databaseTable']}, databaseField={sanitised_settings[placeholder]['databaseField']}, csvId={sanitised_settings[placeholder]['csvId']}")
-
-            logger.info(f"💾 Saving {len(sanitised_settings)} placeholder settings for template {template_id} ({template_record.get('file_name')})")
-            logger.info(f"   Sample settings: {list(sanitised_settings.items())[:3]}")
-            
-            upsert_template_placeholders(template_id, sanitised_settings, template_record.get('file_name'))
-            
-            logger.info(f"✅ Successfully saved placeholder settings to Supabase")
-
-            # Return latest snapshot
-            refreshed = fetch_template_placeholders(template_id, template_record.get('file_name'))
-            logger.info(f"✅ Verified: Loaded {len(refreshed)} settings back from Supabase")
-            return {"success": True, "template": template_name, "template_id": str(template_id), "settings": refreshed, "saved_count": len(sanitised_settings)}
-
-        if not SUPABASE_ENABLED and template_name:
-            all_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-            if template_name not in all_settings:
-                all_settings[template_name] = {}
-            all_settings[template_name].update(new_settings)
-            write_json_atomic(PLACEHOLDER_SETTINGS_PATH, all_settings)
-            logger.info(f"Saved placeholder settings for {template_name}")
-            return {"success": True, "template": template_name, "settings": all_settings[template_name]}
-
-        raise HTTPException(status_code=503, detail="Supabase not available")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error saving placeholder settings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# STEP 6: PLANS API (JSON-backed)
-# ============================================================================
-
-@app.get("/plans")
-async def get_plans():
-    """Get all subscription plans"""
-    try:
-        plans = read_json_file(PLANS_PATH, {})
-        return {"success": True, "plans": plans}
-    except Exception as e:
-        logger.error(f"Error getting plans: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/user-plan/{user_id}")
-async def get_user_plan(user_id: str):
-    """Get plan for a specific user (mock - can be extended)"""
-    try:
-        plans_data = read_json_file(PLANS_PATH, {})
-        # For now, return basic plan as default
-        # In production, this would look up user's actual plan
-        return {
-            "success": True,
-            "user_id": user_id,
-            "plan": "basic",  # Default
-            "plan_data": plans_data.get("basic", {})
-        }
-    except Exception as e:
-        logger.error(f"Error getting user plan: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/check-download-permission")
-async def check_download_permission(request: Request):
-    """Check if a user can download a specific template"""
-    try:
-        data = await request.json()
-        user_id = data.get('user_id', 'basic')  # Default to basic
-        template_name = data.get('template_name')
-        
-        if not template_name:
-            raise HTTPException(status_code=400, detail="template_name is required")
-        
-        plans_data = read_json_file(PLANS_PATH, {})
-        user_plan_data = plans_data.get(user_id, plans_data.get("basic", {}))
-        
-        can_download = user_plan_data.get("can_download", [])
-        
-        # Check if user can download all templates
-        if "*" in can_download:
-            return {"can_download": True, "reason": "unlimited"}
-        
-        # Check if specific template is allowed
-        can_download_bool = template_name in can_download or any(
-            template_name.startswith(t.replace("*", "")) for t in can_download if "*" in t
-        )
-        
-        return {
-            "can_download": can_download_bool,
-            "user_id": user_id,
-            "template_name": template_name,
-            "plan": user_plan_data.get("name", "Unknown")
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error checking permission: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/update-plan")
-async def update_plan(request: Request, current_user: str = Depends(get_current_user)):
-    """Update a subscription plan"""
-    try:
-        body = await request.json()
-        plan_id = body.get('plan_id')
-        plan_data = body.get('plan_data')
-        
-        if not plan_id or not plan_data:
-            raise HTTPException(status_code=400, detail="plan_id and plan_data are required")
-        
-        # If Supabase is available, update in database
-        if supabase:
-            try:
-                # Get plan by tier
-                plan_res = supabase.table('subscription_plans').select('id').eq('plan_tier', plan_id).limit(1).execute()
-                if plan_res.data:
-                    db_plan_id = plan_res.data[0]['id']
-                    
-                    # Update max_downloads_per_month
-                    update_data = {}
-                    if 'max_downloads_per_month' in plan_data:
-                        update_data['max_downloads_per_month'] = plan_data['max_downloads_per_month']
-                    
-                    if update_data:
-                        supabase.table('subscription_plans').update(update_data).eq('id', db_plan_id).execute()
-                    
-                    # Update template permissions if provided
-                    # Check both 'allowed_templates' and 'can_download' for compatibility
-                    allowed = plan_data.get('allowed_templates') or plan_data.get('can_download')
-                    
-                    if allowed:
-                        # Get all templates
-                        templates_res = supabase.table('document_templates').select('id, file_name').eq('is_active', True).execute()
-                        
-                        if templates_res.data:
-                            # Delete existing permissions
-                            supabase.table('plan_template_permissions').delete().eq('plan_id', db_plan_id).execute()
-                            
-                            # Create new permissions
-                            if allowed == '*' or allowed == ['*'] or (isinstance(allowed, list) and '*' in allowed):
-                                # Allow all templates
-                                for template in templates_res.data:
-                                    supabase.table('plan_template_permissions').insert({
-                                        'plan_id': db_plan_id,
-                                        'template_id': template['id'],
-                                        'can_download': True,
-                                        'max_downloads_per_template': None  # Per-template limit (NULL = unlimited, use plan default)
-                                    }).execute()
-                                logger.info(f"Set all templates permission for plan {plan_id}")
-                            elif isinstance(allowed, list):
-                                # Normalize template names from can_download list (may have .docx or not)
-                                template_names_normalized = set()
-                                for t in allowed:
-                                    if t != '*':
-                                        # Ensure .docx extension for comparison
-                                        normalized = ensure_docx_filename(t)
-                                        template_names_normalized.add(normalise_template_key(normalized))
-                                        # Also add without extension for flexibility
-                                        template_names_normalized.add(normalise_template_key(t.replace('.docx', '').replace('.DOCX', '')))
-                                
-                                logger.info(f"Matching templates for plan {plan_id} against normalized names: {list(template_names_normalized)[:5]}...")
-
-                                inserted_count = 0
-                                for template in templates_res.data:
-                                    template_name = template.get('file_name', '').strip()
-                                    if not template_name:
-                                        continue
-                                    
-                                    # Normalize template name for comparison
-                                    normalized_template_name = normalise_template_key(ensure_docx_filename(template_name))
-                                    normalized_template_name_no_ext = normalise_template_key(template_name.replace('.docx', '').replace('.DOCX', ''))
-                                    
-                                    # Check if this template matches any in the allowed list
-                                    if normalized_template_name in template_names_normalized or normalized_template_name_no_ext in template_names_normalized:
-                                        try:
-                                            supabase.table('plan_template_permissions').insert({
-                                                'plan_id': db_plan_id,
-                                                'template_id': template['id'],
-                                                'can_download': True
-                                            }).execute()
-                                            inserted_count += 1
-                                            logger.debug(f"Added permission for template {template_name} (ID: {template['id']}) to plan {plan_id}")
-                                        except Exception as insert_exc:
-                                            logger.warning(f"Failed to insert permission for template {template_name}: {insert_exc}")
-                                
-                                logger.info(f"Set {inserted_count} template permissions for plan {plan_id} (matched {len(template_names_normalized)} template names)")
-                    
-                    logger.info(f"Updated plan in database: {plan_id}")
-            except Exception as e:
-                logger.warning(f"Failed to update plan in database: {e}, using JSON fallback")
-        
-        # Also update JSON file as fallback/primary storage
-        plans = read_json_file(PLANS_PATH, {})
-        if plan_id not in plans:
-            raise HTTPException(status_code=404, detail=f"Plan '{plan_id}' not found")
-        
-        # Get existing plan data
-        existing_plan = plans.get(plan_id, {})
-        
-        # Merge with existing plan data to preserve other fields
-        # Only update fields that are provided in plan_data
-        updated_plan = existing_plan.copy()
-        
-        # Update specific fields if provided
-        if 'can_download' in plan_data:
-            can_download = plan_data['can_download']
-            # Normalize: ensure it's a list and remove .docx extensions for consistency
-            if isinstance(can_download, str):
-                updated_plan['can_download'] = [ensure_docx_filename(can_download) if can_download != '*' else '*']
-            elif isinstance(can_download, list):
-                normalized = []
-                for t in can_download:
-                    if not t:
-                        continue
-                    if t == '*':
-                        normalized.append('*')
-                    elif isinstance(t, str):
-                        normalized.append(ensure_docx_filename(t))
-                    else:
-                        normalized.append(t)
-                updated_plan['can_download'] = normalized
-        
-        if 'max_downloads_per_month' in plan_data:
-            updated_plan['max_downloads_per_month'] = plan_data['max_downloads_per_month']
-        
-        if 'features' in plan_data:
-            updated_plan['features'] = plan_data['features'] if isinstance(plan_data['features'], list) else []
-        
-        # Preserve other fields from plan_data if they exist
-        for key in ['name', 'description', 'monthly_price', 'annual_price', 'plan_tier', 'is_active']:
-            if key in plan_data:
-                updated_plan[key] = plan_data[key]
-        
-        plans[plan_id] = updated_plan
-        write_json_atomic(PLANS_PATH, plans)
-        
-        logger.info(f"Updated plan: {plan_id}")
-        logger.info(f"  - can_download: {updated_plan.get('can_download')}")
-        logger.info(f"  - max_downloads_per_month: {updated_plan.get('max_downloads_per_month')}")
-        logger.info(f"  - features: {updated_plan.get('features')}")
-        
-        return {"success": True, "plan_id": plan_id, "plan_data": updated_plan}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating plan: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/check-download-permission-db")
-async def check_download_permission_db(request: Request):
-    """Check if a user can download a specific template from database"""
-    try:
-        body = await request.json()
-        user_id = body.get('user_id')
-        template_name = body.get('template_name')
-        
-        if not user_id or not template_name:
-            raise HTTPException(status_code=400, detail="user_id and template_name are required")
-        
-        if not supabase:
-            # Fallback to JSON-based check
-            return await check_download_permission(request)
-        
-        # Get template ID
-        template_file_name = template_name.replace('.docx', '')
-        template_res = supabase.table('document_templates').select('id').eq('file_name', template_file_name).eq('is_active', True).limit(1).execute()
-        
-        if not template_res.data:
-            raise HTTPException(status_code=404, detail="Template not found")
-        
-        template_id = template_res.data[0]['id']
-        
-        # Call database function to check permissions
-        permission_res = supabase.rpc('can_user_download_template', {
-            'p_user_id': user_id,
-            'p_template_id': template_id
-        }).execute()
-        
-        if permission_res.data:
-            return {
-                "success": True,
-                **permission_res.data
-            }
-        else:
-            return {
-                "success": False,
-                "can_download": False,
-                "reason": "No permission data returned"
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error checking download permission: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.options("/user-downloadable-templates")
-async def options_user_downloadable_templates(request: Request):
-    """Handle CORS preflight for user-downloadable-templates endpoint"""
-    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
-
-@app.get("/templates/{template_identifier}/plan-info")
-async def get_template_plan_info(template_identifier: str):
-    """Get plan information for a specific template (which plans can download it)"""
-    try:
-        if not supabase:
-            return {
-                "success": True,
-                "template_name": template_identifier,
-                "plans": [],
-                "source": "json_fallback"
-            }
-        
-        # Try to resolve by template_id (UUID) first
-        template_id = None
-        template_record = None
-        
-        try:
-            template_uuid = uuid.UUID(str(template_identifier))
-            template_res = supabase.table('document_templates').select('id, file_name').eq('id', str(template_uuid)).eq('is_active', True).limit(1).execute()
-            if template_res.data:
-                template_record = template_res.data[0]
-                template_id = template_record['id']
-        except (ValueError, TypeError):
-            # Not a UUID, try by file_name
-            template_file_name = template_identifier.replace('.docx', '')
-            template_res = supabase.table('document_templates').select('id, file_name').eq('file_name', template_file_name).eq('is_active', True).limit(1).execute()
-            if template_res.data:
-                template_record = template_res.data[0]
-                template_id = template_record['id']
-        
-        if not template_id:
-            raise HTTPException(status_code=404, detail="Template not found")
-        
-        # Get all plans that can download this template (include max_downloads_per_template)
-        permissions_res = supabase.table('plan_template_permissions').select(
-            'plan_id, can_download, max_downloads_per_template'
-        ).eq('template_id', template_id).eq('can_download', True).execute()
-        
-        plan_ids = [p['plan_id'] for p in (permissions_res.data or [])]
-        
-        if plan_ids:
-            plans_res = supabase.table('subscription_plans').select(
-                'id, plan_name, plan_tier, name'
-            ).in_('id', plan_ids).eq('is_active', True).execute()
-            
-            plans = []
-            if plans_res.data:
-                for plan in plans_res.data:
-                    plans.append({
-                        "plan_id": str(plan['id']),
-                        "plan_name": plan.get('plan_name') or plan.get('name') or plan.get('plan_tier'),
-                        "plan_tier": plan.get('plan_tier')
-                    })
-            
-            # If template is available to all plans (check if any plan has * permission)
-            all_plans_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('is_active', True).execute()
-            if all_plans_res.data:
-                # Check if there's a plan with all templates access
-                for plan in all_plans_res.data:
-                    plan_permissions = supabase.table('plan_template_permissions').select('template_id').eq('plan_id', plan['id']).execute()
-                    # If plan has no restrictions or has all templates, include it
-                    if not plan_permissions.data or len(plan_permissions.data) == 0:
-                        # Check if plan allows all by checking can_download list in plans-db
-                        plan_tier = plan.get('plan_tier')
-                        plan_info = supabase.table('subscription_plans').select('*').eq('plan_tier', plan_tier).limit(1).execute()
-                        if plan_info.data:
-                            # Check plan permissions via RPC or direct check
-                            plans.append({
-                                "plan_id": str(plan['id']),
-                                "plan_name": plan.get('plan_name') or plan.get('name') or plan_tier,
-                                "plan_tier": plan_tier
-                            })
-            
-            # Remove duplicates
-            seen = set()
-            unique_plans = []
-            for plan in plans:
-                key = (plan.get('plan_id'), plan.get('plan_name'))
-                if key not in seen:
-                    seen.add(key)
-                    unique_plans.append(plan)
-            
-            return {
-                "success": True,
-                "template_id": str(template_id),
-                "template_name": template_record.get('file_name') if template_record else template_identifier,
-                "plans": unique_plans,
-                "plan_name": unique_plans[0]['plan_name'] if unique_plans else None,
-                "plan_tier": unique_plans[0]['plan_tier'] if unique_plans else None,
-                "source": "database"
-            }
-        else:
-            return {
-                "success": True,
-                "template_id": str(template_id),
-                "template_name": template_record.get('file_name') if template_record else template_identifier,
-                "plans": [],
-                "plan_name": None,
-                "plan_tier": None,
-                "source": "database"
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting template plan info: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/user-downloadable-templates")
-async def get_user_downloadable_templates(request: Request):
-    """Get list of templates user can download with download counts"""
-    try:
-        body = await request.json()
-        user_id = body.get('user_id')
-        
-        if not user_id:
-            raise HTTPException(status_code=400, detail="user_id is required")
-        
-        if not supabase:
-            # Fallback to JSON-based templates
-            templates = []
-            for filename in os.listdir(TEMPLATES_DIR):
-                if filename.endswith('.docx'):
-                    file_path = os.path.join(TEMPLATES_DIR, filename)
-                    file_size = os.path.getsize(file_path)
-                    created_at = datetime.fromtimestamp(os.path.getctime(file_path)).isoformat()
-                    placeholders = extract_placeholders_from_docx(file_path)
-
-                    templates.append({
-                        "name": filename,
-                        "file_name": filename.replace('.docx', ''),
-                        "size": file_size,
-                        "created_at": created_at,
-                        "placeholders": placeholders,
-                        "can_download": True,  # Default to true for JSON fallback
-                        "max_downloads": 10,
-                        "current_downloads": 0,
-                        "remaining_downloads": 10
-                    })
-
-            return {
-                "success": True,
-                "templates": templates,
-                "source": "json"
-            }
-        
-        # Load metadata map for fallback descriptions
-        metadata_map = load_template_metadata()
-        
-        # Call database function
-        templates_res = supabase.rpc('get_user_downloadable_templates', {
-            'p_user_id': user_id
-        }).execute()
-        
-        if templates_res.data:
-            # Enhance with template details
-            template_ids = [t['template_id'] for t in templates_res.data]
-            if not template_ids:
-                return {"success": True, "templates": [], "source": "database"}
-
-            details_res = supabase.table('document_templates').select('id, title, description, file_name, placeholders, font_family, font_size').in_('id', template_ids).execute()
-            details_map = {d['id']: d for d in (details_res.data or [])}
-
-            # Get user's plan info (subscribers.subscription_tier)
-            user_plan_info = None
-            try:
-                user_res = supabase.table('subscribers').select('subscription_tier').eq('user_id', user_id).limit(1).execute()
-                if user_res.data and user_res.data[0]:
-                    plan_tier = user_res.data[0].get('subscription_tier')
-                    if plan_tier:
-                        plan_res = supabase.table('subscription_plans').select('id, plan_name, plan_tier, name').eq('plan_tier', plan_tier).limit(1).execute()
-                        if plan_res.data:
-                            user_plan_info = {
-                                "plan_name": plan_res.data[0].get('plan_name') or plan_res.data[0].get('name') or plan_tier,
-                                "plan_tier": plan_tier
-                            }
-            except Exception as e:
-                logger.warning(f"Could not fetch user plan info: {e}")
-            
-            enhanced_templates = []
-            for t in templates_res.data:
-                template_id = t['template_id']
-                details = details_map.get(template_id, {})
-                
-                # Get file_name and normalize for metadata lookup
-                file_name = details.get('file_name', '')
-                docx_file_name = ensure_docx_filename(file_name) if file_name else ''
-                metadata_entry = metadata_map.get(docx_file_name, {}) if docx_file_name else {}
-                
-                # Get description from Supabase, fallback to metadata, fallback to empty
-                description = (
-                    details.get('description') or 
-                    metadata_entry.get('description') or 
-                    ''
-                )
-                
-                # Get display_name - prioritize metadata display_name, then Supabase title, then file_name
-                display_name = (
-                    metadata_entry.get('display_name') or 
-                    details.get('title') or 
-                    (file_name.replace('.docx', '') if file_name else 'Unknown')
-                )
-                
-                # Get title (fallback to display_name)
-                template_title = details.get('title') or display_name
-                
-                # Get font settings - prioritize database, then metadata
-                font_family = details.get('font_family') or metadata_entry.get('font_family')
-                font_size = details.get('font_size') or metadata_entry.get('font_size')
-                
-                # If user can download, use their plan name, otherwise try to get plan info for template
-                plan_name = None
-                plan_tier_val = None
-                if t['can_download'] and user_plan_info:
-                    plan_name = user_plan_info['plan_name']
-                    plan_tier_val = user_plan_info['plan_tier']
-                elif not t['can_download']:
-                    # Try to get which plan allows this template
-                    try:
-                        perm_res = supabase.table('plan_template_permissions').select('plan_id').eq('template_id', template_id).eq('can_download', True).limit(1).execute()
-                        if perm_res.data:
-                            plan_id = perm_res.data[0]['plan_id']
-                            plan_detail_res = supabase.table('subscription_plans').select('plan_name, plan_tier, name').eq('id', plan_id).limit(1).execute()
-                            if plan_detail_res.data:
-                                plan_name = plan_detail_res.data[0].get('plan_name') or plan_detail_res.data[0].get('name') or plan_detail_res.data[0].get('plan_tier')
-                                plan_tier_val = plan_detail_res.data[0].get('plan_tier')
-                                logger.info(f"Found plan for locked template {template_id}: {plan_name} (tier: {plan_tier_val})")
-                    except Exception as e:
-                        logger.warning(f"Could not fetch plan info for template {template_id}: {e}")
-                
-                enhanced_templates.append({
-                    "id": str(template_id),
-                    "template_id": str(template_id),  # Also include as template_id for consistency
-                    "name": display_name,  # Use display_name as primary name
-                    "title": template_title,
-                    "file_name": file_name,
-                    "description": description,
-                    "font_family": font_family,
-                    "font_size": font_size,
-                    "placeholders": details.get('placeholders', []),
-                    "can_download": t['can_download'],
-                    "max_downloads": t['max_downloads'],
-                    "current_downloads": t['current_downloads'],
-                    "remaining_downloads": t['remaining_downloads'],
-                    "plan_name": plan_name,  # Always include plan_name (even if None)
-                    "plan_tier": plan_tier_val,
-                    "metadata": {
-                        "display_name": display_name,  # Always include display_name
-                        "description": description or metadata_entry.get('description', ''),  # Always include description
-                        "font_family": font_family,
-                        "font_size": font_size
-                    }
-                })
-            
-            return {
-                "success": True,
-                "templates": enhanced_templates,
-                "source": "database"
-            }
-        else:
-            return {
-                "success": True,
-                "templates": [],
-                "source": "database"
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Error getting user downloadable templates: %s\n%s", e, traceback.format_exc())
-        return {"success": True, "templates": [], "source": "database"}
-
-# ============================================================================
-# CSV DATA ENDPOINTS
-# ============================================================================
-
-@app.post("/upload-csv")
-async def upload_csv(
-    file: UploadFile = File(...),
-    data_type: str = Form(...),
-    current_user: str = Depends(get_current_user)
-):
-    """Upload CSV data file"""
-    try:
-        if not file.filename.endswith('.csv'):
-            raise HTTPException(status_code=400, detail="Only .csv files are allowed")
-
-        raw_label = (data_type or "").strip()
-        if not raw_label:
-            raise HTTPException(status_code=400, detail="data_type is required")
-
-        dataset_id = normalise_dataset_id(raw_label)
-        if not dataset_id:
-            dataset_id = f"dataset_{uuid.uuid4().hex[:6]}"
-
-        filename = dataset_id_to_filename(dataset_id)
-        file_path = os.path.join(DATA_DIR, filename)
-
-        with open(file_path, 'wb') as f:
-            content = await file.read()
-            f.write(content)
-
-        upsert_data_source_metadata(dataset_id, raw_label)
-
-        logger.info(f"CSV uploaded: {filename}")
-        return {
-            "success": True,
-            "dataset_id": dataset_id,
-            "filename": filename,
-            "display_name": raw_label or dataset_id
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error uploading CSV: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/data/all")
-async def get_all_data(current_user: str = Depends(get_current_user)):
-    """Get status of all CSV data sources"""
-    try:
-        data_sources: Dict[str, Dict[str, Optional[str]]] = {}
-        for dataset in list_csv_datasets():
-            file_path = dataset["path"]
-            exists = os.path.exists(file_path)
-            size = os.path.getsize(file_path) if exists else 0
-            row_count = 0
-
-            if exists:
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        reader = csv.DictReader(f)
-                        row_count = sum(1 for _ in reader)
-                except Exception:
-                    row_count = 0
-
-            display_name = dataset.get("display_name") or dataset["id"].replace('_', ' ').title()
-
-            data_sources[dataset["id"]] = {
-                "filename": dataset["filename"],
-                "exists": exists,
-                "size": size,
-                "row_count": row_count,
-                "display_name": display_name
-            }
-
-        return {"success": True, "data_sources": data_sources}
-    except Exception as e:
-        logger.error(f"Error getting data sources: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-def _resolve_csv_dataset(csv_id: str):
-    """Resolve csv_id to a dataset from list_csv_datasets (case-insensitive match). Use actual path."""
-    csv_id = (csv_id or "").strip()
-    if not csv_id:
-        return None
-    csv_lower = csv_id.lower()
-    for d in list_csv_datasets():
-        if d["id"].lower() == csv_lower and os.path.exists(d["path"]):
-            return d
-    return None
-
-
-@app.get("/csv-files")
-async def get_csv_files(request: Request):
-    """Get list of available CSV files"""
-    try:
-        csv_files = []
-        for dataset in list_csv_datasets():
-            if os.path.exists(dataset["path"]):
-                csv_files.append({
-                    "id": dataset["id"],
-                    "filename": dataset["filename"],
-                    "display_name": dataset.get("display_name") or dataset["id"].replace('_', ' ').title()
-                })
-        logger.info(f"Returning {len(csv_files)} CSV files")
-        return {"success": True, "csv_files": csv_files}
-    except Exception as e:
-        logger.error(f"Error getting CSV files: {e}")
-        return {"success": True, "csv_files": []}
-
-@app.get("/csv-fields/{csv_id}")
-async def get_csv_fields(csv_id: str, request: Request):
-    """Get columns/fields from a CSV file. Resolves csv_id via list (case-insensitive, actual path)."""
-    try:
-        dataset = _resolve_csv_dataset(csv_id)
-        if not dataset:
-            raise HTTPException(status_code=404, detail="CSV file not found")
-
-        with open(dataset["path"], 'r', encoding='utf-8', errors='replace') as f:
-            reader = csv.DictReader(f)
-            names = list(reader.fieldnames or [])
-        fields = [{"name": n, "label": n.replace('_', ' ').title()} for n in names]
-
-        return {"success": True, "fields": fields}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting CSV fields: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/csv-rows/{csv_id}/{field_name}")
-async def get_csv_rows(csv_id: str, field_name: str, current_user: str = Depends(get_current_user)):
-    """Get all unique rows for a specific field in a CSV file"""
-    try:
-        dataset_id = normalise_dataset_id(csv_id)
-        if not dataset_id:
-            raise HTTPException(status_code=404, detail="CSV file not found")
-
-        file_path = os.path.join(DATA_DIR, dataset_id_to_filename(dataset_id))
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail=f"CSV file not found: {dataset_id}")
-
-        rows_data = []
-        with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for idx, row in enumerate(reader):
-                if field_name in row and row[field_name]:
-                    value = row[field_name]
-                    preview = value[:100] + "..." if len(str(value)) > 100 else value
-                    rows_data.append({
-                        "row_index": idx,
-                        "value": value,
-                        "preview": preview
-                    })
-
-        return {"success": True, "rows": rows_data[:100]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting CSV rows: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/csv-files/{csv_id}")
-async def delete_csv_file(csv_id: str, current_user: str = Depends(get_current_user)):
-    """Delete a CSV data source file"""
-    try:
-        dataset_id = normalise_dataset_id(csv_id)
-        if not dataset_id:
-            raise HTTPException(status_code=404, detail="CSV file not found")
-
-        filename = dataset_id_to_filename(dataset_id)
-        file_path = os.path.join(DATA_DIR, filename)
-
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="CSV file not found")
-
-        os.remove(file_path)
-        remove_data_source_metadata(dataset_id)
-        logger.info(f"CSV deleted: {filename}")
-        return {"success": True, "filename": filename, "dataset_id": dataset_id}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(f"Error deleting CSV file: {exc}")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-def get_csv_data(csv_id: str, row_index: int = 0) -> Optional[Dict]:
-    """Get data from a CSV file by row index"""
-    try:
-        # First, try to get filename from data_sources.json (for dynamic CSV uploads)
-        metadata = load_data_sources_metadata()
-        filename = None
-        
-        # Check if csv_id exists in metadata
-        if csv_id in metadata:
-            # Use dataset_id_to_filename to get the actual filename
-            filename = dataset_id_to_filename(csv_id)
-            logger.debug(f"Found CSV '{csv_id}' in metadata, filename: {filename}")
-        else:
-            # Try to find in metadata by case-insensitive match
-            csv_id_lower = csv_id.lower()
-            for key in metadata.keys():
-                if key.lower() == csv_id_lower:
-                    filename = dataset_id_to_filename(key)
-                    logger.debug(f"Found CSV '{csv_id}' in metadata (case-insensitive match with '{key}'), filename: {filename}")
-                    break
-            
-            # Fallback to legacy hardcoded mapping for backward compatibility
-            if not filename:
-                csv_mapping = {
-                    "buyers_sellers": "buyers_sellers_data_220.csv",
-                    "buyers_sellers_data_220": "buyers_sellers_data_220.csv",  # Add direct mapping
-                    "bank_accounts": "bank_accounts.csv",
-                    "icpo": "icpo_section4_6_data_230.csv",
-                    "icpo_section4_6_data_230": "icpo_section4_6_data_230.csv"  # Add direct mapping
-                }
-                filename = csv_mapping.get(csv_id)
-                if filename:
-                    logger.debug(f"Found CSV '{csv_id}' in legacy mapping, filename: {filename}")
-        
-        if not filename:
-            logger.error(f"❌ CSV dataset '{csv_id}' not found in metadata or legacy mapping")
-            logger.error(f"   Available datasets in metadata: {list(metadata.keys())[:10]}...")
-            logger.error(f"   💡 TIP: Check if csvId in CMS matches dataset ID in data_sources.json")
-            return None
-        
-        file_path = os.path.join(DATA_DIR, filename)
-        if not os.path.exists(file_path):
-            logger.error(f"❌ CSV file not found: {file_path}")
-            logger.error(f"   💡 TIP: Check if CSV file exists in {DATA_DIR} directory")
-            return None
-        
-        # Read CSV data
-        with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-            
-            if not rows:
-                logger.warning(f"⚠️  CSV file '{filename}' is empty (no data rows)")
-                return None
-            
-            if row_index < 0:
-                row_index = 0
-            if row_index < len(rows):
-                logger.debug(f"✅ Retrieved CSV data from {csv_id}[{row_index}]: {list(rows[row_index].keys())[:5]}...")
-                return rows[row_index]
-            else:
-                logger.error(f"❌ Row index {row_index} out of range for CSV {csv_id} (file has {len(rows)} rows, requested row {row_index})")
-                logger.error(f"   💡 TIP: Check csvRow in CMS - valid range is 0 to {len(rows)-1}")
-        
-        return None
-    except Exception as e:
-        logger.error(f"❌ Error reading CSV data for '{csv_id}' at row {row_index}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
-
-# ============================================================================
-# STEP 7: DOCUMENT GENERATION (with PDF export)
-# ============================================================================
-
-def _fetch_random_from_table(table_name: str) -> Optional[Dict]:
-    """
-    Fetch a random row directly from Supabase table (no id_based_fetcher).
-    For buyer_companies/seller_companies - MUST use SUPABASE_SERVICE_ROLE_KEY to bypass RLS.
-    """
-    import random
-    if not supabase:
-        logger.warning(f"Supabase not available, cannot fetch from {table_name}")
-        return None
-    try:
-        logger.info(f"📂 Fetching from {table_name}...")
-        # Simple fetch only - no count/range (avoids API quirks on some Supabase clients)
-        response = supabase.table(table_name).select("*").limit(500).execute()
-        if not response or not response.data or len(response.data) == 0:
-            logger.warning(f"❌ No records in {table_name} (empty or RLS blocking - use SUPABASE_SERVICE_ROLE_KEY)")
-            return None
-        row = random.choice(response.data)
-        logger.info(f"✅ {table_name}: {row.get('name', row.get('id', '?'))} (from {len(response.data)} rows)")
-        return row
-    except Exception as e:
-        logger.error(f"❌ Direct fetch {table_name} failed: {e}", exc_info=True)
-        return None
-
-
-def get_data_from_table(table_name: str, lookup_field: str, lookup_value) -> Optional[Dict]:
-    """
-    Get data from any database table using a lookup field and value.
-    lookup_value must not be None; pass int for numeric IDs (ports, companies), str for UUIDs (refineries, brokers).
-
-    Args:
-        table_name: Name of the table (e.g., 'vessels', 'ports', 'refineries')
-        lookup_field: Field name to search by (e.g., 'imo', 'id', 'name')
-        lookup_value: Value to search for (int or str; must not be None)
-
-    Returns:
-        Dictionary with table data or None if not found
-    """
-    if not supabase:
-        logger.warning(f"Supabase not available, cannot fetch data from {table_name}")
-        return None
-    if lookup_value is None:
-        logger.warning("get_data_from_table: lookup_value is None, skipping fetch")
-        return None
-
-    try:
-        logger.info(f"Fetching data from {table_name} table: {lookup_field}={lookup_value}")
-        response = supabase.table(table_name).select('*').eq(lookup_field, lookup_value).limit(1).execute()
-        
-        if response.data and len(response.data) > 0:
-            data = response.data[0]
-            logger.info(f"Found data in {table_name}: {data.get('name', data.get('id', 'Unknown'))}")
-            return data
-        else:
-            logger.warning(f"No data found in {table_name} for {lookup_field}={lookup_value}")
-            return None
-    except Exception as e:
-        logger.error(f"Error fetching data from {table_name} for {lookup_field}={lookup_value}: {e}")
-        return None
-
-
-def get_vessel_data(imo: str) -> Optional[Dict]:
-    """Get vessel data from Supabase database using IMO number"""
-    if not imo:
-        logger.error("Vessel IMO is required but not provided")
-        raise ValueError("Vessel IMO is required")
-    
-    try:
-        if not supabase:
-            logger.warning(f"Supabase not available, returning minimal data for IMO: {imo}")
-            return {
-                'imo': imo,
-                'name': f'Vessel {imo}',
-                'vessel_type': 'Tanker',
-                'flag': 'Panama',
-                'built': '2010',
-                'deadweight': '50000',
-                'length': '200',
-                'width': '32',
-                'gross_tonnage': '30000'
-            }
-        
-        logger.info(f"Fetching vessel data from database for IMO: {imo}")
-        vessel_data = get_data_from_table('vessels', 'imo', imo)
-        
-        if vessel_data:
-            logger.info(f"Found vessel in database: {vessel_data.get('name', 'Unknown')} (IMO: {imo})")
-            # Ensure IMO is always in the returned data
-            vessel_data['imo'] = imo
-            return vessel_data
-        else:
-            logger.warning(f"Vessel with IMO {imo} not found in database, using fallback data")
-            # Return minimal data structure but log the issue
-            return {
-                'imo': imo,
-                'name': f'Vessel {imo}',
-                'vessel_type': 'Tanker',
-                'flag': 'Panama',
-            }
-    except Exception as e:
-        logger.error(f"Error fetching vessel data for IMO {imo}: {e}")
-        # Return minimal data on error but always include the IMO
-        return {
-            'imo': imo,
-            'name': f'Vessel {imo}',
-            'vessel_type': 'Tanker',
-            'flag': 'Panama',
-        }
-
-def validate_placeholder_setting(setting: Dict) -> Tuple[bool, List[str]]:
-    """
-    Validate a placeholder setting structure.
-    Returns (is_valid, list_of_errors).
-    """
-    errors = []
-    
-    if not isinstance(setting, dict):
-        return False, ["Setting must be a dictionary"]
-    
-    source = setting.get('source') or 'database'
-    valid_sources = ['random', 'database', 'csv', 'custom']
-    
-    if source not in valid_sources:
-        errors.append(f"Invalid source '{source}'. Must be one of: {', '.join(valid_sources)}")
-    
-    if source == 'custom':
-        custom_value = setting.get('customValue', '')
-        if not custom_value or not str(custom_value).strip():
-            errors.append("Custom source requires a non-empty customValue")
-    
-    if source == 'database':
-        database_field = setting.get('databaseField', '')
-        # Empty databaseField is OK - will use intelligent matching
-        pass
-    
-    if source == 'csv':
-        csv_id = setting.get('csvId', '')
-        csv_field = setting.get('csvField', '')
-        if not csv_id or not str(csv_id).strip():
-            errors.append("CSV source requires a non-empty csvId")
-        if not csv_field or not str(csv_field).strip():
-            errors.append("CSV source requires a non-empty csvField")
-    
-    return len(errors) == 0, errors
-
-
-def _calculate_similarity(str1: str, str2: str) -> float:
-    """
-    Calculate similarity ratio between two strings using Levenshtein distance.
-    Returns a value between 0.0 (completely different) and 1.0 (identical).
-    """
-    if not str1 or not str2:
-        return 0.0
-    
-    if str1 == str2:
-        return 1.0
-    
-    # Simple Levenshtein distance implementation
-    len1, len2 = len(str1), len(str2)
-    if len1 == 0:
-        return 0.0 if len2 > 0 else 1.0
-    if len2 == 0:
-        return 0.0
-    
-    # Create matrix
-    matrix = [[0] * (len2 + 1) for _ in range(len1 + 1)]
-    
-    # Initialize first row and column
-    for i in range(len1 + 1):
-        matrix[i][0] = i
-    for j in range(len2 + 1):
-        matrix[0][j] = j
-    
-    # Fill matrix
-    for i in range(1, len1 + 1):
-        for j in range(1, len2 + 1):
-            cost = 0 if str1[i-1] == str2[j-1] else 1
-            matrix[i][j] = min(
-                matrix[i-1][j] + 1,      # deletion
-                matrix[i][j-1] + 1,      # insertion
-                matrix[i-1][j-1] + cost  # substitution
-            )
-    
-    # Calculate similarity ratio
-    max_len = max(len1, len2)
-    distance = matrix[len1][len2]
-    similarity = 1.0 - (distance / max_len) if max_len > 0 else 1.0
-    return similarity
-
-def _ai_powered_field_match(placeholder: str, vessel: Dict, available_fields: List[str] = None) -> Optional[tuple]:
-    """
-    Use AI to intelligently match placeholder to database field.
-    Returns (matched_field_name, matched_value) or None if no match.
-    """
-    if not OPENAI_ENABLED or not openai_client or not vessel:
-        return None
-    
-    try:
-        # Get available vessel fields
-        if available_fields is None:
-            available_fields = [k for k, v in vessel.items() if v is not None and str(v).strip() != '']
-        
-        if not available_fields:
-            return None
-        
-        # Prepare context for AI
-        vessel_summary = {k: str(v)[:100] for k, v in list(vessel.items())[:20]}  # First 20 fields, truncated
-        
-        prompt = f"""You are a maritime document processing assistant. Match the placeholder "{placeholder}" to the best database field from the available vessel data.
-
-Available vessel fields (with sample values):
-{json.dumps(vessel_summary, indent=2)}
-
-Available field names: {', '.join(available_fields[:50])}
-
-Task:
-1. Understand what the placeholder "{placeholder}" represents (e.g., vessel name, IMO number, port, date, quantity, etc.)
-2. Find the BEST matching field from the available fields
-3. Return ONLY the field name that best matches, nothing else
-
-Examples:
-- "vesselname" → "name"
-- "imonumber" → "imo"
-- "portofloading" → "loading_port" or "currentport"
-- "cargoquantity" → "cargo_quantity"
-- "ownername" → "owner_name"
-
-Return ONLY the field name (e.g., "name", "imo", "owner_name"), or "NONE" if no good match exists."""
-
-        response = openai_client.chat.completions.create(
-            model='gpt-4o-mini',
-            messages=[
-                {'role': 'system', 'content': 'You are a maritime data matching expert. Return only the field name or "NONE".'},
-                {'role': 'user', 'content': prompt}
-            ],
-            max_tokens=50,
-            temperature=0.1,  # Low temperature for consistent matching
-        )
-        
-        matched_field = (response.choices[0].message.content or '').strip().strip('"\'')
-        
-        if matched_field.upper() == 'NONE' or not matched_field:
-            return None
-        
-        # Verify the matched field exists in vessel data
-        if matched_field in vessel:
-            value = vessel[matched_field]
-            if value is not None and str(value).strip() != '':
-                logger.debug(f"  🤖 AI match: '{placeholder}' -> '{matched_field}' = '{value}'")
-                return (matched_field, str(value).strip())
-        
-        # Try case-insensitive match
-        matched_field_lower = matched_field.lower()
-        for field_name, field_value in vessel.items():
-            if field_name.lower() == matched_field_lower:
-                if field_value is not None and str(field_value).strip() != '':
-                    logger.debug(f"  🤖 AI match (case-insensitive): '{placeholder}' -> '{field_name}' = '{field_value}'")
-                    return (field_name, str(field_value).strip())
-        
-        return None
-        
-    except Exception as e:
-        logger.debug(f"AI-powered matching failed for '{placeholder}': {e}")
-        return None
-
-
-def _intelligent_field_match(placeholder: str, vessel: Dict) -> tuple:
-    """
-    ADVANCED intelligent matching: Maximize database usage (90% of data is in DB).
-    Uses AI-powered matching first, then multiple sophisticated strategies.
-    Returns (matched_field_name, matched_value) or (None, None) if no match.
-    """
-    if not vessel:
-        return (None, None)
-    
-    # Strategy 0: AI-Powered Matching (if OpenAI is available)
-    # This uses AI to understand placeholder meaning and match to best database field
-    if OPENAI_ENABLED and openai_client:
-        ai_match = _ai_powered_field_match(placeholder, vessel)
-        if ai_match:
-            matched_field, matched_value = ai_match
-            logger.info(f"  🤖✅ AI-POWERED MATCH: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
-            return (matched_field, matched_value)
-    
-    # Normalize placeholder name for matching
-    placeholder_clean = placeholder.strip()
-    placeholder_normalized = placeholder_clean.lower().replace('_', '').replace('-', '').replace(' ', '')
-    placeholder_words = set(re.findall(r'[a-z]+', placeholder_normalized))
-    
-    # Extract meaningful words (length >= 2) for advanced matching
-    meaningful_words = {w for w in placeholder_words if len(w) >= 2}
-    
-    # Synonym dictionary for advanced matching
-    synonyms = {
-        'vessel': ['ship', 'boat', 'tanker', 'carrier', 'vessel'],
-        'name': ['title', 'label', 'name'],
-        'owner': ['owner', 'proprietor', 'holder', 'company'],
-        'operator': ['operator', 'manager', 'handler'],
-        'port': ['harbor', 'harbour', 'dock', 'port'],
-        'quantity': ['amount', 'volume', 'qty', 'quantity'],
-        'type': ['kind', 'category', 'type'],
-        'date': ['date', 'time', 'when'],
-        'number': ['num', 'no', 'number', 'id'],
-        'address': ['location', 'place', 'address'],
-        'email': ['e-mail', 'mail', 'email'],
-        'phone': ['tel', 'telephone', 'phone', 'contact'],
-        'country': ['nation', 'state', 'country'],
-        'flag': ['flag', 'registry', 'nationality'],
-        'imo': ['imo', 'imo_number', 'imo_number'],
-        'length': ['loa', 'length', 'long'],
-        'width': ['beam', 'breadth', 'width'],
-        'draft': ['draught', 'draft'],
-        'speed': ['velocity', 'speed'],
-        'cargo': ['freight', 'load', 'cargo'],
-        'oil': ['petroleum', 'crude', 'oil'],
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
+def extract_placeholders_from_text(text: str) -> List[str]:
+    placeholders = []
+    for pattern in PLACEHOLDER_PATTERNS:
+        matches = re.findall(pattern, text)
+        placeholders.extend(matches)
+    return list(set(placeholders))
+
+
+def extract_placeholders_from_paragraph(paragraph) -> List[str]:
+    full_text = ""
+    for run in paragraph.runs:
+        full_text += run.text
+    return extract_placeholders_from_text(full_text)
+
+
+def extract_placeholders_from_document(doc: Document) -> Dict[str, List[str]]:
+    result = {
+        "paragraphs": [],
+        "tables": [],
+        "headers": [],
+        "footers": []
     }
     
-    # Comprehensive field name mappings with priority
-    # Format: {normalized_placeholder: database_field}
-    field_mappings = {
-        # IMO related
-        'imonumber': 'imo', 'imo_number': 'imo', 'imono': 'imo', 'imo': 'imo',
-        
-        # Vessel identification
-        'vesselname': 'name', 'vessel_name': 'name', 'shipname': 'name',
-        'vesseltype': 'vessel_type', 'vessel_type': 'vessel_type', 'shiptype': 'vessel_type',
-        'flagstate': 'flag', 'flag_state': 'flag', 'flag': 'flag',
-        'mmsi': 'mmsi', 'mmsinumber': 'mmsi',
-        
-        # Dimensions
-        'lengthoverall': 'length', 'length_overall': 'length', 'loa': 'length',
-        'length': 'length', 'vessellength': 'length',
-        'width': 'width', 'beam': 'beam', 'breadth': 'beam',
-        'draft': 'draft', 'draught': 'draught', 'maxdraft': 'draft',
-        
-        # Tonnage
-        'deadweight': 'deadweight', 'dwt': 'deadweight', 'deadweighttonnage': 'deadweight',
-        'grosstonnage': 'gross_tonnage', 'gross_tonnage': 'gross_tonnage', 'grt': 'gross_tonnage',
-        'nettonnage': 'net_tonnage', 'net_tonnage': 'net_tonnage', 'nrt': 'net_tonnage',
-        
-        # Capacity
-        'cargocapacity': 'cargo_capacity', 'cargo_capacity': 'cargo_capacity',
-        'cargotanks': 'cargo_tanks', 'cargo_tanks': 'cargo_tanks',
-        'pumpingcapacity': 'pumping_capacity', 'pumping_capacity': 'pumping_capacity',
-        
-        # Performance
-        'speed': 'speed', 'cruisingspeed': 'speed', 'maxspeed': 'speed',
-        'enginetype': 'engine_power', 'engine_type': 'engine_power',
-        'enginepower': 'engine_power', 'engine_power': 'engine_power',
-        'fuelconsumption': 'fuel_consumption', 'fuel_consumption': 'fuel_consumption',
-        
-        # Ownership & Operations
-        'vesselowner': 'owner_name', 'vessel_owner': 'owner_name', 'owner': 'owner_name',
-        'ownername': 'owner_name', 'owner_name': 'owner_name',
-        # Note: 'owner' can also map to vessel_owner field if owner_name doesn't exist
-        'vesseloperator': 'operator_name', 'vessel_operator': 'operator_name',
-        'operator': 'operator_name', 'operatorname': 'operator_name', 'operator_name': 'operator_name',
-        'ismmanager': 'ism_manager', 'ism_manager': 'ism_manager',
-        'classsociety': 'class_society', 'class_society': 'class_society',
-        
-        # Communication
-        'callsign': 'callsign', 'call_sign': 'callsign', 'callsignnumber': 'callsign',
-        
-        # Dates
-        'yearbuilt': 'built', 'year_built': 'built', 'built': 'built',
-        'buildyear': 'built', 'constructionyear': 'built',
-        
-        # Location & Navigation
-        'registryport': 'registry_port', 'registry_port': 'registry_port',
-        'currentport': 'currentport', 'current_port': 'currentport',
-        'departureport': 'departure_port', 'departure_port': 'departure_port',
-        'destinationport': 'destination_port', 'destination_port': 'destination_port',
-        'loadingport': 'loading_port', 'loading_port': 'loading_port',
-        'currentregion': 'current_region', 'current_region': 'current_region',
-        'navstatus': 'nav_status', 'nav_status': 'nav_status', 'status': 'status',
-        'course': 'course',
-        
-        # Cargo
-        'cargotype': 'cargo_type', 'cargo_type': 'cargo_type',
-        'cargoquantity': 'cargo_quantity', 'cargo_quantity': 'cargo_quantity',
-        'quantity': 'quantity',
-        'oiltype': 'oil_type', 'oil_type': 'oil_type',
-        'oilsource': 'oil_source', 'oil_source': 'oil_source',
-        
-        # Commercial
-        'buyername': 'buyer_name', 'buyer_name': 'buyer_name',
-        'sellername': 'seller_name', 'seller_name': 'seller_name',
-        'price': 'price', 'marketprice': 'market_price', 'market_price': 'market_price',
-        'dealvalue': 'deal_value', 'deal_value': 'deal_value',
-        'sourcecompany': 'source_company', 'source_company': 'source_company',
-        'targetrefinery': 'target_refinery', 'target_refinery': 'target_refinery',
-        'shippingtype': 'shipping_type', 'shipping_type': 'shipping_type',
-        'routedistance': 'route_distance', 'route_distance': 'route_distance',
-        'routeinfo': 'route_info', 'route_info': 'route_info',
-        
-        # Crew
-        'crewsize': 'crew_size', 'crew_size': 'crew_size',
-        # Common document fields
-        'company': 'owner_name', 'companyname': 'owner_name', 'company_name': 'owner_name',
-        'address': 'address', 'companyaddress': 'address', 'officeaddress': 'address',
-        'email': 'email', 'emailaddress': 'email', 'e-mail': 'email',
-        'phone': 'phone', 'telephone': 'phone', 'fax': 'fax', 'tel': 'phone',
-        'contact': 'contact_person', 'contactperson': 'contact_person', 'contact_person': 'contact_person',
-        'country': 'flag', 'nationality': 'flag', 'registry': 'registry_port',
-        'port': 'currentport', 'portname': 'currentport', 'loadingport': 'loading_port',
-        'via': 'via', 'position': 'position', 'pos': 'position',
-        'quantity': 'cargo_quantity', 'amount': 'cargo_quantity', 'volume': 'cargo_quantity',
-        'product': 'cargo_type', 'commodity': 'cargo_type', 'oil': 'oil_type',
-        'date': 'updated_at', 'validity': 'updated_at', 'expiry': 'updated_at',
-        # Additional common variations
-        'shipname': 'name', 'tankername': 'name', 'carriername': 'name',
-        'vesselimo': 'imo', 'shipimo': 'imo', 'tankerimo': 'imo',
-        'vesseltype': 'vessel_type', 'shiptype': 'vessel_type', 'tankertype': 'vessel_type',
-        'vesselowner': 'owner_name', 'shipowner': 'owner_name', 'tankerowner': 'owner_name',
-        'portofregistry': 'registry_port', 'homeport': 'registry_port', 'registrationport': 'registry_port',
-        'grossweight': 'gross_tonnage', 'netweight': 'net_tonnage', 'cargoweight': 'cargo_quantity',
-        'loadport': 'loading_port', 'dischargeport': 'destination_port', 'arrivalport': 'destination_port',
-        'departport': 'departure_port', 'sailingport': 'departure_port', 'fromport': 'departure_port',
-        'toport': 'destination_port', 'finalport': 'destination_port', 'endport': 'destination_port',
-        'cargoquantity': 'cargo_quantity', 'loadquantity': 'cargo_quantity', 'mt': 'cargo_quantity',
-        'oilgrade': 'oil_type', 'crudetype': 'oil_type', 'producttype': 'cargo_type',
-        'vesselstatus': 'status', 'shipstatus': 'status', 'currentstatus': 'status',
-        'eta': 'eta', 'etd': 'etd', 'arrivaltime': 'eta', 'departuretime': 'etd',
-        'vesselspeed': 'speed', 'shipspeed': 'speed', 'averagespeed': 'speed',
-        'dwttonnage': 'deadweight', 'deadweighttons': 'deadweight', 'tonnage': 'deadweight',
-        'grosstons': 'gross_tonnage', 'nettons': 'net_tonnage',
-        'mastername': 'captain_name', 'captainname': 'captain_name', 'master': 'captain_name',
-        'classification': 'class_society', 'class': 'class_society', 'classificationclass': 'class_society',
-        'builtyear': 'built', 'constructedyear': 'built', 'constructionyear': 'built', 'ageyear': 'built',
-        # Analysis/SGS specific
-        'sampledate': 'updated_at', 'testdate': 'updated_at', 'analysisdate': 'updated_at',
-        'result': 'cargo_quantity', 'testresult': 'cargo_quantity', 'analysisresult': 'cargo_quantity',
-        'specification': 'cargo_type', 'spec': 'cargo_type', 'grade': 'oil_type',
-        'density': 'cargo_quantity', 'viscosity': 'cargo_quantity', 'api': 'cargo_quantity',
-        'sulfur': 'cargo_quantity', 'sulphur': 'cargo_quantity', 'water': 'cargo_quantity',
-        'sediment': 'cargo_quantity', 'ash': 'cargo_quantity', 'pour': 'cargo_quantity',
-        # Invoice/commercial specific  
-        'invoicedate': 'updated_at', 'invoiceno': 'imo', 'invoicenumber': 'imo',
-        'contractno': 'imo', 'contractnumber': 'imo', 'refno': 'imo', 'referenceno': 'imo',
-        'blno': 'imo', 'blnumber': 'imo', 'billoflading': 'imo',
-        'unitprice': 'price', 'pricepermt': 'price', 'rateperton': 'price',
-        'totalamount': 'deal_value', 'totalvalue': 'deal_value', 'invoiceamount': 'deal_value',
-        'currency': 'flag', 'paymentterms': 'shipping_type', 'terms': 'shipping_type',
-    }
+    for paragraph in doc.paragraphs:
+        placeholders = extract_placeholders_from_paragraph(paragraph)
+        result["paragraphs"].extend(placeholders)
     
-    # Strategy 1: Direct mapping (highest priority)
-    if placeholder_normalized in field_mappings:
-        mapped_field = field_mappings[placeholder_normalized]
-        if mapped_field in vessel:
-            value = vessel[mapped_field]
-            if value is not None and str(value).strip() != '':
-                logger.debug(f"  ✅ Direct mapping: '{placeholder}' -> '{mapped_field}'")
-                return (mapped_field, str(value).strip())
-        
-        # Try alternative field names if primary doesn't exist
-        # Special handling for 'owner' - try multiple field variations
-        if placeholder_normalized == 'owner':
-            for alt_field in ['vessel_owner', 'owner_name', 'owner']:
-                if alt_field in vessel:
-                    value = vessel[alt_field]
-                    if value is not None and str(value).strip() != '':
-                        logger.debug(f"  ✅ Alternative owner mapping: '{placeholder}' -> '{alt_field}'")
-                        return (alt_field, str(value).strip())
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    placeholders = extract_placeholders_from_paragraph(paragraph)
+                    result["tables"].extend(placeholders)
     
-    # Strategy 1.5: Synonym-based matching (check if placeholder words match synonyms)
-    for word in meaningful_words:
-        if word in synonyms:
-            for synonym in synonyms[word]:
-                # Try to find fields that contain this synonym
-                for field_name, field_value in vessel.items():
-                    if field_value is None or str(field_value).strip() == '':
-                        continue
-                    field_lower = field_name.lower()
-                    if synonym in field_lower or field_lower in synonym:
-                        logger.debug(f"  ✅ Synonym match: '{placeholder}' (word: '{word}') -> '{field_name}'")
-                        return (field_name, str(field_value).strip())
+    for section in doc.sections:
+        header = section.header
+        for paragraph in header.paragraphs:
+            placeholders = extract_placeholders_from_paragraph(paragraph)
+            result["headers"].extend(placeholders)
+        
+        footer = section.footer
+        for paragraph in footer.paragraphs:
+            placeholders = extract_placeholders_from_paragraph(paragraph)
+            result["footers"].extend(placeholders)
     
-    # Strategy 2: Exact match after normalization (high priority)
-    best_match = None
-    best_score = 0.0
-    best_field = None
-    all_candidates = []  # Store all potential matches for advanced selection
+    for key in result:
+        result[key] = list(set(result[key]))
     
-    for field_name, field_value in vessel.items():
-        if field_value is None or str(field_value).strip() == '':
-            continue
-        
-        field_normalized = field_name.lower().replace('_', '').replace('-', '').replace(' ', '')
-        field_words = set(re.findall(r'[a-z]+', field_normalized))
-        
-        # Exact match after normalization
-        if placeholder_normalized == field_normalized:
-            logger.debug(f"  ✅ Exact normalized match: '{placeholder}' -> '{field_name}'")
-            return (field_name, str(field_value).strip())
-        
-        # Calculate base similarity score
-        similarity = _calculate_similarity(placeholder_normalized, field_normalized)
-        
-        # Strategy 2.1: Substring matching (very high boost)
-        if placeholder_normalized in field_normalized or field_normalized in placeholder_normalized:
-            similarity = max(similarity, 0.90)  # Very high boost for substring matches
-        
-        # Strategy 2.2: Word overlap bonus (enhanced)
-        if placeholder_words and field_words:
-            common_words = placeholder_words.intersection(field_words)
-            if common_words:
-                meaningful_common = [w for w in common_words if len(w) >= 2]  # Lowered to 2 chars
-                if meaningful_common:
-                    # Calculate word overlap ratio
-                    overlap_ratio = len(meaningful_common) / max(len(placeholder_words), len(field_words))
-                    similarity = max(similarity, 0.75 + (overlap_ratio * 0.15))  # Higher base boost
-        
-        # Strategy 2.3: Partial word matching (if ANY word from placeholder appears in field)
-        if meaningful_words and field_words:
-            partial_matches = meaningful_words.intersection(field_words)
-            if partial_matches:
-                # Boost based on how many words match
-                match_ratio = len(partial_matches) / max(len(meaningful_words), len(field_words))
-                similarity = max(similarity, 0.60 + (match_ratio * 0.20))  # Boost for partial matches
-        
-        # Strategy 2.4: Character-level substring (if placeholder chars appear in field)
-        if len(placeholder_normalized) >= 3:
-            # Check if significant portion of placeholder appears in field
-            char_overlap = sum(1 for c in placeholder_normalized if c in field_normalized)
-            char_ratio = char_overlap / max(len(placeholder_normalized), len(field_normalized))
-            if char_ratio > 0.5:  # More than 50% character overlap
-                similarity = max(similarity, 0.55 + (char_ratio * 0.25))
-        
-        # Strategy 2.5: Try variations (with/without underscores, different word orders)
-        # Check if field name contains all placeholder words (in any order)
-        if meaningful_words:
-            field_words_lower = {w.lower() for w in field_words}
-            if meaningful_words.issubset(field_words_lower) or field_words_lower.issubset(meaningful_words):
-                similarity = max(similarity, 0.80)  # High boost for word set match
-        
-        # Track best match
-        if similarity > best_score:
-            best_score = similarity
-            best_field = field_name
-            best_match = str(field_value).strip()
-        
-        # Store all candidates for "best guess" fallback
-        if similarity > 0.15:  # Very low threshold to capture all possibilities
-            all_candidates.append({
-                'field': field_name,
-                'value': str(field_value).strip(),
-                'score': similarity,
-                'word_overlap': len(meaningful_words.intersection(field_words)) if meaningful_words and field_words else 0
-            })
-    
-    # Strategy 3: Use best match if confidence is high enough (very aggressive)
-    if best_match and best_score >= 0.50:  # Lowered to 50% - maximize DB usage
-        logger.debug(f"  ✅ High confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
-        return (best_field, best_match)
-    
-    # Strategy 4: Medium confidence - any word overlap with similarity >= 0.35
-    if best_match and best_score >= 0.35:
-        key_words_placeholder = {w for w in placeholder_words if len(w) >= 2}  # Lowered to 2 chars
-        if key_words_placeholder:
-            best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
-            if key_words_placeholder.intersection(best_field_words):
-                logger.debug(f"  ✅ Medium confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
-                return (best_field, best_match)
-    
-    # Strategy 5: Low confidence - any word overlap with similarity >= 0.25
-    if best_match and best_score >= 0.25:
-        key_words_placeholder = {w for w in placeholder_words if len(w) >= 2}
-        if key_words_placeholder:
-            best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
-            if key_words_placeholder.intersection(best_field_words):
-                logger.debug(f"  ✅ Low confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
-                return (best_field, best_match)
-    
-    # Strategy 6: Very low threshold - any similarity >= 0.20 with ANY word match
-    if best_match and best_score >= 0.20:
-        key_words_placeholder = {w for w in placeholder_words if len(w) >= 2}
-        if key_words_placeholder:
-            best_field_words = set(re.findall(r'[a-z]+', best_field.lower().replace('_', '').replace('-', '')))
-            if key_words_placeholder.intersection(best_field_words):
-                logger.debug(f"  ✅ Very low confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
-                return (best_field, best_match)
-    
-    # Strategy 7: Ultra-aggressive - ANY similarity >= 0.15 (maximize DB usage)
-    if best_match and best_score >= 0.15:
-        logger.debug(f"  ✅ Ultra-low confidence match: '{placeholder}' -> '{best_field}' (similarity: {best_score:.2f})")
-        return (best_field, best_match)
-    
-    # Strategy 8: "Best Guess" Fallback - Use the candidate with most word overlap
-    # This ensures we ALWAYS try to use database data if available
-    if all_candidates:
-        # Sort by word overlap first, then by score
-        all_candidates.sort(key=lambda x: (x['word_overlap'], x['score']), reverse=True)
-        best_guess = all_candidates[0]
-        if best_guess['word_overlap'] > 0 or best_guess['score'] > 0.10:
-            logger.debug(f"  ✅ Best guess fallback: '{placeholder}' -> '{best_guess['field']}' (overlap: {best_guess['word_overlap']}, score: {best_guess['score']:.2f})")
-            return (best_guess['field'], best_guess['value'])
-    
-    # Strategy 9: Smart guess based on placeholder pattern
-    # Analyze placeholder name and guess most likely field
-    pl_lower = placeholder_normalized.lower()
-    
-    # Pattern-based field selection
-    pattern_to_fields = {
-        # Names and identifiers
-        ('name', 'vessel', 'ship', 'tanker'): ['name', 'vessel_name'],
-        ('imo', 'number', 'id'): ['imo'],
-        ('flag', 'country', 'nation', 'registry'): ['flag', 'registry_port'],
-        ('type', 'kind', 'category'): ['vessel_type', 'cargo_type', 'oil_type'],
-        ('owner', 'company', 'firm'): ['owner_name', 'vessel_owner', 'operator_name'],
-        ('operator', 'manager'): ['operator_name', 'ism_manager'],
-        
-        # Location
-        ('port', 'harbor', 'dock', 'terminal'): ['currentport', 'departure_port', 'destination_port', 'loading_port'],
-        ('destination', 'arrival'): ['destination_port', 'destination'],
-        ('departure', 'origin', 'from'): ['departure_port', 'origin'],
-        ('position', 'location', 'where'): ['position', 'current_region', 'currentport'],
-        
-        # Dimensions
-        ('length', 'loa', 'long'): ['length', 'loa'],
-        ('width', 'beam', 'breadth'): ['width', 'beam'],
-        ('draft', 'draught', 'depth'): ['draft', 'draught'],
-        ('tonnage', 'dwt', 'weight', 'gross'): ['deadweight', 'gross_tonnage', 'net_tonnage'],
-        
-        # Cargo
-        ('cargo', 'freight', 'load', 'product'): ['cargo_type', 'cargo_quantity', 'oil_type'],
-        ('quantity', 'amount', 'volume', 'qty'): ['cargo_quantity', 'quantity'],
-        ('oil', 'crude', 'petroleum'): ['oil_type', 'cargo_type'],
-        
-        # Dates
-        ('date', 'time', 'when', 'eta', 'etd'): ['updated_at', 'created_at', 'eta', 'etd'],
-        ('built', 'year', 'construction'): ['built', 'year_built'],
-        
-        # Contact
-        ('email', 'mail'): ['email', 'contact_email'],
-        ('phone', 'tel', 'telephone', 'contact'): ['phone', 'contact_phone'],
-        ('address', 'street'): ['address'],
-        
-        # Speed and performance
-        ('speed', 'velocity', 'knots'): ['speed', 'cruising_speed'],
-        
-        # Price and commercial
-        ('price', 'cost', 'value', 'rate'): ['price', 'market_price', 'deal_value'],
-        ('buyer', 'purchaser'): ['buyer_name'],
-        ('seller', 'vendor'): ['seller_name'],
-    }
-    
-    # Try pattern matching
-    for patterns, fields in pattern_to_fields.items():
-        for pattern in patterns:
-            if pattern in pl_lower:
-                for field in fields:
-                    if field in vessel:
-                        value = vessel[field]
-                        if value is not None and str(value).strip() != '':
-                            logger.debug(f"  ✅ Pattern match: '{placeholder}' (pattern: '{pattern}') -> '{field}'")
-                            return (field, str(value).strip())
-    
-    # Strategy 10: Last resort - use ANY non-empty vessel field (prefer common fields)
-    priority_fields = ['name', 'imo', 'flag', 'owner_name', 'operator_name', 'vessel_type', 
-                       'currentport', 'cargo_type', 'cargo_quantity', 'length', 'width', 'draft',
-                       'deadweight', 'gross_tonnage', 'speed', 'built', 'oil_type']
-    for priority_field in priority_fields:
-        if priority_field in vessel:
-            value = vessel[priority_field]
-            if value is not None and str(value).strip() != '':
-                logger.debug(f"  ✅ Last resort (priority field): '{placeholder}' -> '{priority_field}'")
-                return (priority_field, str(value).strip())
-    
-    # If we still have vessel data, use the first non-empty field
-    for field_name, field_value in vessel.items():
-        if field_value is not None and str(field_value).strip() != '':
-            logger.debug(f"  ✅ Last resort (any field): '{placeholder}' -> '{field_name}'")
-            return (field_name, str(field_value).strip())
-    
-    # No match found - vessel data is empty
-    return (None, None)
+    return result
 
 
-def _intelligent_field_match_multi_table(placeholder: str, vessel: Dict) -> tuple:
+def replace_in_runs(paragraph, replacements: Dict[str, str]):
+    """Replace placeholders in paragraph runs while preserving formatting.
+    
+    Strategy:
+    1. Try per-run replacement first (preserves all formatting)
+    2. Fall back to cross-run replacement if placeholder spans multiple runs
+    3. Final cleanup pass to remove any stray braces left behind
     """
-    Search vessels first, then ports/companies/refineries via vessel FKs. Brokers excluded.
-    Returns (matched_field_name, matched_value) or (None, None).
-    """
-    if not vessel:
-        return (None, None)
-
-    # Step 1: Search vessel dict first
-    matched_field, matched_value = _intelligent_field_match(placeholder, vessel)
-    if matched_field and matched_value:
-        return (matched_field, matched_value)
-
-    # Step 2: Build merged "related data" dict from ports, companies, refineries (no brokers)
-    merged: Dict[str, any] = dict(vessel)
-    try:
-        # Ports: departure_port, destination_port, loading_port, discharge_port (may be IDs)
-        for port_key, prefix in [('departure_port', 'departure_port_'), ('destination_port', 'destination_port_'),
-                                 ('loading_port', 'loading_port_'), ('discharge_port', 'discharge_port_')]:
-            port_id = vessel.get(port_key)
-            if port_id is not None:
-                port_data = get_data_from_table('ports', 'id', port_id)
-                if port_data:
-                    for k, v in port_data.items():
-                        if v is not None and str(v).strip():
-                            merged[f"{prefix}{k}"] = v
-                    merged[f"{prefix}name"] = port_data.get('name') or merged.get(f"{prefix}name")
-        # Loading port often same as departure - add alias if missing
-        if 'loading_port_name' not in merged and 'departure_port_name' in merged:
-            merged['loading_port_name'] = merged['departure_port_name']
-        # Generic port_name, port_loading, port_discharge for template placeholders
-        if 'port_name' not in merged and merged.get('departure_port_name'):
-            merged['port_name'] = merged['departure_port_name']
-        if 'port_loading' not in merged and merged.get('loading_port_name'):
-            merged['port_loading'] = merged['loading_port_name']
-        if 'port_discharge' not in merged and merged.get('discharge_port_name'):
-            merged['port_discharge'] = merged['discharge_port_name']
-        # Company
-        company_id = vessel.get('company_id') or vessel.get('buyer_company_id') or vessel.get('seller_company_id')
-        if company_id is not None:
-            company_data = get_data_from_table('companies', 'id', company_id)
-            if company_data:
-                for k, v in company_data.items():
-                    if v is not None and str(v).strip():
-                        merged[f"company_{k}"] = v
-        # Refinery
-        refinery_id = vessel.get('refinery_id')
-        if refinery_id is not None:
-            refinery_data = get_data_from_table('refineries', 'id', refinery_id)
-            if refinery_data:
-                for k, v in refinery_data.items():
-                    if v is not None and str(v).strip():
-                        merged[f"refinery_{k}"] = v
-    except Exception as e:
-        logger.debug(f"Building related data for multi-table match: {e}")
-
-    # Step 3: Run matching against merged dict (exclude vessel keys we already tried)
-    if len(merged) > len(vessel):
-        matched_field, matched_value = _intelligent_field_match(placeholder, merged)
-        if matched_field and matched_value:
-            return (matched_field, matched_value)
-
-    return (None, None)
-
-
-def generate_realistic_random_data(placeholder: str, vessel_imo: str = None) -> str:
-    """Generate realistic random data for placeholders (maritime/oil shipping context).
-    Returns SHORT, SPECIFIC values matching placeholder type - no long text, no unrelated content."""
-    import random
-    import hashlib
-
-    if vessel_imo:
-        seed_input = f"{vessel_imo}_{placeholder.lower()}"
-        random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
-
-    pl = placeholder.lower().replace('_', '').replace(' ', '').replace('-', '')
-
-    # ATSC-specific (Authority to Sell Cargo)
-    if 'atsc' in pl and 'reference' in pl:
-        return f"ATSC-{datetime.now().year}-{random.randint(10000, 99999)}"
-    if 'mandate' in pl and 'exclusivity' in pl:
-        return random.choice(['Exclusive', 'Non-Exclusive'])
-    if 'mandated' in pl and 'role' in pl:
-        return 'Mandated Seller'
-    if 'confidentiality' in pl and 'survival' in pl:
-        return str(random.randint(2, 5))
-    if 'force' in pl and 'majeure' in pl and 'day' in pl:
-        return str(random.choice([30, 45, 60]))
-    if 'exclusivity' in pl and 'expir' in pl:
-        from datetime import timedelta
-        return (datetime.now() + timedelta(days=random.randint(30, 180))).strftime('%Y-%m-%d')
-    if 'geographic' in pl or 'buyer' in pl and 'group' in pl and 'limit' in pl:
-        return random.choice(['None', 'Middle East', 'Asia Pacific', 'Europe'])
-    if 'quantity' in pl and 'unit' in pl:
-        return random.choice(['MT', 'BBL', 'm³'])
-    if 'storage' in pl and 'location' in pl:
-        if 'type' in pl:
-            return random.choice(['Tank', 'Terminal', 'Floating Storage'])
-        return random.choice(['Ras Tanura Terminal', 'Fujairah Storage', 'Rotterdam Tank Farm'])
-    if 'tsr' in pl or 'coq' in pl and 'number' in pl:
-        return f"TSR-{random.randint(100000, 999999)}" if 'tsr' in pl else f"COQ-{random.randint(100000, 999999)}"
-    if 'reference' in pl and 'document' in pl:
-        return f"TSR No. TSR-{random.randint(10000, 99999)}, COQ No. COQ-{random.randint(10000, 99999)}"
-    if 'indicative' in pl and 'price' in pl:
-        return f"{random.randint(70, 95)} per BBL"
-    if 'price' in pl and 'basis' in pl:
-        return random.choice(['Platts', 'Argus', 'OPIS'])
-    if 'benchmark' in pl:
-        return random.choice(['Platts ULSD CIF NWE', 'Argus Gasoil', 'Platts Dubai'])
-    if 'delivery' in pl and 'term' in pl:
-        return random.choice(['FOB', 'CIF', 'CFR'])
-    if 'tolerance' in pl and 'percent' in pl:
-        return f"{random.uniform(0.3, 2.0):.1f}%"
-    if 'signing' in pl and 'place' in pl or 'place' in pl and ('seller' in pl or 'mandated' in pl):
-        return random.choice(['Singapore', 'London', 'Dubai'])
-    if 'witness' in pl and 'place' in pl:
-        return random.choice(['Singapore', 'London', 'Dubai'])
-
-    # Dates - always short format
-    if 'date' in pl or 'issue' in pl and 'date' in pl or 'expir' in pl or 'signature' in pl and 'date' in pl:
-        from datetime import timedelta
-        d = random.randint(1, 90)
-        return (datetime.now() - timedelta(days=d)).strftime('%Y-%m-%d')
-
-    # Bank / finance - realistic bank data
-    bank_names = ['HSBC Bank Singapore', 'Standard Chartered Bank', 'Deutsche Bank AG', 'ING Commercial Banking', 'BNP Paribas', 'Citibank N.A.', 'DBS Bank Ltd', 'Barclays Bank PLC']
-    swift_codes = ['HSBCSGSG', 'SCBLSGSG', 'DEUTSGSG', 'INGBSGSG', 'BNPASGSG', 'CITISGSG', 'DBSSSGSG', 'BABOROMM']
+    val_str = lambda v: str(v) if v is not None and v != "" else ""
     
-    if 'swift' in pl or 'bic' in pl:
-        return random.choice(swift_codes)
-    if 'iban' in pl:
-        country = random.choice(['GB', 'DE', 'FR', 'NL', 'CH'])
-        return f"{country}{random.randint(10,99)}{random.randint(1000,9999)}{random.randint(10000000,99999999)}"
-    if 'account' in pl and 'number' in pl:
-        return f"{random.randint(1000000000, 9999999999)}"
-    if 'account' in pl and 'name' in pl:
-        return random.choice(['Operating Account', 'Trade Finance Account', 'Corporate Account'])
-    if 'bank' in pl and 'name' in pl:
-        return random.choice(bank_names)
-    if 'bank' in pl and 'address' in pl:
-        return random.choice([
-            '25 Raffles Place, Singapore 048619',
-            '1 Churchill Place, London E14 5HP, UK',
-            'Taunusanlage 12, 60325 Frankfurt, Germany',
-            'Emirates Towers, Sheikh Zayed Road, Dubai, UAE'
-        ])
-    if 'bank' in pl and ('city' in pl or 'country' in pl):
-        return random.choice(['Singapore', 'London, UK', 'Frankfurt, Germany', 'Dubai, UAE'])
-
-    # Quality / spec values (short numbers)
-    if 'result' in pl or 'max' in pl or 'min' in pl:
-        if 'density' in pl or 'api' in pl:
-            return f"{random.uniform(0.80, 0.90):.3f}"
-        if 'viscosity' in pl:
-            return f"{random.uniform(1.0, 6.0):.2f} cSt"
-        if 'sulfur' in pl or 'sulphur' in pl:
-            return f"{random.uniform(0.001, 0.5):.3f}%"
-        if 'ash' in pl:
-            return f"{random.uniform(0.01, 0.1):.3f}%"
-        if 'acid' in pl:
-            return f"{random.uniform(0.01, 0.5):.2f} mg KOH/g"
-        if 'water' in pl:
-            return f"{random.uniform(0.01, 0.5):.2f}%"
-        if 'cloud' in pl or 'cfpp' in pl or 'pour' in pl:
-            return f"{random.randint(-15, 25)}°C"
-        if 'flash' in pl:
-            return f"{random.randint(40, 100)}°C"
-        if 'color' in pl or 'colour' in pl:
-            return f"{random.randint(0, 3)}"
-        if 'cetane' in pl:
-            return f"{random.randint(45, 60)}"
-        if 'distill' in pl or 'dist' in pl:
-            return f"{random.randint(180, 360)}°C"
-        return f"{random.uniform(0.01, 2.0):.2f}"
-
-    # Contact
-    if 'email' in pl:
-        domains = ['maritimetrading.com', 'oceanfreight.co', 'petrodealhub.com']
-        return f"contact{random.randint(1,99)}@{random.choice(domains)}"
-    if 'phone' in pl or 'tel' in pl or 'mobile' in pl or 'fax' in pl:
-        return f"+{random.choice([1,44,31,49,971])} {random.randint(100,999)} {random.randint(1000000,9999999)}"
-
-    # Title/designation - BEFORE name (representative_title -> title, not name)
-    if 'designation' in pl or 'position' in pl or 'title' in pl or 'role' in pl:
-        return random.choice(['Operations Manager', 'Chartering Manager', 'Trader', 'Shipping Coordinator'])
-    # Product/commodity - BEFORE name (commodity_name -> product, not person)
-    products = ['Crude Oil', 'Diesel', 'Jet A-1', 'Fuel Oil 380', 'Gasoline', 'Brent Blend', 'Murban Crude']
-    if 'commodity' in pl and 'category' in pl:
-        return random.choice(['Petroleum', 'Refined Products', 'Crude Oil'])
-    if 'product' in pl or 'oil' in pl or 'grade' in pl or 'commodity' in pl or ('cargo' in pl and 'quantity' not in pl and 'capacity' not in pl and 'tank' not in pl):
-        return random.choice(products)
-    # Person names - short
-    names = ['John Smith', 'Maria Garcia', 'Ahmed Hassan', 'Li Wei', 'David Johnson', 'Sarah Brown']
-    if 'person' in pl or 'representative' in pl or 'signatory' in pl or 'witness' in pl or 'officer' in pl or ('name' in pl and 'company' not in pl and 'commodity' not in pl):
-        if 'company' in pl:
-            return random.choice(['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc'])
-        return random.choice(names)
-
-    # Companies / buyer / seller - use realistic trading company names
-    buyer_companies = ['Global Energy Trading Ltd', 'Pacific Petroleum Co.', 'Asian Oil Importers Pte Ltd', 'European Fuel Solutions GmbH', 'Atlantic Trading Corporation', 'Nordic Energy Partners']
-    seller_companies = ['Arabian Oil Corporation', 'Gulf Petroleum DMCC', 'Middle East Energy Trading', 'Russian Petroleum Export LLC', 'Nigerian National Oil Corp', 'South American Crude Suppliers']
-    generic_companies = ['Maritime Solutions Ltd', 'Ocean Trading Co', 'Global Shipping Inc', 'PetroMarine Services', 'Gulf Energy Trading', 'Nordic Tanker Co']
-    
-    if 'buyer' in pl:
-        if 'name' in pl or 'company' in pl:
-            return random.choice(buyer_companies)
-    if 'seller' in pl:
-        if 'name' in pl or 'company' in pl:
-            return random.choice(seller_companies)
-    if 'company' in pl and 'name' in pl:
-        return random.choice(generic_companies)
-
-    # Address (avoid 123-style placeholder numbers; use realistic addresses)
-    if 'address' in pl:
-        return random.choice([
-            '47 Shenton Way, Singapore',
-            '184 Keizersgracht, Amsterdam, Netherlands',
-            '23 Marina Boulevard, Singapore',
-            '56 Fenchurch Street, London, UK',
-            '128 Sheikh Zayed Road, Dubai, UAE'
-        ])
-
-    # Numbers / amounts - BEFORE product (cargo_quantity -> MT, not product name)
-    if 'quantity' in pl or 'volume' in pl or 'mt' in pl or 'tons' in pl or 'weight' in pl:
-        return f"{random.randint(1000, 50000):,} MT"
-
-    # Ports / locations
-    ports = ['Rotterdam', 'Singapore', 'Fujairah', 'Houston', 'Antwerp', 'Jebel Ali', 'Ras Tanura']
-    if 'port' in pl or 'harbor' in pl or 'loading' in pl or 'discharge' in pl or 'origin' in pl or 'destination' in pl:
-        return random.choice(ports)
-    if 'country' in pl:
-        return random.choice(['Singapore', 'UAE', 'Netherlands', 'USA', 'UK', 'Saudi Arabia'])
-
-    if 'value' in pl or 'amount' in pl or 'price' in pl or 'total' in pl:
-        return f"${random.randint(10000, 999999):,}"
-    if 'percent' in pl or 'percentage' in pl or 'tolerance' in pl:
-        return f"{random.uniform(0.1, 5.0):.2f}%"
-    if 'tonnage' in pl or 'capacity' in pl:
-        return f"{random.randint(5000, 120000):,}"
-    if 'pumping' in pl:
-        return f"{random.randint(500, 3000)} m³/hr"
-
-    # References / IDs
-    if 'ref' in pl or 'number' in pl or 'no' in pl and 'phone' not in pl:
-        return f"REF-{random.randint(100000, 999999)}"
-    if 'bin' in pl or 'okpo' in pl:
-        return f"{random.randint(100000000, 999999999)}"
-
-    # Legal / contract
-    if 'arbitration' in pl or 'governing' in pl or 'law' in pl:
-        return random.choice(['Singapore', 'London', 'Dubai', 'Geneva'])
-    if 'registration' in pl and 'number' in pl:
-        return f"REG-{random.randint(100000, 999999)}"
-
-    # Vessel / maritime
-    if 'ism' in pl or 'manager' in pl:
-        return random.choice(['V.Ships', 'Anglo-Eastern', 'Synergy Marine', 'Fleet Management'])
-    if 'class' in pl or 'society' in pl or 'classification' in pl:
-        return random.choice(["Lloyd's Register", 'DNV', 'ABS', 'Bureau Veritas'])
-    if 'via' in pl or 'carrier' in pl:
-        return random.choice(['Maersk', 'MSC', 'CMA CGM', 'COSCO'])
-
-    # Context-aware fallbacks based on placeholder content
-    # Extract meaningful parts from placeholder name
-    if 'name' in pl:
-        if 'buyer' in pl or 'seller' in pl or 'company' in pl:
-            return random.choice(['Global Trading Corp', 'Maritime Solutions Ltd', 'Energy Partners Inc'])
-        return random.choice(['John Smith', 'Michael Johnson', 'Sarah Williams'])
-    
-    if 'address' in pl:
-        return random.choice([
-            '47 Shenton Way, Singapore 048619',
-            '128 Trade Centre, Dubai, UAE',
-            '56 Leadenhall, London EC1V 9BD'
-        ])
-    
-    if 'email' in pl:
-        return f"contact@{random.choice(['trading-corp.com', 'energy-partners.com', 'maritime-solutions.com'])}"
-    
-    if 'phone' in pl or 'tel' in pl or 'fax' in pl:
-        return f"+{random.choice([65, 971, 44])} {random.randint(1000, 9999)} {random.randint(1000, 9999)}"
-    
-    # Generic short values for truly unknown placeholders
-    logger.debug(f"No specific match for placeholder '{placeholder}', using generic fallback")
-    generic_fallbacks = ['As per contract', 'See attachment', 'Per agreement', 'To be confirmed']
-    return random.choice(generic_fallbacks)
-
-
-def _try_csv_for_placeholder(setting: Optional[Dict]) -> Optional[str]:
-    """Try to resolve placeholder from configured CSV. Returns value or None."""
-    if not setting:
-        return None
-    csv_id = (setting.get('csvId') or '').strip()
-    csv_field = (setting.get('csvField') or '').strip()
-    if not csv_id or not csv_field:
-        return None
-    try:
-        row_idx = int(setting.get('csvRow') or 0)
-        data = get_csv_data(csv_id, row_idx)
-        if not data:
-            return None
-        if csv_field in data:
-            v = data[csv_field]
-            if v is not None and str(v).strip():
-                return str(v).strip()
-        for k, v in data.items():
-            if k.lower() == csv_field.lower() and v is not None and str(v).strip():
-                return str(v).strip()
-    except Exception:
-        pass
-    return None
-
-
-def _smart_csv_search(placeholder: str) -> Optional[str]:
-    """Search all CSVs for a column matching the placeholder. Returns value from first matching row or None."""
-    def _normalize_for_column(s: str) -> str:
-        return re.sub(r'[^a-z0-9]', '', (s or '').lower()).replace(' ', '_')
-
-    ph_norm = _normalize_for_column(placeholder)
-    ph_words = set(re.findall(r'[a-z]+', ph_norm))
-    if not ph_norm:
-        return None
-
-    for dataset in list_csv_datasets():
-        path = dataset.get("path") or os.path.join(DATA_DIR, dataset.get("filename", ""))
-        if not os.path.exists(path):
-            continue
-        try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
-                if not rows:
-                    continue
-                fieldnames = list(reader.fieldnames or rows[0].keys() or [])
-            cols_norm = {_normalize_for_column(c): c for c in fieldnames if c}
-
-            # Exact match
-            if ph_norm in cols_norm:
-                col = cols_norm[ph_norm]
-                v = rows[0].get(col)
-                if v is not None and str(v).strip():
-                    return str(v).strip()
-
-            # Case-insensitive
-            ph_lower = placeholder.lower().replace(' ', '_').replace('-', '_')
-            for c in fieldnames:
-                if c and c.lower().replace(' ', '_') == ph_lower:
-                    v = rows[0].get(c)
-                    if v is not None and str(v).strip():
-                        return str(v).strip()
-
-            # Partial/word overlap
-            best_col = None
-            best_score = 0
-            for c_norm, c_orig in cols_norm.items():
-                c_words = set(re.findall(r'[a-z]+', c_norm))
-                overlap = len(ph_words & c_words) / max(len(ph_words), 1)
-                if overlap > best_score and overlap >= 0.5:
-                    best_score = overlap
-                    best_col = c_orig
-            if best_col:
-                v = rows[0].get(best_col)
-                if v is not None and str(v).strip():
-                    return str(v).strip()
-        except Exception as e:
-            logger.debug(f"_smart_csv_search error for {dataset.get('id', '')}: {e}")
-    return None
-
-
-def _sanitize_ai_replacement(text: str) -> str:
-    """Strip explanatory prefixes and reject log-like output. Return clean value or empty string."""
-    if not text or not isinstance(text, str):
-        return ""
-    s = text.strip().strip('"\'').replace("\r\n", "\n").replace("\r", "\n")
-    # First line only (avoid multi-line explanations)
-    first = s.split("\n")[0].strip()
-    if not first:
-        return ""
-    # Remove common prefixes (case-insensitive), repeat until clean
-    prefixes = (
-        "here is the value:", "the value is", "answer:", "generated value:",
-        "value:", "the generated value is", "the value:", "result:",
-        "output:", "generated:", "here's the value:", "it is ", "it's ",
-        "return only", "only the value", "just the value", "the answer is ",
-    )
-    for _ in range(5):
-        lower = first.lower()
-        hit = False
-        for p in prefixes:
-            if lower.startswith(p):
-                first = first[len(p):].strip().lstrip(":-.")
-                hit = True
-                break
-        if not hit:
-            break
-    if not first or len(first) > 120:
-        return ""
-    # Reject log-like / debug output (avoid putting logger text into documents)
-    lower = first.lower()
-    if lower.startswith(("info:", "debug:", "warning:", "error:", "traceback", "exception")):
-        return ""
-    if "mapping:" in lower or "-> '" in lower or "placeholder '" in lower or "logger." in lower:
-        return ""
-    for bad in ("✅", "⚠️", "❌", "📋", "🔍"):
-        if bad in first:
-            return ""
-    return first[:100]
-
-
-def generate_realistic_data_ai(placeholder: str, vessel: Dict, vessel_imo: str = None, fetched_entities: Dict = None) -> str:
-    """AI-generated realistic data (OpenAI when available), else improved random. Maritime/oil context.
-    NEVER used for buyer/seller - those MUST come from buyer_companies/seller_companies tables only."""
-    pl_lower = (placeholder or '').lower()
-    # CRITICAL: Never use AI for buyer/seller - only database lists (Fernandez, MAISAN, Asian Petroleum, etc.)
-    if ('buyer' in pl_lower and not pl_lower.startswith('buyer_bank')) or ('seller' in pl_lower and not pl_lower.startswith('seller_bank')):
-        logger.info(f"  🚫 AI blocked for buyer/seller placeholder '{placeholder}' - use DB only")
-        return "—"
-    if OPENAI_ENABLED and openai_client:
-        try:
-            imo = (vessel or {}).get('imo') or vessel_imo or 'N/A'
-            pl_lower = (placeholder or '').lower()
-            # Build context from vessel and fetched entities for realistic AI output
-            ctx_parts = []
-            ent = fetched_entities or {}
-            if vessel:
-                if vessel.get('name'):
-                    ctx_parts.append(f"Vessel: {vessel.get('name')}")
-                if vessel.get('imo'):
-                    ctx_parts.append(f"IMO: {vessel.get('imo')}")
-                if vessel.get('cargo_type') or vessel.get('cargo'):
-                    ctx_parts.append(f"Cargo: {vessel.get('cargo_type') or vessel.get('cargo', 'N/A')}")
-                if vessel.get('loading_port') or vessel.get('current_port'):
-                    ctx_parts.append(f"Port: {vessel.get('loading_port') or vessel.get('current_port', 'N/A')}")
-            dep = ent.get('departure_port')
-            if isinstance(dep, dict) and dep.get('name'):
-                ctx_parts.append(f"Loading: {dep.get('name')}")
-            prod = ent.get('product')
-            if isinstance(prod, dict) and prod.get('name'):
-                ctx_parts.append(f"Product: {prod.get('name')}")
-            context_str = '; '.join(ctx_parts) if ctx_parts else 'maritime/oil trading'
-            
-            # Comprehensive hints for realistic data
-            hints = []
-            # Dates
-            if 'date' in pl_lower:
-                if 'departure' in pl_lower or 'issue' in pl_lower:
-                    hints.append('recent date (past 30 days) in YYYY-MM-DD format')
-                elif 'arrival' in pl_lower or 'eta' in pl_lower or 'expir' in pl_lower:
-                    hints.append('future date (next 30-90 days) in YYYY-MM-DD format')
-                else:
-                    hints.append('date in YYYY-MM-DD format')
-            
-            # Company data
-            if 'buyer' in pl_lower:
-                if 'company' in pl_lower or 'name' in pl_lower:
-                    hints.append('professional oil/trading company name (e.g., "Global Energy Trading Ltd", "Pacific Petroleum Co.")')
-                elif 'address' in pl_lower:
-                    hints.append('business address with street, city, country')
-                elif 'country' in pl_lower:
-                    hints.append('country name (trading hub like Singapore, UAE, Netherlands)')
-            elif 'seller' in pl_lower:
-                if 'company' in pl_lower or 'name' in pl_lower:
-                    hints.append('professional oil/energy company name (e.g., "Arabian Oil Corporation", "Nordic Petroleum")')
-                elif 'address' in pl_lower:
-                    hints.append('business address with street, city, country')
-                elif 'country' in pl_lower:
-                    hints.append('country name (oil producer like Saudi Arabia, UAE, Russia)')
-            elif 'company' in pl_lower:
-                hints.append('professional maritime/trading company name')
-            
-            # Bank data
-            if 'bank' in pl_lower:
-                if 'name' in pl_lower:
-                    hints.append('major international bank name (HSBC, Standard Chartered, Citibank, BNP Paribas)')
-                elif 'swift' in pl_lower:
-                    hints.append('valid SWIFT/BIC code format (8-11 characters like HSBCSGSG or CITIUS33)')
-                elif 'iban' in pl_lower:
-                    hints.append('valid IBAN format (country code + numbers)')
-                elif 'account' in pl_lower:
-                    hints.append('bank account number format')
-                elif 'address' in pl_lower:
-                    hints.append('bank branch address')
-            
-            # Contact info
-            if 'email' in pl_lower:
-                hints.append('professional business email (e.g., trading@company.com)')
-            if 'phone' in pl_lower or 'tel' in pl_lower:
-                hints.append('international phone format (+country code)')
-            if 'person' in pl_lower or 'representative' in pl_lower or 'signatory' in pl_lower:
-                hints.append('professional name (First Last)')
-            if 'title' in pl_lower or 'position' in pl_lower or 'designation' in pl_lower:
-                hints.append('business title (Trading Manager, Operations Director)')
-            
-            # Port/location
-            if 'port' in pl_lower or 'loading' in pl_lower or 'discharge' in pl_lower:
-                hints.append('major oil trading port (Rotterdam, Singapore, Fujairah, Houston)')
-            
-            # Product/cargo
-            if 'product' in pl_lower or 'commodity' in pl_lower or 'oil' in pl_lower or 'cargo' in pl_lower:
-                if 'type' in pl_lower or 'name' in pl_lower:
-                    hints.append('oil product name (Crude Oil, ULSD, Jet A-1, Fuel Oil 380)')
-                elif 'quantity' in pl_lower:
-                    hints.append('quantity with unit (e.g., "50,000 MT")')
-            
-            # Vessel data
-            if 'vessel' in pl_lower or 'ship' in pl_lower:
-                if 'name' in pl_lower:
-                    hints.append('vessel name (e.g., "MT Pacific Star", "Nordic Trader")')
-            
-            # Financial
-            if 'price' in pl_lower or 'value' in pl_lower or 'amount' in pl_lower:
-                hints.append('USD amount (e.g., "$1,250,000" or "$85.50 per BBL")')
-            if 'quantity' in pl_lower:
-                hints.append('quantity with unit (e.g., "50,000 MT")')
-            
-            # Address
-            if 'address' in pl_lower and not hints:
-                hints.append('business address with street, city, country')
-            
-            # References
-            if 'ref' in pl_lower or 'number' in pl_lower or 'no' in pl_lower:
-                if 'invoice' in pl_lower:
-                    hints.append('invoice number format (INV-2024-XXXXX)')
-                elif 'contract' in pl_lower:
-                    hints.append('contract reference format (CTR-2024-XXXXX)')
-                else:
-                    hints.append('reference number format (REF-XXXXX)')
-            
-            hint_str = '; '.join(hints) if hints else 'realistic value appropriate for maritime/oil trading document'
-            
-            prompt = f"""Generate a REALISTIC, PROFESSIONAL value for this placeholder in a maritime/oil trading document.
-
-Placeholder: "{placeholder}"
-Expected format: {hint_str}
-Context (use to make value consistent): {context_str}
-
-RULES:
-1. Output ONLY the value - no quotes, no explanation, no extra text
-2. Keep it SHORT (max 50 characters for most fields)
-3. Make it REALISTIC and PROFESSIONAL
-4. Use proper formatting (dates: YYYY-MM-DD, phones: +country code, etc.)
-5. For company names: use realistic trading/oil company names
-6. For addresses: include street, city, country
-7. For bank details: use realistic bank names and formats
-8. Match the context above (vessel, cargo, port) - make the value consistent with this specific trade
-
-Output ONLY the value:"""
-            
-            r = openai_client.chat.completions.create(
-                model='gpt-4o-mini',
-                messages=[{'role': 'user', 'content': prompt}],
-                max_tokens=80,
-                temperature=0.3,
-            )
-            raw = (r.choices[0].message.content or '').strip()
-            out = _sanitize_ai_replacement(raw)
-            if out:
-                return out
-        except Exception as e:
-            logger.warning(f"OpenAI fallback for '{placeholder}': {e}")
-    return generate_realistic_random_data(placeholder, vessel_imo)
-
-
-def generate_realistic_buyer_seller_field(placeholder: str, entity: Dict, field_name: str) -> str:
-    """Generate realistic data for a specific buyer/seller field when DB value is missing.
-    Uses company context (name, country) so output is consistent and professional (very real-looking)."""
-    if not entity or not field_name:
-        return "—"
-    pl_lower = (placeholder or '').lower()
-    field_lower = (field_name or '').lower().replace(' ', '_')
-    company_name = (entity.get('name') or entity.get('trade_name') or entity.get('company_name') or '').strip()
-    country = (entity.get('country') or entity.get('registration_country') or '').strip()
-    city = (entity.get('city') or '').strip()
-    context_str = f"Company: {company_name or 'Trading Company'}"
-    if country:
-        context_str += f", Country: {country}"
-    if city:
-        context_str += f", City: {city}"
-
-    # Field-specific hints for very realistic output (buyer/seller - must look like real company data)
-    field_hints = {
-        'registration_number': 'official company registration number (format appropriate for the country, e.g. UK: 8 digits, Singapore: 9 chars, UAE: number)',
-        'legal_address': 'full legal address: real street name and building number (e.g. 47 Shenton Way or Keizersgracht 184), city, postal code (Singapore: 6 digits, UK: EC3V 4AB style, Netherlands: 4 digits + 2 letters), country. No generic numbers like 123.',
-        'address': 'business address: real street name and number, city, postal code if common, country. No 123 or generic placeholder numbers.',
-        'representative_name': 'full name of company representative (realistic First Last, professional)',
-        'representative_title': 'job title (e.g. Trading Director, Operations Manager, Legal Representative)',
-        'representative_email': 'professional business email matching the company',
-        'representative_phone': 'phone with country code (e.g. +65 6123 4567)',
-        'email': 'company email (e.g. legal@company.com)',
-        'phone': 'company phone with country code',
-        'website': 'company website URL',
-        'country': 'country name',
-        'registration_country': 'country of registration',
-        'city': 'city name',
-    }
-    hint = field_hints.get(field_lower) or 'realistic professional value for this field'
-
-    if OPENAI_ENABLED and openai_client:
-        try:
-            prompt = f"""Generate a REALISTIC, PROFESSIONAL value for a maritime/oil trading document.
-
-Context (use to make value consistent): {context_str}
-Field to generate: {field_name}
-Requirement: {hint}
-
-CRITICAL - MAKE IT LOOK REAL:
-- NEVER use obvious placeholder numbers like 123, 1, 100, 999. Use varied realistic numbers (e.g. 47, 128, 2500, 12a, 184).
-- Addresses: use real-style street names and building numbers (e.g. "Keizersgracht 184", "47 Shenton Way", "Marina Boulevard 23") - NOT "123 Something Avenue".
-- Registration numbers: use country-appropriate format with varied digits, not 12345678.
-- Everything must look like actual company data, not generated placeholders.
-
-RULES:
-1. Output ONLY the value - no quotes, no explanation, no extra text
-2. Keep it SHORT and professional (max 80 chars for addresses)
-3. Formats and style must match the country in context
-4. For addresses: real street name + realistic number + city + postal code if common + country
-5. For names/titles: realistic professional style
-
-Output ONLY the value:"""
-            r = openai_client.chat.completions.create(
-                model='gpt-4o-mini',
-                messages=[{'role': 'user', 'content': prompt}],
-                max_tokens=100,
-                temperature=0.3,
-            )
-            raw = (r.choices[0].message.content or '').strip()
-            out = _sanitize_ai_replacement(raw)
-            if out:
-                # Reject AI output if it looks like placeholder address (e.g. "123 Energy Avenue, Utrecht, Netherlands")
-                out_lower = out.lower()
-                if field_lower in ('legal_address', 'address'):
-                    if (out_lower.startswith('123 ') or ' 123 ' in out_lower or
-                        'energy avenue' in out_lower or 'trading street' in out_lower or
-                        out_lower.startswith('1 ') and ('avenue' in out_lower or 'street' in out_lower)):
-                        logger.warning(f"  ⚠️ Rejecting AI address (looks placeholder): '{out[:50]}...' - using fallback")
-                        out = None  # fall through to fallback below
-                if out:
-                    logger.info(f"  🤖 AI generated realistic '{field_name}' for company '{company_name[:30]}': {out[:50]}...")
-                    return out
-        except Exception as e:
-            logger.warning(f"OpenAI for buyer/seller field '{field_name}': {e}")
-
-    # Fallback: build plausible value from context (no OpenAI) - avoid fake-looking 123-style numbers
-    import random
-    if field_lower in ('registration_number',):
-        # Varied digits, not 12345678-style
-        n = random.randint(40170000, 99889999) if random.random() > 0.5 else random.randint(100000, 999999)
-        return str(n) if not country else f"{country[:2].upper()}{random.randint(400000, 998000)}"
-    if field_lower in ('legal_address', 'address'):
-        # Realistic addresses: postal codes, building/floor, region-appropriate format (buyer/seller)
-        num = random.choice([47, 128, 23, 184, 56, 250, 12, 89, 302, 15, 72, 210])
-        country_lower = (country or '').lower()
-        # Singapore: building + floor + postal code
-        if 'singapore' in country_lower:
-            city_use = city or 'Singapore'
-            opts = [
-                f"{num} Shenton Way, #{random.randint(10, 35)}-{random.randint(1, 5):02d}, {city_use} {random.choice(['048619', '068809', '049318', '038987'])}",
-                f"Marina Boulevard, Tower {random.randint(1, 3)}, Level {random.randint(5, 25)}, {city_use} {random.choice(['018989', '049318'])}",
-                f"Raffles Quay, #{random.randint(15, 42)}-{random.randint(1, 4):02d}, {city_use} {random.choice(['048619', '048583'])}",
+    for run in paragraph.runs:
+        for placeholder, value in replacements.items():
+            patterns = [
+                f"{{{{{placeholder}}}}}",
+                f"{{{placeholder}}}",
+                f"[[{placeholder}]]",
+                f"[{placeholder}]",
+                f"%{placeholder}%",
+                f"<<{placeholder}>>",
+                f"##{placeholder}##",
             ]
-            return random.choice(opts)
-        # UK: number + street + city + postcode
-        if 'uk' in country_lower or 'united kingdom' in country_lower:
-            city_use = city or random.choice(['London', 'Manchester', 'Leeds'])
-            postcodes = ['EC3V 4AB', 'EC2M 4AB', 'E1W 1AW', 'M2 3AE', 'LS1 4AP'] if 'London' in city_use else ['M2 3AE', 'M3 4AB', 'LS1 4AP']
-            street = random.choice(['Leadenhall', 'Fenchurch Street', 'Minories', 'Canary Wharf', 'Lime Street'])
-            return f"{num} {street}, {city_use} {random.choice(postcodes)}, United Kingdom"
-        # Netherlands: street name + number, postal + city (Dutch format)
-        if 'netherlands' in country_lower or 'amsterdam' in country_lower or 'rotterdam' in country_lower or 'utrecht' in country_lower:
-            city_use = city or random.choice(['Amsterdam', 'Rotterdam', 'The Hague', 'Utrecht'])
-            street = random.choice(['Keizersgracht', 'Herengracht', 'Rokin', 'Zuidas Boulevard', 'Strawinskylaan', 'Vasteland'])
-            postal = f"{random.randint(1000, 9999)} {random.choice(['AB', 'BR', 'CD', 'DE'])}" if city_use == 'Amsterdam' else f"{random.randint(3000, 3099)} {random.choice(['AB', 'BR'])}"
-            return f"{street} {num}, {postal} {city_use}, Netherlands"
-        # UAE/Dubai: building/tower + street or area
-        if 'uae' in country_lower or 'dubai' in country_lower or 'emirates' in country_lower:
-            city_use = city or random.choice(['Dubai', 'Abu Dhabi'])
-            opts = [
-                f"Building {random.randint(1, 8)}, Sheikh Zayed Road, {city_use}, UAE",
-                f"Level {random.randint(5, 25)}, Emaar Square, Downtown, {city_use}, UAE",
-                f"Tower {random.choice(['A', 'B', 'C'])}{random.randint(1, 4)}, Jumeirah Lakes Towers, {city_use}, UAE",
-            ]
-            return random.choice(opts)
-        # Default: professional format with country
-        city_use = city or (country or 'Singapore')
-        street = random.choice(['Shenton Way', 'Marina Boulevard', 'Keizersgracht', 'Leadenhall', 'Sheikh Zayed Road'])
-        return f"{num} {street}, {city_use}, {country or 'Singapore'}"
-    if field_lower in ('representative_name',):
-        first = random.choice(['James', 'Michael', 'David', 'Sarah', 'Emma', 'John', 'Robert', 'Maria', 'Anna', 'Chen'])
-        last = random.choice(['Smith', 'Johnson', 'Williams', 'Brown', 'Lee', 'Wong', 'Kumar', 'Al-Hassan', 'Patel'])
-        return f"{first} {last}"
-    if field_lower in ('representative_title',):
-        return random.choice(['Trading Director', 'Operations Manager', 'Legal Representative', 'Authorized Signatory', 'Commercial Manager'])
-    if field_lower in ('representative_email', 'email'):
-        base = (company_name or 'company').replace(' ', '').lower()[:20]
-        return f"contact@{base}.com" if len(base) > 2 else "contact@trading.com"
-    if field_lower in ('representative_phone', 'phone'):
-        cc = '+65' if country and 'singapore' in country.lower() else '+44' if country and 'uk' in country.lower() else '+971' if country and 'uae' in country.lower() else '+1'
-        return f"{cc} {random.randint(100, 999)} {random.randint(1000, 9999)} {random.randint(1000, 9999)}"
-    if field_lower in ('website',):
-        base = (company_name or 'company').replace(' ', '').lower()[:15]
-        return f"www.{base}.com" if len(base) > 2 else "www.company.com"
-    if field_lower in ('country', 'registration_country'):
-        return country or random.choice(['Singapore', 'United Arab Emirates', 'United Kingdom', 'Netherlands'])
-    if field_lower in ('city',):
-        return city or random.choice(['Singapore', 'Dubai', 'London', 'Rotterdam', 'Houston'])
-    return "—"
-
-
-def _build_placeholder_pattern(placeholder: str) -> List[re.Pattern]:
-    """
-    Build regex patterns to match a placeholder WITH brackets in the document.
-    Placeholder name from CMS is without brackets (e.g., "Vessel Name").
-    We need to match it WITH brackets in document (e.g., "{Vessel Name}").
-    """
-    if not placeholder:
-        return []
-
-    # Normalize: remove any brackets if present (CMS stores without brackets)
-    normalized = placeholder.strip()
-    normalized = re.sub(r'^[{\[<%#_]+|[}\])%>#_]+$', '', normalized).strip()
-    if not normalized:
-        return []
-
-    # Escape special regex characters, but allow flexible spacing/underscores
-    # Convert spaces, underscores, hyphens to flexible pattern
-    pattern_parts: List[str] = []
-    for char in normalized:
-        if char in {' ', '\u00A0', '_', '-'}:
-            pattern_parts.append(r'[\s_\-]+')
-        else:
-            pattern_parts.append(re.escape(char))
-
-    inner_pattern = ''.join(pattern_parts)
+            for pattern in patterns:
+                if pattern in run.text:
+                    run.text = run.text.replace(pattern, val_str(value))
     
-    # Build patterns that match the placeholder WITH brackets
-    # Match: {placeholder}, {{placeholder}}, [placeholder], etc.
-    # Note: Can't use backslashes in f-string expressions, so build patterns with concatenation
-    double_brace = r"\{\{" + r"\s*" + inner_pattern + r"\s*" + r"\}\}"
-    single_brace = r"\{" + r"\s*" + inner_pattern + r"\s*" + r"\}"
-    double_bracket = r"\[\[" + r"\s*" + inner_pattern + r"\s*" + r"\]\]"
-    single_bracket = r"\[" + r"\s*" + inner_pattern + r"\s*" + r"\]"
-    percent = r"%" + r"\s*" + inner_pattern + r"\s*" + r"%"
-    angle = r"<" + r"\s*" + inner_pattern + r"\s*" + r">"
-    double_underscore = r"__" + r"\s*" + inner_pattern + r"\s*" + r"__"
-    double_hash = r"##" + r"\s*" + inner_pattern + r"\s*" + r"##"
+    full_text = "".join(run.text for run in paragraph.runs)
     
-    wrappers = [
-        double_brace,      # {{placeholder}} - DOUBLE BRACES
-        single_brace,      # {placeholder} - MOST COMMON
-        double_bracket,    # [[placeholder]]
-        single_bracket,    # [placeholder]
-        percent,           # %placeholder%
-        angle,             # <placeholder>
-        double_underscore, # __placeholder__
-        double_hash,       # ##placeholder##
-    ]
-
-    compiled_patterns = [re.compile(wrap, re.IGNORECASE) for wrap in wrappers]
-    logger.debug(f"Built {len(compiled_patterns)} patterns for placeholder '{placeholder}' (normalized: '{normalized}')")
-    for i, pattern in enumerate(compiled_patterns):
-        logger.debug(f"  Pattern {i+1}: {pattern.pattern}")
-    return compiled_patterns
-
-
-def _replace_text_with_mapping(text: str, mapping: Dict[str, str], pattern_cache: Dict[str, List[re.Pattern]]) -> Tuple[str, int]:
-    """
-    Replace placeholders in text. Only replaces patterns WITH brackets.
-    Example: "{Vessel Name}" -> "Titanic" (replaces entire pattern including brackets with value only)
-    """
-    total_replacements = 0
-    updated_text = text
-
-    for placeholder, value in mapping.items():
-        if value is None or not value:
-            logger.debug(f"Skipping placeholder '{placeholder}' - value is None or empty")
-            continue
-
-        # Get or build patterns for this placeholder
-        patterns = pattern_cache.get(placeholder)
-        if patterns is None:
-            patterns = _build_placeholder_pattern(placeholder)
-            pattern_cache[placeholder] = patterns
-        
-        if not patterns:
-            logger.warning(f"No patterns built for placeholder '{placeholder}'")
-            continue
-
-        # Try each pattern until we find matches
-        found_any = False
+    replaced = False
+    for placeholder, value in replacements.items():
+        patterns = [
+            f"{{{{{placeholder}}}}}",
+            f"{{{placeholder}}}",
+            f"[[{placeholder}]]",
+            f"[{placeholder}]",
+            f"%{placeholder}%",
+            f"<<{placeholder}>>",
+            f"##{placeholder}##",
+        ]
         for pattern in patterns:
-            matches = list(pattern.finditer(updated_text))
-            if matches:
-                found_any = True
-                logger.debug(f"Found {len(matches)} match(es) for placeholder '{placeholder}' using pattern: {pattern.pattern}")
-                # Replace from end to start to preserve string positions
-                for match in reversed(matches):
-                    start, end = match.span()
-                    matched_text = updated_text[start:end]
-                    
-                    # Replace entire match (including brackets) with value only
-                    updated_text = updated_text[:start] + str(value) + updated_text[end:]
-                    total_replacements += 1
-                    logger.info(f"✅ Replaced: '{matched_text}' -> '{value}' (placeholder: '{placeholder}')")
-                break  # Only use first matching pattern
-        
-        if not found_any:
-            logger.debug(f"⚠️  No matches found for placeholder '{placeholder}' in text (first 200 chars: '{updated_text[:200]}...')")
-            logger.debug(f"   Patterns tried: {[p.pattern for p in patterns]}")
-
-    return updated_text, total_replacements
-
-
-EMPTY_PLACEHOLDER = "—"
-
-
-def _format_date_value(s: str) -> str:
-    """Convert ISO datetime to YYYY-MM-DD. Return as-is if not a date."""
-    s = str(s).strip()
-    if not s:
-        return s
-    # ISO format: 2025-12-26T10:19:32.636
-    if 'T' in s and len(s) >= 10:
-        try:
-            return s[:10]
-        except Exception:
-            pass
-    return s
+            if pattern in full_text:
+                new_text = full_text.replace(pattern, val_str(value))
+                if new_text != full_text:
+                    full_text = new_text
+                    replaced = True
+    
+    if replaced and paragraph.runs:
+        paragraph.runs[0].text = full_text
+        for i in range(1, len(paragraph.runs)):
+            paragraph.runs[i].text = ""
+    
+    if replaced:
+        for run in paragraph.runs:
+            if run.text.strip() == '}' or run.text.strip() == '{':
+                run.text = run.text.replace('}', '').replace('{', '')
+                continue
+            
+            text = run.text
+            has_valid_placeholder = bool(re.search(r'\{\{[^}]+\}\}|\{[^}]+\}', text))
+            if not has_valid_placeholder:
+                cleaned = re.sub(r'^\}+', '', text)
+                cleaned = re.sub(r'\}+$', '', cleaned)
+                cleaned = re.sub(r'^\{+', '', cleaned)
+                cleaned = re.sub(r'\{+$', '', cleaned)
+                if cleaned != text:
+                    run.text = cleaned
 
 
-def _is_value_wrong_for_placeholder(placeholder: str, value: str) -> bool:
-    """Return True if value is clearly wrong for this placeholder type. Use to reject DB/CSV values."""
-    if not value or not placeholder:
-        return True
-    s = str(value).strip()
-    pl = placeholder.lower().replace('_', '').replace('-', '').replace(' ', '')
-    # Pure integer (likely DB ID) - wrong for semantic fields
-    if re.match(r'^\d+\.?\d*$', s):
-        num = float(s) if '.' in s else int(s)
-        # Country, address, title, name, place - never accept pure number
-        if 'country' in pl or 'address' in pl or 'place' in pl or 'title' in pl or 'name' in pl:
-            return True
-        if 'exclusivity' in pl or 'mandate' in pl and 'exclusivity' in pl:
-            return True
-        if 'arbitration' in pl or 'governing' in pl:
-            return True
-        if 'role' in pl and 'number' not in pl:
-            return True
-        # Registration number: "25" too short, likely ID; "6948.0" has decimal - suspicious
-        if 'registration' in pl and 'number' in pl:
-            if len(s) <= 3 or '.' in s:
-                return True
-        # Years: 351 is absurd
-        if 'year' in pl or 'survival' in pl or 'confidentiality' in pl:
-            if num > 50:
-                return True
-        # Very short numbers for address/place
-        if len(s) <= 3 and ('address' in pl or 'place' in pl):
-            return True
-    # ISO timestamp - wrong for non-date fields
-    if 'T' in s and re.match(r'^\d{4}-\d{2}-\d{2}T', s):
-        if 'date' not in pl and 'time' not in pl:
-            return True
-    # Incoterms (FOB, CIF) - wrong for title
-    if s.upper() in ('FOB', 'CIF', 'CFR', 'EXW', 'DAP', 'DDP') and 'title' in pl:
-        return True
-    # Port/location format in date field (e.g. "Kochi (IN COK)")
-    if '(' in s and ')' in s and 'date' in pl:
-        return True
-    # Quality spec / long text in date field
-    if ('date' in pl or 'expir' in pl) and ('°' in s or 'astm' in s.lower() or 'api gravity' in s.lower()):
-        return True
-    # Quality spec in exclusivity/mandate field
-    if ('exclusivity' in pl or 'mandate' in pl) and ('°' in s or 'sulfur' in s.lower()):
+def force_replace_remaining(paragraph, replacements: Dict[str, str]):
+    """Force-replace any remaining placeholder patterns in paragraph text.
+    This catches cases where run-level replacement missed due to complex run splitting."""
+    full_text = "".join(run.text for run in paragraph.runs)
+    original = full_text
+    
+    for placeholder, value in replacements.items():
+        val = str(value) if value is not None and value != "" else ""
+        patterns = [
+            f"{{{{{placeholder}}}}}",
+            f"{{{placeholder}}}",
+            f"[[{placeholder}]]",
+            f"[{placeholder}]",
+            f"%{placeholder}%",
+            f"<<{placeholder}>>",
+            f"##{placeholder}##",
+        ]
+        for pattern in patterns:
+            if pattern in full_text:
+                full_text = full_text.replace(pattern, val)
+    
+    if full_text != original and paragraph.runs:
+        paragraph.runs[0].text = full_text
+        for i in range(1, len(paragraph.runs)):
+            paragraph.runs[i].text = ""
         return True
     return False
 
 
-def _normalize_replacement_value(val, _field_name: Optional[str] = None, placeholder: Optional[str] = None) -> str:
-    """Normalize a value for placeholder replacement. None/empty -> '—'.
-    Reject log-like, verbose, or unrelated text. Format dates to YYYY-MM-DD. Cap at 150 chars."""
-    if val is None:
-        return EMPTY_PLACEHOLDER
-    s = str(val).strip()
-    if not s or s.lower() in ("none", "null"):
-        return EMPTY_PLACEHOLDER
-    lower = s.lower()
-    if "mapping:" in lower or "-> '" in lower or "placeholder '" in lower:
-        return EMPTY_PLACEHOLDER
-    for bad in ("✅", "⚠️", "❌", "📋", "🔍"):
-        if bad in s:
-            return EMPTY_PLACEHOLDER
-    # Format ISO datetime to YYYY-MM-DD for date placeholders
-    pl = (placeholder or '').lower()
-    if 'date' in pl or 'expir' in pl or 'effective' in pl or 'issue' in pl or 'signature' in pl:
-        s = _format_date_value(s)
-    # Cap length
-    if len(s) > 150:
-        s = s[:147].rsplit(' ', 1)[0] + "..." if ' ' in s[:147] else s[:147]
-    return s[:150]
+def replace_placeholders_in_document(doc: Document, replacements: Dict[str, str]) -> int:
+    count = 0
+    
+    all_paragraphs = []
+    
+    for paragraph in doc.paragraphs:
+        all_paragraphs.append(paragraph)
+    
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    all_paragraphs.append(paragraph)
+    
+    for section in doc.sections:
+        for paragraph in section.header.paragraphs:
+            all_paragraphs.append(paragraph)
+        for paragraph in section.footer.paragraphs:
+            all_paragraphs.append(paragraph)
+    
+    for paragraph in all_paragraphs:
+        original_text = "".join([run.text for run in paragraph.runs])
+        replace_in_runs(paragraph, replacements)
+        new_text = "".join([run.text for run in paragraph.runs])
+        if original_text != new_text:
+            count += 1
+    
+    forced = 0
+    placeholder_pattern = re.compile(r'\{\{[^}]+\}\}|\{[^}]+\}|\[\[[^\]]+\]\]|\[[^\]]+\]|%[^%]+%|<<[^>]+>>|##[^#]+##')
+    for paragraph in all_paragraphs:
+        para_text = "".join(run.text for run in paragraph.runs)
+        if placeholder_pattern.search(para_text):
+            if force_replace_remaining(paragraph, replacements):
+                forced += 1
+    
+    if forced > 0:
+        print(f"[FORCE REPLACE] Fixed {forced} paragraphs with remaining placeholders")
+    
+    return count + forced
 
 
-def replace_placeholders_in_docx(docx_path: str, data: Dict[str, str]) -> str:
+FALLBACK_FONT = "Roboto"
+DEFAULT_TEXT_SIZE = Pt(10)
+DEFAULT_TITLE_SIZE = Pt(12)
+
+
+def apply_consistent_fonts(doc: Document):
+    """Preserve original document fonts. Only apply fallback Google Font (Roboto) 
+    when a run has no font set. Never override existing font names or sizes."""
+    def ensure_font(run, is_title=False):
+        if not run.font.name:
+            run.font.name = FALLBACK_FONT
+        if not run.font.size:
+            run.font.size = DEFAULT_TITLE_SIZE if is_title else DEFAULT_TEXT_SIZE
+    
+    for paragraph in doc.paragraphs:
+        is_title = paragraph.style and paragraph.style.name and ('Heading' in paragraph.style.name or 'Title' in paragraph.style.name)
+        for run in paragraph.runs:
+            ensure_font(run, is_title)
+    
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    is_title = paragraph.style and paragraph.style.name and ('Heading' in paragraph.style.name or 'Title' in paragraph.style.name)
+                    for run in paragraph.runs:
+                        ensure_font(run, is_title)
+    
+    for section in doc.sections:
+        for paragraph in section.header.paragraphs:
+            for run in paragraph.runs:
+                ensure_font(run, is_title=False)
+        for paragraph in section.footer.paragraphs:
+            for run in paragraph.runs:
+                ensure_font(run, is_title=False)
+
+
+def load_template_metadata() -> Dict[str, Any]:
+    metadata_file = os.path.join(SETTINGS_DIR, "templates_metadata.json")
+    if os.path.exists(metadata_file):
+        with open(metadata_file, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_template_metadata(metadata: Dict[str, Any]):
+    metadata_file = os.path.join(SETTINGS_DIR, "templates_metadata.json")
+    with open(metadata_file, "w") as f:
+        json.dump(metadata, f, indent=2, default=str)
+
+
+def get_current_date_str() -> str:
+    """Get a random date within the last 14 days for 'current' dates."""
+    days_ago = random.randint(0, 14)
+    date = datetime.now() - timedelta(days=days_ago)
+    return date.strftime("%Y-%m-%d")
+
+
+def get_past_date_str() -> str:
+    """Get a random date within the last 30 days for 'past' dates."""
+    days_ago = random.randint(1, 30)
+    date = datetime.now() - timedelta(days=days_ago)
+    return date.strftime("%Y-%m-%d")
+
+
+def get_future_date_str() -> str:
+    """Get a random date within the next 30 days for 'future' dates."""
+    days_ahead = random.randint(1, 30)
+    date = datetime.now() + timedelta(days=days_ahead)
+    return date.strftime("%Y-%m-%d")
+
+
+def fetch_template_placeholders(template_name: str) -> List[Dict[str, Any]]:
+    """Fetch placeholder mappings from Supabase document_template_fields table.
+    
+    CRITICAL: Query document_template_fields by template_file_name (exact match).
+    
+    Returns list of mappings with structure:
+    - placeholder_name: str (the placeholder text)
+    - source: 'database' or 'ai'
+    - database_table: str (e.g., 'vessels', 'buyer_companies')
+    - database_column: str (e.g., 'name', 'imo_number')
     """
-    Replace placeholders in a DOCX file.
-    ONLY replaces placeholder patterns WITH brackets (e.g., {placeholder}).
-    Replaces the ENTIRE pattern (including brackets) with just the value (no brackets).
-    Preserves all other text and formatting.
-    """
+    if not supabase:
+        print("[MAPPINGS] Supabase not configured, returning empty mappings")
+        return []
+    
     try:
-        logger.info("=" * 80)
-        logger.info("🔄 Starting placeholder replacement with %d mappings", len(data))
-        logger.info("=" * 80)
+        file_name = template_name
+        if not file_name.lower().endswith('.docx'):
+            file_name = f"{file_name}.docx"
         
-        # Log all mappings
-        for key, value in data.items():
-            logger.info("📋 Mapping: '%s' -> '%s'", key, str(value))
+        print(f"[MAPPINGS] Querying document_template_fields by template_file_name: {file_name}")
         
-        # Extract all placeholders from document to compare
-        doc = Document(docx_path)
-        all_doc_placeholders = set()
-        for paragraph in doc.paragraphs:
-            placeholders = find_placeholders(paragraph.text)
-            all_doc_placeholders.update(placeholders)
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for paragraph in cell.paragraphs:
-                        placeholders = find_placeholders(paragraph.text)
-                        all_doc_placeholders.update(placeholders)
+        response = supabase.table("document_template_fields").select("*").eq("template_file_name", file_name).execute()
         
-        logger.info("=" * 80)
-        logger.info(f"📄 Document contains {len(all_doc_placeholders)} unique placeholders")
-        logger.info(f"📋 Data mapping contains {len(data)} placeholders")
+        if not response.data:
+            template_base = template_name.replace('.docx', '').replace('.DOCX', '')
+            print(f"[MAPPINGS] Exact match not found, trying with base name: {template_base}")
+            response = supabase.table("document_template_fields").select("*").ilike("template_file_name", f"%{template_base}%").execute()
         
-        # Find placeholders in document but not in mapping
-        missing_in_mapping = all_doc_placeholders - set(data.keys())
-        if missing_in_mapping:
-            logger.warning(f"⚠️  {len(missing_in_mapping)} placeholders in document but NOT in mapping:")
-            for ph in sorted(list(missing_in_mapping))[:20]:  # Show first 20
-                logger.warning(f"   - {ph}")
-            if len(missing_in_mapping) > 20:
-                logger.warning(f"   ... and {len(missing_in_mapping) - 20} more")
-        
-        # Find placeholders in mapping but not in document
-        extra_in_mapping = set(data.keys()) - all_doc_placeholders
-        if extra_in_mapping:
-            logger.info(f"ℹ️  {len(extra_in_mapping)} placeholders in mapping but NOT in document (will be ignored)")
-        
-        logger.info("=" * 80)
-
-        replacements_made = 0
-        pattern_cache: Dict[str, List[re.Pattern]] = {}
-        
-        # Build all patterns upfront for better performance
-        logger.info("Building placeholder patterns...")
-        for placeholder in data.keys():
-            if placeholder not in pattern_cache:
-                patterns = _build_placeholder_pattern(placeholder)
-                pattern_cache[placeholder] = patterns
-                logger.debug(f"Built {len(patterns)} patterns for '{placeholder}'")
-                if not patterns:
-                    logger.warning(f"⚠️  No patterns built for placeholder '{placeholder}'")
-                else:
-                    logger.debug(f"   First pattern: {patterns[0].pattern if patterns else 'None'}")
-
-        def replace_in_runs(runs, data_mapping, pattern_cache):
-            """Replace placeholders in runs while preserving formatting"""
-            total_replacements = 0
+        if response.data:
+            mappings = response.data
+            db_count = len([m for m in mappings if m.get("source", "").lower() == "database"])
+            ai_count = len([m for m in mappings if m.get("source", "").lower() == "ai"])
+            print(f"[MAPPINGS] Found {len(mappings)} mappings: {db_count} database, {ai_count} ai")
+            for m in mappings[:10]:
+                print(f"[MAPPINGS]   - {m.get('placeholder_name')}: source={m.get('source')}, table={m.get('database_table')}, column={m.get('database_column')}")
+            if len(mappings) > 10:
+                print(f"[MAPPINGS]   ... and {len(mappings) - 10} more")
+            return mappings
+        else:
+            print(f"[MAPPINGS] No mappings found in document_template_fields for: {file_name}")
+            return []
             
-            # First, try to replace in individual runs (for placeholders that are in a single run)
-            for run in runs:
-                original_run_text = run.text
-                if not original_run_text:
-                    continue
-                
-                # Quick check: does this run contain any placeholder pattern?
-                has_placeholder = False
-                for placeholder in data_mapping.keys():
-                    patterns = pattern_cache.get(placeholder)
-                    if patterns is None:
-                        patterns = _build_placeholder_pattern(placeholder)
-                        pattern_cache[placeholder] = patterns
-                    
-                    for pattern in patterns:
-                        if pattern.search(original_run_text):
-                            has_placeholder = True
-                            break
-                    if has_placeholder:
-                        break
-                
-                if not has_placeholder:
-                    continue  # Skip runs without placeholders
-                
-                # Replace placeholder patterns in this run
-                updated_text, replaced = _replace_text_with_mapping(original_run_text, data_mapping, pattern_cache)
-                
-                if replaced > 0 and updated_text != original_run_text:
-                    run.text = updated_text
-                    total_replacements += replaced
-                    logger.debug(f"Run updated: '{original_run_text[:50]}...' -> '{updated_text[:50]}...' ({replaced} replacements)")
-            
-            # If no replacements in individual runs, try paragraph-level replacement
-            # (handles placeholders split across multiple runs)
-            if total_replacements == 0:
-                # Combine all run texts to check for split placeholders
-                combined_text = ''.join([run.text for run in runs if run.text])
-                if combined_text:
-                    # Check if combined text has placeholders
-                    has_placeholder = False
-                    for placeholder in data_mapping.keys():
-                        patterns = pattern_cache.get(placeholder)
-                        if patterns is None:
-                            patterns = _build_placeholder_pattern(placeholder)
-                            pattern_cache[placeholder] = patterns
-                        
-                        for pattern in patterns:
-                            if pattern.search(combined_text):
-                                has_placeholder = True
-                                break
-                        if has_placeholder:
-                            break
-                    
-                    if has_placeholder:
-                        # Replace in combined text
-                        updated_combined, replaced = _replace_text_with_mapping(combined_text, data_mapping, pattern_cache)
-                        
-                        if replaced > 0 and updated_combined != combined_text:
-                            # Update the first run with the combined text, clear others
-                            if runs:
-                                runs[0].text = updated_combined
-                                for run in runs[1:]:
-                                    run.text = ''
-                                total_replacements += replaced
-                                logger.debug(f"Paragraph-level replacement: {replaced} placeholder(s) (was split across runs)")
-            
-            return total_replacements
-
-        def process_paragraphs(paragraphs):
-            """Process paragraphs and replace placeholders in their runs"""
-            nonlocal replacements_made
-            for para_idx, paragraph in enumerate(paragraphs):
-                paragraph_text = paragraph.text
-                if not paragraph_text:
-                    continue
-                
-                # Quick check: does this paragraph contain any placeholder pattern?
-                has_placeholder = False
-                matching_placeholders = []
-                for placeholder in data.keys():
-                    patterns = pattern_cache.get(placeholder)
-                    if patterns is None:
-                        patterns = _build_placeholder_pattern(placeholder)
-                        pattern_cache[placeholder] = patterns
-                    
-                    for pattern in patterns:
-                        if pattern.search(paragraph_text):
-                            has_placeholder = True
-                            matching_placeholders.append(placeholder)
-                            break
-                
-                if not has_placeholder:
-                    continue  # Skip paragraphs without placeholders
-                
-                logger.debug(f"Paragraph {para_idx} contains placeholders: {matching_placeholders[:5]}...")
-                
-                # Replace placeholders in runs (preserves formatting)
-                replaced = replace_in_runs(paragraph.runs, data, pattern_cache)
-                replacements_made += replaced
-                
-                if replaced > 0:
-                    logger.info(f"📝 Paragraph {para_idx}: replaced {replaced} placeholder(s) in '{paragraph_text[:60]}...'")
-                elif has_placeholder:
-                    logger.warning(f"⚠️  Paragraph {para_idx} has placeholders but no replacements made: {matching_placeholders[:3]}...")
-                    logger.warning(f"   Paragraph text: '{paragraph_text[:100]}...'")
-
-        # Process body paragraphs
-        logger.info("Processing body paragraphs...")
-        process_paragraphs(doc.paragraphs)
-
-        # Process tables
-        logger.info("Processing tables...")
-        for table_idx, table in enumerate(doc.tables):
-            for row_idx, row in enumerate(table.rows):
-                for cell_idx, cell in enumerate(row.cells):
-                    for para_idx, paragraph in enumerate(cell.paragraphs):
-                        paragraph_text = paragraph.text
-                        if not paragraph_text:
-                            continue
-                        
-                        # Check if paragraph has placeholders
-                        has_placeholder = False
-                        matching_placeholders = []
-                        for placeholder in data.keys():
-                            patterns = pattern_cache.get(placeholder, [])
-                            for pattern in patterns:
-                                if pattern.search(paragraph_text):
-                                    has_placeholder = True
-                                    matching_placeholders.append(placeholder)
-                                    break
-                            if has_placeholder:
-                                break
-                        
-                        if has_placeholder:
-                            replaced = replace_in_runs(paragraph.runs, data, pattern_cache)
-                            replacements_made += replaced
-                            if replaced > 0:
-                                logger.info(f"📊 Table[{table_idx}][{row_idx}][{cell_idx}][para{para_idx}]: {replaced} replacement(s)")
-                            else:
-                                logger.warning(f"⚠️  Table[{table_idx}][{row_idx}][{cell_idx}][para{para_idx}] has placeholders but no replacements: {matching_placeholders[:3]}...")
-
-        # Process headers and footers
-        logger.info("Processing headers and footers...")
-        for section in doc.sections:
-            for paragraph in section.header.paragraphs:
-                paragraph_text = paragraph.text
-                if paragraph_text:
-                    has_placeholder = False
-                    for placeholder in data.keys():
-                        patterns = pattern_cache.get(placeholder, [])
-                        for pattern in patterns:
-                            if pattern.search(paragraph_text):
-                                has_placeholder = True
-                                break
-                        if has_placeholder:
-                            break
-                    if has_placeholder:
-                        replaced = replace_in_runs(paragraph.runs, data, pattern_cache)
-                        replacements_made += replaced
-            
-            for paragraph in section.footer.paragraphs:
-                paragraph_text = paragraph.text
-                if paragraph_text:
-                    has_placeholder = False
-                    for placeholder in data.keys():
-                        patterns = pattern_cache.get(placeholder, [])
-                        for pattern in patterns:
-                            if pattern.search(paragraph_text):
-                                has_placeholder = True
-                                break
-                        if has_placeholder:
-                            break
-                    if has_placeholder:
-                        replaced = replace_in_runs(paragraph.runs, data, pattern_cache)
-                        replacements_made += replaced
-
-        logger.info("=" * 80)
-        logger.info("✅ Total replacements made: %d", replacements_made)
-        logger.info("=" * 80)
-
-        output_path = os.path.join(TEMP_DIR, f"processed_{uuid.uuid4().hex}.docx")
-        doc.save(output_path)
-        logger.info(f"💾 Saved processed document to: {output_path}")
-        return output_path
-
     except Exception as e:
-        logger.error("❌ Error processing document: %s", e)
+        print(f"[MAPPINGS] ERROR fetching document_template_fields: {e}")
         import traceback
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
+        traceback.print_exc()
+        return []
 
-def convert_docx_to_pdf(docx_path: str) -> str:
-    """Convert DOCX to PDF using multiple methods with fallbacks"""
-    import subprocess
-    import platform
+
+def fetch_value_from_database(table_name: str, field_name: str, entity_id: str = None) -> Optional[str]:
+    """Fetch a specific field value from a database table."""
+    if not supabase:
+        return None
     
     try:
-        pdf_path = os.path.join(TEMP_DIR, f"output_{uuid.uuid4().hex}.pdf")
-        is_windows = platform.system() == 'Windows'
-        
-        logger.info(f"🔄 Converting DOCX to PDF: {docx_path}")
-        logger.info(f"   Platform: {platform.system()}")
-        
-        # Method 1: Try docx2pdf (Windows only - requires MS Word)
-        if is_windows:
-            try:
-                from docx2pdf import convert
-                logger.info(f"   Trying docx2pdf (Windows + MS Word)...")
-                convert(docx_path, pdf_path)
-                
-                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
-                    logger.info(f"   ✅ docx2pdf succeeded: {pdf_path}")
-                    return pdf_path
-                else:
-                    logger.warning("   ⚠️ docx2pdf created empty PDF")
-            except ImportError:
-                logger.warning("   ⚠️ docx2pdf not installed")
-            except Exception as e:
-                logger.warning(f"   ⚠️ docx2pdf failed: {e}")
-        
-        # Method 2: Try LibreOffice (cross-platform)
-        # Define paths for both Windows and Linux
-        if is_windows:
-            libreoffice_paths = [
-                r'C:\Program Files\LibreOffice\program\soffice.exe',
-                r'C:\Program Files (x86)\LibreOffice\program\soffice.exe',
-                'soffice.exe',
-            ]
+        if entity_id and is_valid_uuid(entity_id):
+            response = supabase.table(table_name).select(field_name).eq("id", entity_id).limit(1).execute()
         else:
-            # Linux paths
-            libreoffice_paths = [
-                '/usr/bin/libreoffice',
-                '/usr/bin/soffice',
-                '/usr/lib/libreoffice/program/soffice',
-                '/opt/libreoffice/program/soffice',
-                '/snap/bin/libreoffice',
-                'libreoffice',
-                'soffice',
-            ]
+            response = supabase.table(table_name).select(field_name).limit(1).execute()
         
-        logger.info(f"   Trying LibreOffice conversion...")
-        for lo_path in libreoffice_paths:
-            try:
-                # Check if LibreOffice exists
-                result = subprocess.run(
-                    [lo_path, '--version'], 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=10
-                )
-                if result.returncode == 0:
-                    logger.info(f"   Found LibreOffice at: {lo_path}")
-                    logger.info(f"   Version: {result.stdout.strip()[:50]}...")
-                    
-                    # Run conversion
-                    cmd = [
-                        lo_path,
-                        '--headless',
-                        '--invisible',
-                        '--nologo',
-                        '--convert-to', 'pdf',
-                        '--outdir', TEMP_DIR,
-                        docx_path
-                    ]
-                    logger.info(f"   Running: {' '.join(cmd)}")
-                    
-                    conv_result = subprocess.run(
-                        cmd, 
-                        capture_output=True, 
-                        text=True, 
-                        timeout=120  # 2 minute timeout for large documents
-                    )
-                    
-                    if conv_result.returncode != 0:
-                        logger.warning(f"   LibreOffice stderr: {conv_result.stderr[:200] if conv_result.stderr else 'none'}")
-                    
-                    # Get generated PDF (LibreOffice names it based on input file)
-                    expected_pdf = os.path.join(
-                        TEMP_DIR, 
-                        os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
-                    )
-                    
-                    if os.path.exists(expected_pdf) and os.path.getsize(expected_pdf) > 0:
-                        # Rename to our target path
-                        if expected_pdf != pdf_path:
-                            os.rename(expected_pdf, pdf_path)
-                        logger.info(f"   ✅ LibreOffice conversion succeeded: {pdf_path}")
-                        return pdf_path
-                    else:
-                        logger.warning(f"   ⚠️ Expected PDF not found: {expected_pdf}")
-                        # List files in temp dir for debugging
-                        temp_files = os.listdir(TEMP_DIR)
-                        logger.warning(f"   Files in temp dir: {temp_files[:10]}...")
-            except subprocess.TimeoutExpired:
-                logger.warning(f"   ⚠️ LibreOffice timeout at: {lo_path}")
-            except FileNotFoundError:
-                continue
-            except Exception as e:
-                logger.warning(f"   ⚠️ LibreOffice error at {lo_path}: {e}")
-                continue
-        
-        # Method 3: Try unoconv (Linux alternative to LibreOffice direct call)
-        if not is_windows:
-            try:
-                logger.info(f"   Trying unoconv...")
-                result = subprocess.run(
-                    ['unoconv', '-f', 'pdf', '-o', pdf_path, docx_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
-                    logger.info(f"   ✅ unoconv succeeded: {pdf_path}")
-                    return pdf_path
-                else:
-                    logger.warning(f"   ⚠️ unoconv failed: {result.stderr[:200] if result.stderr else 'unknown'}")
-            except FileNotFoundError:
-                logger.warning("   ⚠️ unoconv not installed")
-            except Exception as e:
-                logger.warning(f"   ⚠️ unoconv error: {e}")
-        
-        # If no PDF conversion worked, return DOCX
-        logger.error("❌ All PDF conversion methods failed!")
-        logger.error("   Please install LibreOffice: sudo apt-get install libreoffice")
-        logger.error("   Or install unoconv: sudo apt-get install unoconv")
-        return docx_path
-        
+        if response.data and len(response.data) > 0:
+            return response.data[0].get(field_name)
+        return None
     except Exception as e:
-        logger.error(f"❌ PDF conversion failed with exception: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return docx_path
+        print(f"[DB FETCH] ERROR fetching {table_name}.{field_name}: {e}")
+        return None
 
 
-def convert_pdf_to_images_zip(pdf_path: str, base_filename: str) -> bytes:
-    """Convert PDF pages to images and create a zip file containing all images
+FIXED_PLACEHOLDER_VALUES = {
+    "notary_name": "Valine Weisel",
+    "witness_name_company": "Valine Weisel",
+    "witness_name_authority": "Valine Weisel",
+}
+
+CURRENT_DATE_PLACEHOLDERS = [
+    "effective_date", "issue_date", "certification_date", "notary_date",
+    "approval_date", "document_date", "sgs_issue_date", "contract_date",
+    "signing_date", "date", "commencement_date", "agreement_date",
+    "execution_date", "issuance_date", "dated", "report_date",
+    "inspection_date", "certificate_date", "authorization_date",
+]
+
+FUTURE_DATE_PLACEHOLDERS = [
+    "amendment_issue_date", "future_issue_date", "revision_issue_date",
+    "amendment_effective_date", "next_issuance_date", "compliance_date",
+    "delivery_date", "eta", "expiry_date", "laycan_start", "laycan_end",
+    "completion_date", "due_date", "renewal_date", "validity_date",
+    "next_review_date", "deadline_date",
+]
+
+def _classify_date_placeholder(name: str) -> Optional[str]:
+    """Return 'current' or 'future' if the placeholder looks like a date, else None.
+    Checks FUTURE list first to avoid substring collisions (e.g. 'amendment_issue_date' contains 'issue_date')."""
+    name_lower = name.lower().strip()
+    for kw in FUTURE_DATE_PLACEHOLDERS:
+        if kw in name_lower:
+            return "future"
+    for kw in CURRENT_DATE_PLACEHOLDERS:
+        if kw in name_lower:
+            return "current"
+    if "date" in name_lower:
+        return "current"
+    return None
+
+
+async def generate_ai_values(placeholders: List[str], context: Dict[str, str]) -> Dict[str, str]:
+    if not openai_client or not placeholders:
+        return {}
     
-    Args:
-        pdf_path: Path to the PDF file
-        base_filename: Base name for the images (without extension)
+    today = datetime.now()
+    today_str = today.strftime("%Y-%m-%d")
+    
+    past_days = random.randint(3, 21)
+    current_date_obj = today - timedelta(days=past_days)
+    current_date_formatted = current_date_obj.strftime("%B %d, %Y").replace(" 0", " ")
+    
+    future_days = random.randint(5, 30)
+    future_date_obj = today + timedelta(days=future_days)
+    future_date_formatted = future_date_obj.strftime("%B %d, %Y").replace(" 0", " ")
+    
+    pre_filled = {}
+    remaining_placeholders = []
+    
+    for p in placeholders:
+        p_lower = p.lower().strip()
+        fixed_match = None
+        for fixed_key, fixed_val in FIXED_PLACEHOLDER_VALUES.items():
+            if fixed_key in p_lower or p_lower in fixed_key:
+                fixed_match = fixed_val
+                break
         
-    Returns:
-        bytes: ZIP file content containing all PDF pages as PNG images
-    """
-    if not FITZ_AVAILABLE:
-        raise HTTPException(status_code=500, detail="PyMuPDF (fitz) is not available. Cannot convert PDF to images.")
+        if fixed_match:
+            pre_filled[p] = fixed_match
+            print(f"[FIXED VALUE] {p} = {fixed_match}")
+            continue
+        
+        date_type = _classify_date_placeholder(p)
+        if date_type == "current":
+            pre_filled[p] = current_date_formatted
+        elif date_type == "future":
+            pre_filled[p] = future_date_formatted
+        else:
+            remaining_placeholders.append(p)
+    
+    if pre_filled:
+        print(f"[AI DATES] Pre-filled {len(pre_filled)} placeholders: current={current_date_formatted}, future={future_date_formatted}")
+    
+    if not remaining_placeholders:
+        return pre_filled
+    
+    context_str = "\n".join([f"- {k}: {v}" for k, v in context.items() if v])
+    placeholders_str = "\n".join([f"- {p}" for p in remaining_placeholders])
+    
+    prompt = f"""Generate realistic values for these oil trading document placeholders:
+{placeholders_str}
+
+Context:
+{context_str}
+
+CRITICAL DATE RULES (MUST FOLLOW):
+- Today's real date is: {today_str}
+- If any placeholder looks like a date, use this EXACT value: "{current_date_formatted}"
+- NEVER generate dates in YYYY-MM-DD format, always use human-readable like "{current_date_formatted}"
+- NEVER use today's exact date
+
+NUMERIC RESULT RULES:
+- Placeholders starting with "Result" (like Result, Result1, Result2, Result3, etc.) are ALWAYS numeric values
+- These represent oil trading calculation results (quantities, prices, totals, percentages)
+- Generate realistic numeric values (integers or decimals) as strings, e.g. "1250000", "42.75", "0.85"
+- Do NOT generate text descriptions for Result placeholders, only numbers
+
+NAME GENERATION RULES (VERY IMPORTANT):
+- NEVER use generic placeholder names like "John Smith", "Jane Doe", "John Doe", "James Smith", "Robert Johnson"
+- Always generate realistic, UNIQUE, region-appropriate full names
+- Use diverse names from different backgrounds (European, Middle Eastern, Asian, etc.)
+- Names should sound like real professionals in oil trading/shipping/legal industries
+- Examples of GOOD names: "Marcus Lindqvist", "Fatima Al-Rashidi", "Dimitri Volkov", "Helena Papadopoulos"
+- Examples of BAD names: "John Smith", "Jane Doe", "Bob Jones", "Mary Johnson"
+
+Return JSON only with placeholder names as keys and realistic values as strings.
+Example: {{"contract_number": "OTC-2024-00123", "arbitration_clause": "ICC Rules of Arbitration"}}"""
     
     try:
-        # Open PDF
-        pdf_document = fitz.open(pdf_path)
-        total_pages = len(pdf_document)
-        logger.info(f"Converting PDF to images: {total_pages} pages")
-        
-        # Create zip file in memory
-        zip_buffer = io.BytesIO()
-        
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            # Convert each page to image
-            for page_num in range(total_pages):
-                page = pdf_document[page_num]
-                
-                # Render page to image (pixmap) at 2x resolution for better quality
-                # 300 DPI equivalent (72 * 4.167)
-                mat = fitz.Matrix(2.0, 2.0)
-                pix = page.get_pixmap(matrix=mat)
-                
-                # Convert pixmap to PNG bytes
-                img_bytes = pix.tobytes("png")
-                
-                # Add to zip with page number in filename
-                image_filename = f"{base_filename}_page_{page_num + 1:03d}.png"
-                zip_file.writestr(image_filename, img_bytes)
-                logger.debug(f"Added page {page_num + 1} to zip: {image_filename}")
-        
-        pdf_document.close()
-        
-        # Get zip file content
-        zip_buffer.seek(0)
-        zip_content = zip_buffer.read()
-        zip_buffer.close()
-        
-        logger.info(f"Successfully created zip file with {total_pages} images ({len(zip_content)} bytes)")
-        return zip_content
-        
-    except Exception as e:
-        logger.error(f"Error converting PDF to images: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to convert PDF to images: {str(e)}")
-
-
-def convert_pdf_to_images_then_to_pdf(pdf_path: str) -> bytes:
-    """Convert PDF → images → new PDF (image-based). Each page becomes an image in the output PDF.
-    Returns PDF bytes (application/pdf) for download.
-    """
-    if not FITZ_AVAILABLE:
-        raise HTTPException(status_code=500, detail="PyMuPDF (fitz) is not available. Cannot convert PDF.")
-    try:
-        src = fitz.open(pdf_path)
-        total = len(src)
-        logger.info(f"Converting PDF to images then to PDF: {total} pages")
-        out = fitz.open()
-        for i in range(total):
-            page = src[i]
-            mat = fitz.Matrix(2.0, 2.0)
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            w, h = pix.width, pix.height
-            r = fitz.Rect(0, 0, w, h)
-            new_page = out.new_page(-1, width=w, height=h)
-            new_page.insert_image(r, pixmap=pix)
-        src.close()
-        pdf_bytes = out.write(deflate=False)
-        out.close()
-        logger.info(f"Created image-based PDF: {len(pdf_bytes)} bytes ({total} pages)")
-        return pdf_bytes
-    except Exception as e:
-        logger.error(f"Error converting PDF to images then to PDF: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to convert PDF: {str(e)}")
-
-
-@app.options("/generate-document")
-async def options_generate_document(request: Request):
-    """Handle CORS preflight for generate-document endpoint"""
-    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
-
-@app.options("/api/generate-document")
-async def options_api_generate_document(request: Request):
-    """CORS preflight when Nginx forwards /api prefix (no trailing slash in proxy_pass)"""
-    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
-
-@app.post("/generate-document")
-@app.post("/api/generate-document")
-async def generate_document(request: Request):
-    """Generate a document from template"""
-    template_temp_path: Optional[str] = None
-    template_record: Optional[Dict] = None
-    try:
-        body = await request.json()
-        template_id = body.get('template_id')  # New: prefer template_id
-        template_name = body.get('template_name')  # Fallback for backward compatibility
-        vessel_imo = body.get('vessel_imo')
-        user_id = body.get('user_id')  # Optional: for permission checking
-        
-        # Validate required fields
-        if not template_id and not template_name:
-            raise HTTPException(status_code=422, detail="template_id or template_name is required")
-        
-        if not vessel_imo:
-            raise HTTPException(status_code=422, detail="vessel_imo is required. Please provide the IMO number of the vessel.")
-        
-        # Log the vessel IMO being used - CRITICAL for debugging
-        logger.info("=" * 80)
-        logger.info(f"🚢 GENERATING DOCUMENT")
-        logger.info(f"   Template ID: {template_id}")
-        logger.info(f"   Template Name: {template_name}")
-        logger.info(f"   Vessel IMO: {vessel_imo} (from vessel detail page)")
-        logger.info(f"   User ID: {user_id}")
-        logger.info("=" * 80)
-        
-        effective_template_name = template_name
-        template_settings: Dict[str, Dict] = {}
-        template_temp_path: Optional[str] = None
-        template_record: Optional[Dict] = None
-
-        if SUPABASE_ENABLED:
-            # Try to resolve by template_id first (UUID)
-            if template_id:
-                try:
-                    template_uuid = uuid.UUID(str(template_id))
-                    response = supabase.table('document_templates').select('id, title, description, file_name, placeholders, is_active, created_at, updated_at').eq('id', str(template_uuid)).limit(1).execute()
-                    if response.data:
-                        template_record = response.data[0]
-                        logger.info(f"Found template by ID: {template_id}")
-                except (ValueError, TypeError):
-                    # Not a valid UUID, try as template_name
-                    logger.info(f"template_id '{template_id}' is not a valid UUID, trying as template_name")
-                    template_record = resolve_template_record(template_id)
-            
-            # Fallback to template_name if template_id didn't work
-            if not template_record and template_name:
-                template_record = resolve_template_record(template_name)
-            
-            if not template_record:
-                raise HTTPException(status_code=404, detail=f"Template not found: {template_id or template_name}")
-
-            template_settings = fetch_template_placeholders(template_record['id'], template_record.get('file_name'))
-
-            file_record = fetch_template_file_record(template_record['id'], include_data=True)
-            fallback_checked = False
-            template_path = None
-
-            if file_record:
-                file_data = file_record.get("file_data")
-                if file_data:
-                    template_temp_path = write_temp_docx_from_record(file_record)
-                    template_path = template_temp_path
-                    effective_template_name = template_record.get('file_name') or template_name
-                else:
-                    logger.error(f"Template file missing data for template_id={template_record['id']}")
-                    fallback_checked = True
-            else:
-                fallback_checked = True
-
-            if fallback_checked:
-                logger.warning(f"Template file missing in Supabase for '{template_name}', attempting filesystem fallback")
-                fallback_name = template_record.get('file_name') or template_name
-                if not fallback_name.endswith('.docx'):
-                    fallback_name = f"{fallback_name}.docx"
-
-                fallback_path = os.path.join(TEMPLATES_DIR, fallback_name)
-                if os.path.exists(fallback_path):
-                    template_path = fallback_path
-                    effective_template_name = fallback_name
-                else:
-                    raise HTTPException(status_code=404, detail=f"Template file missing for: {template_name}")
-        else:
-            # Handle template name with/without extension for legacy file storage
-            if not effective_template_name.endswith('.docx'):
-                effective_template_name += '.docx'
-            
-            template_path = os.path.join(TEMPLATES_DIR, effective_template_name)
-            if not os.path.exists(template_path):
-                raise HTTPException(status_code=404, detail=f"Template not found: {effective_template_name}")
-            
-            placeholder_settings = read_json_file(PLACEHOLDER_SETTINGS_PATH, {})
-            template_settings = placeholder_settings.get(effective_template_name, {})
-            
-            if not template_settings:
-                template_name_no_ext = effective_template_name.replace('.docx', '')
-                template_settings = placeholder_settings.get(template_name_no_ext, {})
-                if template_settings:
-                    logger.info(f"Found settings using template name without extension: {template_name_no_ext}")
-            
-            if not template_settings and not effective_template_name.endswith('.docx'):
-                template_settings = placeholder_settings.get(effective_template_name + '.docx', {})
-                if template_settings:
-                    logger.info(f"Found settings using template name with extension: {effective_template_name + '.docx'}")
-
-        logger.info(f"Loaded {len(template_settings)} placeholder settings for {effective_template_name}")
-        
-        # CRITICAL: Log full settings summary for debugging CMS configuration issues
-        if template_settings:
-            logger.info("=" * 80)
-            logger.info("📋 CMS PLACEHOLDER SETTINGS SUMMARY (for debugging)")
-            logger.info("=" * 80)
-            db_sources = []
-            csv_sources = []
-            custom_sources = []
-            random_sources = []
-            for ph, setting in template_settings.items():
-                source = setting.get('source', 'database')
-                if source == 'database':
-                    table = setting.get('databaseTable', '')
-                    field = setting.get('databaseField', '')
-                    db_sources.append(f"  {ph}: table='{table}', field='{field}'")
-                elif source == 'csv':
-                    csv_id = setting.get('csvId', '')
-                    csv_field = setting.get('csvField', '')
-                    csv_sources.append(f"  {ph}: csv='{csv_id}', field='{csv_field}'")
-                elif source == 'custom':
-                    value = setting.get('customValue', '')
-                    custom_sources.append(f"  {ph}: value='{value[:50]}...' " if len(value) > 50 else f"  {ph}: value='{value}'")
-                elif source == 'random':
-                    option = setting.get('randomOption', 'auto')
-                    random_sources.append(f"  {ph}: option='{option}'")
-            
-            if db_sources:
-                logger.info(f"📊 DATABASE sources ({len(db_sources)}):")
-                for s in db_sources[:10]:  # Show first 10
-                    logger.info(s)
-                if len(db_sources) > 10:
-                    logger.info(f"  ... and {len(db_sources) - 10} more")
-            
-            if csv_sources:
-                logger.info(f"📄 CSV sources ({len(csv_sources)}):")
-                for s in csv_sources:
-                    logger.info(s)
-            
-            if custom_sources:
-                logger.info(f"✏️ CUSTOM sources ({len(custom_sources)}):")
-                for s in custom_sources:
-                    logger.info(s)
-            
-            if random_sources:
-                logger.info(f"🎲 RANDOM sources ({len(random_sources)}):")
-                for s in random_sources:
-                    logger.info(s)
-            
-            logger.info("=" * 80)
-        
-        # ========================================================================
-        # NEW: ID-BASED DATA FETCHING (Payload-Driven)
-        # ========================================================================
-        logger.info("=" * 80)
-        logger.info("🔄 ID-BASED DATA FETCHING")
-        logger.info("=" * 80)
-        
-        # Fetch all entities based on IDs in payload (only if IDs are provided)
-        fetched_entities = {}
-        if SUPABASE_ENABLED and supabase:
-            try:
-                fetched_entities = fetch_all_entities(supabase, body)
-                logger.info(f"✅ Fetched {sum(1 for v in fetched_entities.values() if v is not None)} entities from database")
-                for entity_name, entity_data in fetched_entities.items():
-                    if entity_data:
-                        logger.info(f"   - {entity_name}: {entity_data.get('name', entity_data.get('id', 'Unknown'))}")
-            except Exception as e:
-                logger.error(f"❌ Error in ID-based fetching: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-        
-        # Backward compatibility: If vessel_imo provided but no vessel_id, fetch by IMO
-        vessel = fetched_entities.get('vessel')
-        if not vessel and vessel_imo:
-            logger.info(f"📊 Fetching vessel data from database for IMO: {vessel_imo} (backward compatibility)")
-            vessel = get_vessel_data(vessel_imo)
-            if vessel:
-                fetched_entities['vessel'] = vessel
-        
-        if vessel:
-            vessel_name = vessel.get('name', 'Unknown')
-            logger.info(f"✅ Vessel found: {vessel_name} (IMO: {vessel_imo})")
-            logger.info(f"   Vessel data fields: {list(vessel.keys())}")
-        else:
-            logger.error(f"❌ Vessel NOT FOUND in database for IMO: {vessel_imo}")
-            vessel = {'imo': vessel_imo, 'name': f'Vessel {vessel_imo}'}
-            fetched_entities['vessel'] = vessel
-        
-        # CRITICAL: Always ensure the vessel IMO from the page is in the vessel data
-        vessel['imo'] = vessel_imo
-        fetched_entities['vessel'] = vessel
-        logger.info(f"🔑 Set vessel['imo'] = '{vessel_imo}' (from vessel detail page)")
-        logger.info(f"   Final vessel data: {dict(list(vessel.items())[:10])}...")  # Show first 10 fields
-        
-        # Fetch buyer/seller only when not already set by id_based_fetcher (payload buyer_id/seller_id or vessel->companies->UUID)
-        if SUPABASE_ENABLED and supabase:
-            if not fetched_entities.get('buyer'):
-                fetched_entities['buyer'] = _fetch_random_from_table('buyer_companies')
-            if not fetched_entities.get('seller'):
-                fetched_entities['seller'] = _fetch_random_from_table('seller_companies')
-            buyer = fetched_entities.get('buyer')
-            seller = fetched_entities.get('seller')
-            # Log so we can see in pm2 logs if buyer/seller data is present (fix "still same problem")
-            if buyer:
-                logger.info(f"📋 BUYER DATA LOADED: name={buyer.get('name')}, keys={list(buyer.keys())[:15]}")
-            else:
-                logger.warning("⚠️ BUYER DATA IS NONE - check SUPABASE_SERVICE_ROLE_KEY and buyer_companies table")
-            if seller:
-                logger.info(f"📋 SELLER DATA LOADED: name={seller.get('name')}, keys={list(seller.keys())[:15]}")
-            else:
-                logger.warning("⚠️ SELLER DATA IS NONE - check SUPABASE_SERVICE_ROLE_KEY and seller_companies table")
-            # Fetch bank accounts for the buyer/seller we just got (by their IDs)
-            if buyer and buyer.get('id'):
-                fetched_entities['buyer_bank'] = fetch_bank_account(
-                    supabase, buyer['id'], body.get('buyer_bank_id'),
-                    'buyer_company_bank_accounts', is_buyer=True
-                )
-            if seller and seller.get('id'):
-                fetched_entities['seller_bank'] = fetch_bank_account(
-                    supabase, seller['id'], body.get('seller_bank_id'),
-                    'seller_company_bank_accounts', is_buyer=False
-                )
-        
-        # Extract placeholders
-        placeholders = extract_placeholders_from_docx(template_path)
-        
-        # Filter out invalid placeholders (those with unclosed brackets or special characters)
-        valid_placeholders = []
-        for ph in placeholders:
-            # Skip placeholders that contain bracket characters (likely incomplete)
-            if any(char in ph for char in ['{', '}', '[', ']', '<', '>']):
-                logger.warning(f"⚠️  Skipping invalid placeholder (contains brackets): '{ph}'")
-                continue
-            valid_placeholders.append(ph)
-        
-        placeholders = valid_placeholders
-        
-        # Generate data for each placeholder
-        data_mapping = {}
-        logger.info(f"📝 Processing {len(placeholders)} valid placeholders from document")
-        logger.info(f"⚙️  Template has {len(template_settings)} configured placeholders in CMS")
-        
-        if template_settings:
-            logger.info(f"   Configured placeholders: {list(template_settings.keys())[:10]}...")
-        
-        # Log all extracted placeholders for debugging
-        logger.info(f"   Extracted placeholders ({len(placeholders)} total): {placeholders[:30]}...")  # Show first 30
-        logger.info(f"   Configured CMS placeholders ({len(template_settings)} total): {list(template_settings.keys())[:30]}...")  # Show first 30
-        
-        # Create a mapping report
-        matched_placeholders = []
-        unmatched_placeholders = []
-        
-        # RULE: Buyer/seller placeholders = REPLACE from database only (buyer_companies, seller_companies).
-        # Never generate from AI - use fetched_entities['buyer']/['seller'] or "—" if no data.
-        for placeholder in placeholders:
-            found = False
-            setting_key, setting = resolve_placeholder_setting(template_settings, placeholder)
-            source = (setting.get('source') or 'database') if setting else 'database'
-            
-            logger.info(f"\n🔍 Processing placeholder: '{placeholder}'")
-            
-            # ====================================================================
-            # STEP 0: CMS DATABASE CONFIG FIRST (respect editor selection)
-            # ====================================================================
-            # When user explicitly selected buyer_companies/seller_companies in editor, use that first
-            # CRITICAL: Work even when db_field is empty - infer from placeholder name (e.g. "Company Name" -> name)
-            db_table = (setting.get('databaseTable') or setting.get('database_table') or '').strip() if setting else ''
-            db_field = (setting.get('databaseField') or setting.get('database_field') or '').strip() if setting else ''
-            table_lower = db_table.lower() if db_table else ''
-            if setting and source == 'database' and table_lower in ('buyer_companies', 'seller_companies', 'buyer', 'seller'):
-                entity_key = 'buyer' if table_lower in ('buyer_companies', 'buyer') else 'seller'
-                entity_data = fetched_entities.get(entity_key)
-                if entity_data:
-                    _CMS_FIELD_ALIASES = {
-                        'company_name': 'name', 'contact_person': 'representative_name',
-                        'contact_email': 'representative_email', 'representative_name': 'representative_name',
-                        'representative_title': 'representative_title', 'representative_email': 'representative_email',
-                        'jurisdiction': 'registration_country',
-                        'jurisdiction_of_incorporation': 'registration_country',
-                        'registration_country': 'registration_country',
-                        'legal_address': 'legal_address', 'address': 'address',
-                        'registration_number': 'registration_number', 'legal_name': 'legal_name', 'trade_name': 'trade_name',
-                    }
-                    # Infer field from placeholder when db_field empty (editor may not have saved field)
-                    field_to_use = db_field
-                    if not field_to_use and placeholder:
-                        ph_lower = placeholder.lower().replace(' ', '_').replace('-', '_')
-                        if 'company' in ph_lower and ('name' in ph_lower or ph_lower.endswith('company')):
-                            field_to_use = 'name'
-                        elif 'contact' in ph_lower or 'representative' in ph_lower:
-                            field_to_use = 'representative_name'
-                        elif 'jurisdiction' in ph_lower or 'registration_country' in ph_lower or 'incorporation' in ph_lower:
-                            field_to_use = 'registration_country'
-                        elif 'address' in ph_lower:
-                            field_to_use = 'legal_address' if 'legal' in ph_lower else 'address'
-                        elif 'registration_number' in ph_lower or 'number' in ph_lower:
-                            field_to_use = 'registration_number'
-                        else:
-                            field_to_use = 'name'  # Default for company-related
-                    if field_to_use:
-                        field_lower = field_to_use.lower().replace(' ', '_')
-                        val = entity_data.get(field_to_use) or entity_data.get(field_lower)
-                        if val is None:
-                            val = entity_data.get(_CMS_FIELD_ALIASES.get(field_lower, field_lower))
-                        if val is None and field_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
-                            val = entity_data.get('registration_country') or entity_data.get('country')
-                        if val is None and field_lower in ('name', 'company_name', 'legal_name', 'trade_name', 'companyname'):
-                            val = entity_data.get('name') or entity_data.get('company_name') or entity_data.get('legal_name') or entity_data.get('trade_name')
-                        if val is None:
-                            # Field missing in DB: generate realistic related data using AI (same company context)
-                            val = generate_realistic_buyer_seller_field(placeholder, entity_data, field_to_use or field_lower)
-                        if val is not None and str(val).strip():
-                            data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
-                            found = True
-                            logger.info(f"  ✅✅✅ CMS EDITOR MATCH: {placeholder} = '{val}' (from {entity_key}.{field_to_use})")
-                            matched_placeholders.append(placeholder)
-                            continue
-                else:
-                    logger.info(f"  ⚠️  CMS configured {db_table}.{db_field or '(inferred)'} but no {entity_key} data fetched")
-            
-            # ====================================================================
-            # STEP 0b: BUYER/SELLER BY PLACEHOLDER NAME (buyer_company_name, buyer_country, etc.)
-            # ====================================================================
-            # When placeholder is buyer_* or seller_*, use DB directly even if CMS key didn't match
-            if not found:
-                ph_lower = (placeholder or '').lower().replace(' ', '_').replace('-', '_')
-                if (ph_lower.startswith('buyer_') and not ph_lower.startswith('buyer_bank_')) or (ph_lower.startswith('seller_') and not ph_lower.startswith('seller_bank_')):
-                    ent = fetched_entities.get('buyer') if ph_lower.startswith('buyer_') else fetched_entities.get('seller')
-                    if ent:
-                        # Suffix after buyer_ or seller_ -> DB field (e.g. company_name -> name, registration_country -> registration_country)
-                        suffix = ph_lower[6:] if ph_lower.startswith('buyer_') else ph_lower[7:]  # strip "buyer_" or "seller_"
-                        _SUFFIX_TO_FIELD = {
-                            'company_name': 'name', 'name': 'name', 'legal_name': 'legal_name', 'trade_name': 'trade_name',
-                            'country': 'country', 'registration_country': 'registration_country', 'city': 'city',
-                            'legal_address': 'legal_address', 'address': 'address',
-                            'registration_number': 'registration_number',
-                            'representative_name': 'representative_name', 'representative_title': 'representative_title',
-                            'representative_email': 'representative_email', 'representative_phone': 'representative_phone',
-                            'contact_person': 'representative_name', 'contact_email': 'representative_email',
-                            'email': 'email', 'phone': 'phone', 'website': 'website',
-                        }
-                        field_to_use = _SUFFIX_TO_FIELD.get(suffix) or suffix
-                        val = ent.get(field_to_use) or ent.get(suffix)
-                        if val is None and suffix in ('registration_country', 'jurisdiction', 'jurisdiction_of_incorporation'):
-                            val = ent.get('registration_country') or ent.get('country')
-                        if val is None and ('name' in suffix or suffix in ('company_name', 'name', 'companyname')):
-                            # Try all common DB column names for company name
-                            val = ent.get('name') or ent.get('company_name') or ent.get('legal_name') or ent.get('trade_name')
-                        if val is None:
-                            # Field missing in DB: generate realistic related data using AI (same company context)
-                            val = generate_realistic_buyer_seller_field(placeholder, ent, field_to_use or suffix)
-                        if val is not None and str(val).strip():
-                            data_mapping[placeholder] = _normalize_replacement_value(str(val).strip(), placeholder=placeholder)
-                            found = True
-                            logger.info(f"  ✅✅✅ BUYER/SELLER BY NAME: {placeholder} = '{val}' (from DB suffix '{suffix}')")
-                            matched_placeholders.append(placeholder)
-                            continue
-                    else:
-                        logger.warning(f"  ⚠️ STEP 0b: '{placeholder}' is buyer_/seller_ but entity is None (DB fetch failed - check SUPABASE_SERVICE_ROLE_KEY)")
-                        data_mapping[placeholder] = "—"
-                        found = True
-                        continue
-            
-            # ====================================================================
-            # STEP 1: PREFIX-BASED ID FETCHING
-            # ====================================================================
-            prefix = identify_prefix(placeholder)
-            if prefix:
-                logger.info(f"  🔑 Prefix identified: '{prefix}' → table: {PREFIX_TO_TABLE.get(prefix)}")
-                prefix_value = get_placeholder_value(placeholder, fetched_entities)
-                if prefix_value is not None:
-                    normalized_value = normalize_replacement_value(prefix_value, placeholder)
-                    if normalized_value:
-                        data_mapping[placeholder] = normalized_value
-                        found = True
-                        logger.info(f"  ✅✅✅ PREFIX-BASED MATCH: {placeholder} = '{normalized_value}'")
-                        matched_placeholders.append(placeholder)
-                        continue
-                else:
-                    logger.info(f"  ⚠️  Prefix '{prefix}' identified but no data found (ID may not be in payload)")
-            else:
-                logger.debug(f"  ℹ️  No prefix identified for '{placeholder}' (will try other methods)")
-            
-            # ====================================================================
-            # STEP 2: CMS SETTINGS (Custom, CSV, Random)
-            # ====================================================================
-            if not setting and template_settings:
-                unmatched_placeholders.append(placeholder)
-                logger.debug(f"  ⚠️  Placeholder '{placeholder}' not found in template_settings")
-            else:
-                matched_placeholders.append(placeholder)
-                logger.debug(f"  ✅ Found CMS setting for '{placeholder}' (matched key: '{setting_key}')")
-
-            # ====================================================================
-            # STEP 3: CMS SETTINGS PROCESSING (if prefix-based didn't work)
-            # ====================================================================
-            if setting and not found:
-                # Validate setting structure
-                is_valid, validation_errors = validate_placeholder_setting(setting)
-                if not is_valid:
-                    logger.warning(f"⚠️  Invalid placeholder setting for '{placeholder}': {', '.join(validation_errors)}")
-                    logger.warning(f"   Will use cascade (CSV → random/AI) as fallback")
-                
-                source = setting.get('source') or 'database'
-                logger.info(f"  📋 CMS SETTING for '{placeholder}' (source: {source}):")
-                logger.info(f"     customValue: '{setting.get('customValue')}'")
-                logger.info(f"     databaseTable: '{setting.get('databaseTable')}'")
-                logger.info(f"     databaseField: '{setting.get('databaseField')}'")
-                logger.info(f"     csvId: '{setting.get('csvId')}', csvField: '{setting.get('csvField')}', csvRow: {setting.get('csvRow')}")
-                logger.info(f"     randomOption: '{setting.get('randomOption')}'")
-
-                try:
-                    # Process based on source type
-                    if source == 'custom':
-                        custom_value = str(setting.get('customValue', '')).strip()
-                        if custom_value:
-                            data_mapping[placeholder] = _normalize_replacement_value(custom_value, placeholder=placeholder)
-                            found = True
-                            logger.info(f"✅ {placeholder} -> '{custom_value}' (CMS custom value)")
-                        else:
-                            logger.warning(f"⚠️  Placeholder '{placeholder}' has custom source but customValue is empty")
-                            found = False  # Will fall through to cascade
-
-                    elif source == 'random':
-                        # Use cascade: try CSV if configured, else random/AI. No DB override.
-                        logger.info(f"  🎲 Source is 'random'. Will use cascade (CSV if configured → random/AI)")
-                        found = False  # Fall through to cascade
-
-                    elif source == 'database':
-                        database_table = (setting.get('databaseTable') or setting.get('database_table') or '').strip()
-                        database_field = (setting.get('databaseField') or setting.get('database_field') or '').strip()
-                        logger.info(f"  🗄️  DATABASE source configured for '{placeholder}'")
-                        logger.info(f"     databaseTable='{database_table}'")
-                        logger.info(f"     databaseField='{database_field}'")
-                        
-                        matched_field = None
-                        matched_value = None
-                        source_data = None
-                        
-                        # PREFER: Use fetched_entities if available (ID-based fetching)
-                        if database_table:
-                            table_lower = database_table.lower().strip()
-                            # Map table names to fetched_entities keys - EXPANDED to handle all variations
-                            entity_map = {
-                                # Vessels
-                                'vessels': 'vessel',
-                                'vessel': 'vessel',
-                                
-                                # Ports - try departure first, then destination
-                                'ports': 'departure_port',
-                                'port': 'departure_port',
-                                'departure_port': 'departure_port',
-                                'departure_ports': 'departure_port',
-                                'destination_port': 'destination_port',
-                                'destination_ports': 'destination_port',
-                                'loading_port': 'departure_port',
-                                'discharge_port': 'destination_port',
-                                
-                                # Companies
-                                'companies': 'company',
-                                'company': 'company',
-                                'buyer_companies': 'buyer',
-                                'buyer_company': 'buyer',
-                                'buyer': 'buyer',
-                                'seller_companies': 'seller',
-                                'seller_company': 'seller',
-                                'seller': 'seller',
-                                
-                                # Refineries
-                                'refineries': 'refinery',
-                                'refinery': 'refinery',
-                                
-                                # Products
-                                'oil_products': 'product',
-                                'oil_product': 'product',
-                                'products': 'product',
-                                'product': 'product',
-                                
-                                # Brokers
-                                'broker_profiles': 'broker',
-                                'broker_profile': 'broker',
-                                'brokers': 'broker',
-                                'broker': 'broker',
-                                
-                                # Bank accounts
-                                'buyer_company_bank_accounts': 'buyer_bank',
-                                'buyer_bank_accounts': 'buyer_bank',
-                                'buyer_bank': 'buyer_bank',
-                                'seller_company_bank_accounts': 'seller_bank',
-                                'seller_bank_accounts': 'seller_bank',
-                                'seller_bank': 'seller_bank',
-                                'bank_accounts': 'buyer_bank',  # Default to buyer
-                                
-                                # Deals
-                                'deals': 'deal',
-                                'deal': 'deal',
-                            }
-                            
-                            entity_key = entity_map.get(table_lower)
-                            # When "companies" table is selected for buyer/seller placeholder, use buyer/seller entity
-                            if table_lower == 'companies' and entity_key == 'company':
-                                ph_lower = (placeholder or '').lower()
-                                if 'buyer' in ph_lower and not ph_lower.startswith('buyer_bank'):
-                                    entity_key = 'buyer'
-                                elif 'seller' in ph_lower and not ph_lower.startswith('seller_bank'):
-                                    entity_key = 'seller'
-                            
-                            if entity_key and entity_key in fetched_entities:
-                                source_data = fetched_entities.get(entity_key)
-                                if source_data:
-                                    logger.info(f"  ✅ FOUND {entity_key} data! Name: {source_data.get('name', 'N/A')}")
-                                    logger.info(f"  ✅ Available fields: {list(source_data.keys())[:15]}...")  # Show first 15 fields
-                                else:
-                                    logger.warning(f"  ⚠️  entity_key '{entity_key}' exists but has NO DATA (None)")
-                            else:
-                                logger.warning(f"  ⚠️  Table '{database_table}' -> entity_key '{entity_key}' NOT FOUND in fetched_entities")
-                                logger.warning(f"  ⚠️  This means buyer/seller was NOT fetched from database!")
-                            
-                            # Special handling for ports - check both departure and destination
-                            if table_lower in ('ports', 'port') and not source_data:
-                                source_data = fetched_entities.get('destination_port')
-                                if source_data:
-                                    logger.info(f"  ✅ Using fetched destination_port data (fallback from ports)")
-                        
-                        # FALLBACK: If not in fetched_entities
-                        # CRITICAL: NEVER use vessel for buyer/seller - vessel.buyer_name is OLD/WRONG data
-                        # Buyer/seller MUST come from buyer_companies and seller_companies tables only
-                        is_vessel_table = database_table and database_table.lower() in ('vessels', 'vessel')
-                        ph_lower = (placeholder or '').lower()
-                        is_buyer_placeholder = 'buyer' in ph_lower and not ph_lower.startswith('buyer_bank')
-                        is_seller_placeholder = 'seller' in ph_lower and not ph_lower.startswith('seller_bank')
-                        
-                        if not source_data:
-                            if database_table and database_table.lower() == 'brokers':
-                                logger.info(f"  ⚠️  Brokers table excluded from mapping; will use cascade (CSV → AI)")
-                                found = False
-                                source_data = None
-                            elif is_buyer_placeholder and fetched_entities.get('buyer'):
-                                source_data = fetched_entities['buyer']
-                                logger.info(f"  📋 Using buyer_companies data (placeholder suggests buyer)")
-                            elif is_seller_placeholder and fetched_entities.get('seller'):
-                                source_data = fetched_entities['seller']
-                                logger.info(f"  📋 Using seller_companies data (placeholder suggests seller)")
-                            elif is_vessel_table:
-                                source_data = vessel
-                                logger.info(f"  📋 Using vessel data (table: vessels)")
-                            elif database_table and table_lower not in ('buyer_companies', 'seller_companies', 'buyer', 'seller'):
-                                logger.warning(f"  ⚠️  Table '{database_table}' data not available (not fetched)")
-                                source_data = None
-                                found = False
-                            elif is_buyer_placeholder or is_seller_placeholder:
-                                logger.warning(f"  ⚠️  Buyer/seller data not fetched - add SUPABASE_SERVICE_ROLE_KEY to .env")
-                                source_data = None
-                                found = False
-                            elif database_table:
-                                source_data = None
-                                found = False
-                            else:
-                                source_data = vessel
-                                logger.info(f"  📋 Using vessel data (default - no table configured)")
-
-                        if source_data is not None and source_data:
-                            logger.debug(f"  📊 Source data available with {len(source_data)} fields")
-                            
-                            if database_field:
-                                # Strategy 1: Try exact match first
-                                if database_field in source_data:
-                                    value = source_data[database_field]
-                                    if value is not None and str(value).strip() != '':
-                                        matched_field = database_field
-                                        matched_value = str(value).strip()
-                                        logger.info(f"  ✅ Exact match found: '{database_field}' = '{matched_value}'")
-                                
-                                # Strategy 2: Try case-insensitive match
-                                if not matched_field:
-                                    database_field_lower = database_field.lower()
-                                    for key, value in source_data.items():
-                                        if key.lower() == database_field_lower and value is not None and str(value).strip() != '':
-                                            matched_field = key
-                                            matched_value = str(value).strip()
-                                            logger.info(f"  ✅ Case-insensitive match: '{database_field}' -> '{key}' = '{matched_value}'")
-                                            break
-                                
-                                # Strategy 2.5: Field aliases for buyer/seller (match CMS + DB schema)
-                                if not matched_field:
-                                    FIELD_ALIASES = {
-                                        'contact_person': 'representative_name',
-                                        'contact_email': 'representative_email',
-                                        'contact_phone': 'representative_phone',
-                                        'company_name': 'name',
-                                        'employee_count': 'employees_count',
-                                        'registration_number': 'registration_number',
-                                        'registration_country': 'registration_country',
-                                        'jurisdiction': 'registration_country',
-                                        'jurisdiction_of_incorporation': 'registration_country',
-                                        'legal_address': 'legal_address',
-                                    }
-                                    alt_field = FIELD_ALIASES.get(database_field_lower)
-                                    if alt_field and alt_field in source_data:
-                                        val = source_data[alt_field]
-                                        if val is None or not str(val).strip():
-                                            if database_field_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
-                                                val = source_data.get('registration_country') or source_data.get('country')
-                                        if val is not None and str(val).strip() != '':
-                                            matched_field = alt_field
-                                            matched_value = str(val).strip()
-                                            logger.info(f"  ✅ Alias match: '{database_field}' -> '{alt_field}' = '{matched_value}'")
-                                
-                                # Strategy 3: Try underscore/space variants
-                                if not matched_field:
-                                    field_variants = [
-                                        database_field.replace('_', ' '),
-                                        database_field.replace(' ', '_'),
-                                        database_field.replace('-', '_'),
-                                        database_field.replace('_', '-'),
-                                    ]
-                                    for variant in field_variants:
-                                        variant_lower = variant.lower()
-                                        for key, value in source_data.items():
-                                            if key.lower() == variant_lower and value is not None and str(value).strip() != '':
-                                                matched_field = key
-                                                matched_value = str(value).strip()
-                                                logger.info(f"  ✅ Variant match: '{database_field}' -> '{key}' = '{matched_value}'")
-                                                break
-                                        if matched_field:
-                                            break
-                                
-                                # Log available fields if not found
-                                if not matched_field:
-                                    logger.warning(f"  ⚠️  Field '{database_field}' not found in source data")
-                                    logger.warning(f"  📋 Available fields: {sorted(source_data.keys())}")
-
-                            if not matched_field and not database_field:
-                                logger.info(f"  🔍 databaseField is empty, trying intelligent matching for '{placeholder}'...")
-                                matched_field, matched_value = _intelligent_field_match(placeholder, source_data)
-                                if matched_field:
-                                    logger.info(f"  ✅ Intelligent match found: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
-                                else:
-                                    logger.warning(f"  ⚠️  Intelligent matching failed for '{placeholder}'")
-                                    logger.warning(f"  📋 Available fields: {sorted(source_data.keys())[:15]}...")
-
-                            if not matched_field and database_field:
-                                logger.info(f"  🔍 Explicit field '{database_field}' not found, trying intelligent matching...")
-                                matched_field, matched_value = _intelligent_field_match(placeholder, source_data)
-                                if matched_field:
-                                    logger.info(f"  ✅ Intelligent fallback match: '{placeholder}' -> '{matched_field}' = '{matched_value}'")
-                                else:
-                                    logger.warning(f"  ⚠️  Intelligent fallback matching failed for '{placeholder}'")
-
-                            if matched_field and matched_value:
-                                if _is_value_wrong_for_placeholder(placeholder, matched_value):
-                                    logger.info(f"  ⚠️  Rejecting DB value (wrong type): '{matched_value}'")
-                                    found = False
-                                else:
-                                    data_mapping[placeholder] = _normalize_replacement_value(matched_value, placeholder=placeholder)
-                                    found = True
-                                    table_info = f" from {database_table}" if database_table and database_table.lower() != 'vessels' else ""
-                                    logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{matched_value}' (from database field '{matched_field}'{table_info})")
-                            else:
-                                # Explicitly set found=False so cascade triggers
-                                found = False
-                                logger.warning(f"  ⚠️  Database source failed for '{placeholder}', will try cascade (DB → CSV → AI)")
-                                if database_field:
-                                    logger.warning(f"  ⚠️  Explicit field '{database_field}' not found in data")
-                                logger.debug(f"  📋 Available fields: {list(source_data.keys())[:20]}...")
-                        else:
-                            # Explicitly set found=False so cascade triggers
-                            found = False
-                            logger.warning(f"  ⚠️  No data available from {database_table or 'vessels'} table, will try cascade")
-
-                    elif source == 'csv':
-                        csv_id = setting.get('csvId', '')
-                        csv_field = setting.get('csvField', '')
-                        csv_row = setting.get('csvRow', 0)
-
-                        logger.info(f"  📊 CSV source configured for '{placeholder}'")
-                        logger.info(f"     csvId='{csv_id}', csvField='{csv_field}', csvRow={csv_row}")
-
-                        if csv_id and csv_field:
-                            try:
-                                csv_row_int = int(csv_row) if csv_row is not None else 0
-                                csv_data = get_csv_data(csv_id, csv_row_int)
-                                
-                                if csv_data:
-                                    logger.info(f"  ✅ CSV data retrieved for '{csv_id}' at row {csv_row_int}")
-                                    logger.info(f"     Available fields: {list(csv_data.keys())[:10]}...")
-                                    
-                                    # Try exact match first
-                                    if csv_field in csv_data:
-                                        value = csv_data[csv_field]
-                                        if value is not None and str(value).strip() != '':
-                                            if _is_value_wrong_for_placeholder(placeholder, value):
-                                                logger.info(f"  ⚠️  Rejecting CSV value (wrong type): '{value}'")
-                                            else:
-                                                data_mapping[placeholder] = _normalize_replacement_value(value, placeholder=placeholder)
-                                                found = True
-                                                logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{csv_field})")
-                                        else:
-                                            logger.warning(f"  ⚠️  CSV field '{csv_field}' exists but is empty")
-                                    else:
-                                        # Try case-insensitive match
-                                        csv_field_lower = csv_field.lower()
-                                        matched_field = None
-                                        for key in csv_data.keys():
-                                            if key.lower() == csv_field_lower:
-                                                value = csv_data[key]
-                                                if value is not None and str(value).strip() != '':
-                                                    if _is_value_wrong_for_placeholder(placeholder, value):
-                                                        logger.info(f"  ⚠️  Rejecting CSV value (wrong type): '{value}'")
-                                                    else:
-                                                        matched_field = key
-                                                        data_mapping[placeholder] = _normalize_replacement_value(value, placeholder=placeholder)
-                                                        found = True
-                                                        logger.info(f"  ✅✅✅ SUCCESS: {placeholder} = '{value}' (CSV: {csv_id}[{csv_row_int}].{matched_field} - case-insensitive match)")
-                                                    break
-                                        
-                                        if not matched_field:
-                                            logger.error(f"  ❌❌❌ FAILED: CSV field '{csv_field}' not found in CSV data!")
-                                            logger.error(f"  ❌ Available fields: {list(csv_data.keys())}")
-                                else:
-                                    logger.error(f"  ❌❌❌ FAILED: Could not retrieve CSV data for '{csv_id}' at row {csv_row_int}")
-                            except Exception as csv_exc:
-                                logger.error(f"  ❌❌❌ ERROR processing CSV data for '{placeholder}': {csv_exc}")
-                                import traceback
-                                logger.error(traceback.format_exc())
-                        else:
-                            logger.warning(f"  ⚠️  {placeholder}: CSV source selected but csvId or csvField missing in CMS")
-                            logger.warning(f"     csvId='{csv_id}', csvField='{csv_field}'")
-
-                except Exception as resolve_exc:
-                    logger.error(f"  ❌❌❌ ERROR resolving data source for '{placeholder}': {resolve_exc}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    logger.warning(f"   Will use cascade (DB → CSV → AI) as fallback")
-
-            if not found:
-                # Cascade: CSV (CMS config) → smart CSV search → AI (except buyer/seller - NEVER fake)
-                database_table = (setting.get('databaseTable') or setting.get('database_table') or '').strip().lower() if setting else ''
-                ph_lower = (placeholder or '').lower()
-                # Block AI for ANY buyer/seller placeholder - use DB only, never generate fake names
-                has_buyer_seller_in_name = (
-                    ('buyer' in ph_lower and not ph_lower.startswith('buyer_bank')) or
-                    ('seller' in ph_lower and not ph_lower.startswith('seller_bank'))
-                )
-                # Treat as buyer/seller when: name has buyer/seller, OR CMS config says buyer_companies/seller_companies
-                cms_says_buyer_seller = (
-                    setting and database_table in ('buyer_companies', 'seller_companies', 'buyer', 'seller')
-                )
-                is_buyer_seller_db = has_buyer_seller_in_name or cms_says_buyer_seller
-                if is_buyer_seller_db:
-                    # Use buyer/seller from DB - NEVER use AI for buyer/seller
-                    # Pick entity: from placeholder name OR from CMS database_table config
-                    if 'buyer' in ph_lower and not ph_lower.startswith('buyer_bank'):
-                        ent = fetched_entities.get('buyer')
-                    elif 'seller' in ph_lower and not ph_lower.startswith('seller_bank'):
-                        ent = fetched_entities.get('seller')
-                    elif database_table in ('buyer_companies', 'buyer'):
-                        ent = fetched_entities.get('buyer')
-                    else:
-                        ent = fetched_entities.get('seller')
-                    if ent:
-                        db_f = (setting.get('databaseField') or setting.get('database_field') or '').strip()
-                        v = None
-                        # Full alias map: CMS/editor field names -> buyer_companies/seller_companies columns
-                        # DB has: name, registration_country, country, legal_address, representative_name, etc.
-                        aliases = {
-                            'company_name': 'name', 'contact_person': 'representative_name',
-                            'contact_email': 'representative_email', 'contact_phone': 'representative_phone',
-                            'jurisdiction': 'registration_country',  # try registration_country first (actual column)
-                            'jurisdiction_of_incorporation': 'registration_country',
-                            'registration_country': 'registration_country',
-                            'legal_address': 'legal_address', 'address': 'address',
-                            'representative_title': 'representative_title',
-                        }
-                        ph_field = ph_lower.split('_')[-1] if '_' in ph_lower else ph_lower
-                        if db_f:
-                            f_lower = db_f.lower().replace(' ', '_')
-                            v = ent.get(db_f) or ent.get(f_lower) or ent.get(aliases.get(f_lower, f_lower))
-                            # Jurisdiction: fallback to country if registration_country empty
-                            if v is None and f_lower in ('jurisdiction', 'jurisdiction_of_incorporation', 'registration_country'):
-                                v = ent.get('registration_country') or ent.get('country')
-                        if v is None:
-                            # Fallback: infer from placeholder (company_name -> name, etc.)
-                            v = ent.get(ph_field) or ent.get(aliases.get(ph_field, ph_field))
-                        requested_field = (f_lower if db_f else ph_field)
-                        if v is None and requested_field in ('name', 'company_name', 'legal_name', 'trade_name', 'companyname'):
-                            v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
-                        if v is None:
-                            # Field missing: generate realistic related data using AI (same company context)
-                            v = generate_realistic_buyer_seller_field(placeholder, ent, requested_field)
-                        if v is not None and str(v).strip():
-                            data_mapping[placeholder] = _normalize_replacement_value(str(v).strip(), placeholder=placeholder)
-                            found = True
-                            logger.info(f"  ✅ Buyer/seller from DB: {placeholder} = '{v}'")
-                    if not found:
-                        logger.warning(f"  ⚠️ {placeholder}: No buyer/seller in DB (add in Admin, check SUPABASE_SERVICE_ROLE_KEY)")
-                        data_mapping[placeholder] = "—"
-                        found = True
-                else:
-                    logger.info(f"  🔍 {placeholder}: Cascade CSV → Smart CSV → AI (realistic fallback)")
-                    # 1. CSV (from CMS config) - try configured CSV first
-                    csv_val = _try_csv_for_placeholder(setting)
-                    if not csv_val:
-                        # 2. Smart CSV search - search all CSVs for matching column
-                        csv_val = _smart_csv_search(placeholder)
-                    if csv_val and not _is_value_wrong_for_placeholder(placeholder, csv_val):
-                        data_mapping[placeholder] = _normalize_replacement_value(csv_val, placeholder=placeholder)
-                        found = True
-                        logger.info(f"  ✅ CSV: {placeholder} = '{csv_val}'")
-                    if not found:
-                        # 3. LAST CHANCE: use buyer/seller from DB - NEVER use AI for buyer/seller
-                        ph_low = (placeholder or '').lower()
-                        if ('buyer' in ph_low and not ph_low.startswith('buyer_bank')) or ('seller' in ph_low and not ph_low.startswith('seller_bank')):
-                            ent = fetched_entities.get('buyer') if 'buyer' in ph_low else fetched_entities.get('seller')
-                            if ent:
-                                db_f = (setting.get('databaseField') or setting.get('database_field') or '').strip() if setting else ''
-                                aliases = {
-                                    'company_name': 'name', 'contact_person': 'representative_name',
-                                    'jurisdiction': 'registration_country', 'jurisdiction_of_incorporation': 'registration_country',
-                                    'registration_country': 'registration_country', 'legal_address': 'legal_address',
-                                    'representative_title': 'representative_title', 'address': 'address',
-                                }
-                                v = None
-                                ph_suffix = (ph_low.replace('seller_', '').replace('buyer_', '').strip('_').split('_')[-1] if '_' in ph_low else ph_low.replace('seller_', '').replace('buyer_', '')) or 'name'
-                                if db_f:
-                                    f_lower = db_f.lower().replace(' ', '_')
-                                    v = ent.get(db_f) or ent.get(f_lower) or ent.get(aliases.get(f_lower, f_lower))
-                                    req_f = f_lower
-                                else:
-                                    req_f = ph_suffix
-                                if v is None and req_f in ('name', 'company_name', 'legal_name', 'trade_name', 'companyname'):
-                                    v = ent.get('name') or ent.get('legal_name') or ent.get('trade_name')
-                                if v is None:
-                                    # Entity exists but field empty: generate realistic related data using AI
-                                    v = generate_realistic_buyer_seller_field(placeholder, ent, req_f)
-                                if v and str(v).strip():
-                                    data_mapping[placeholder] = _normalize_replacement_value(str(v).strip(), placeholder=placeholder)
-                                    found = True
-                                    logger.info(f"  ✅ DB last-chance: {placeholder} = '{v}'")
-                                else:
-                                    data_mapping[placeholder] = "—"
-                                    found = True
-                                    logger.warning(f"  ⚠️ {placeholder}: Buyer/seller field empty, using '—'")
-                        if not found:
-                            ai_val = generate_realistic_data_ai(placeholder, vessel, vessel_imo, fetched_entities)
-                            data_mapping[placeholder] = _normalize_replacement_value(ai_val, placeholder=placeholder)
-                            found = True
-                            logger.info(f"  ✅ AI (realistic fallback): {placeholder} = '{ai_val}'")
-            else:
-                logger.info(f"  ✓ {placeholder}: Successfully filled with configured data source")
-        
-        logger.info(f"Generated data mapping for {len(data_mapping)} placeholders")
-        
-        # Log matching summary
-        logger.info("=" * 80)
-        logger.info("📊 PLACEHOLDER MATCHING SUMMARY")
-        logger.info("=" * 80)
-        logger.info(f"✅ Matched with CMS settings: {len(matched_placeholders)} placeholders")
-        if matched_placeholders:
-            logger.info(f"   Matched: {matched_placeholders[:20]}...")
-        logger.info(f"⚠️  Unmatched (using cascade DB→CSV→AI): {len(unmatched_placeholders)} placeholders")
-        if unmatched_placeholders:
-            logger.info(f"   Unmatched: {unmatched_placeholders[:20]}...")
-            logger.warning("💡 TIP: Configure these placeholders in the CMS editor to use proper data sources")
-        logger.info("=" * 80)
-        
-        # Replace placeholders
-        processed_docx = replace_placeholders_in_docx(template_path, data_mapping)
-        
-        # Convert to PDF
-        pdf_path = convert_docx_to_pdf(processed_docx)
-        
-        # Get template display name for filename (from metadata or Supabase title)
-        template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
-        if template_record:
-            # Get display name from Supabase title or file_name
-            template_display_name = template_record.get('title') or template_record.get('file_name', '')
-            if template_display_name:
-                template_display_name = template_display_name.replace('.docx', '').replace('.DOCX', '')
-        
-        # Also check metadata for display_name
-        if template_record:
-            docx_filename = ensure_docx_filename(template_record.get('file_name') or template_name)
-            metadata_map = load_template_metadata()
-            metadata_entry = metadata_map.get(docx_filename, {})
-            if metadata_entry.get('display_name'):
-                template_display_name = metadata_entry['display_name']
-        
-        # Clean template display name for filename (remove invalid characters)
-        template_display_name = re.sub(r'[<>:"/\\|?*]', '_', template_display_name).strip()
-        if not template_display_name:
-            template_display_name = template_name.replace('.docx', '').replace('.DOCX', '')
-        
-        # Flow: Template → PDF → [optional: images→PDF] → download
-        # Image conversion is slow (30+ sec for multi-page); use fast_pdf=true to skip for quicker downloads
-        fast_pdf = body.get('fast_pdf', True)  # Default True = skip image conversion for speed
-        if pdf_path.endswith('.pdf') and os.path.exists(pdf_path):
-            base_filename = f"{template_display_name}_{vessel_imo}"
-            if fast_pdf:
-                # Direct PDF - faster download (skip slow image rasterization)
-                with open(pdf_path, 'rb') as f:
-                    file_content = f.read()
-                logger.info(f"Using direct PDF for download: {base_filename} ({len(file_content)} bytes)")
-            else:
-                logger.info(f"Converting PDF to images then to PDF for download: {base_filename}")
-                try:
-                    file_content = convert_pdf_to_images_then_to_pdf(pdf_path)
-                    logger.info(f"Successfully created image-based PDF: {base_filename} ({len(file_content)} bytes)")
-                except HTTPException:
-                    raise
-                except Exception as conv_error:
-                    logger.error(f"Failed to convert PDF to images then PDF: {conv_error}", exc_info=True)
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to convert PDF: {str(conv_error)}. Please try again."
-                    )
-            media_type = "application/pdf"
-            filename = f"{template_display_name}_{vessel_imo}.pdf"
-        else:
-            # If no PDF, return DOCX
-            with open(processed_docx, 'rb') as f:
-                file_content = f.read()
-            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            filename = f"{template_display_name}_{vessel_imo}.docx"
-        
-        logger.info(f"Generated filename: {filename} (from template display name: {template_display_name})")
-        
-        # Track download if user_id is provided and Supabase is available
-        if user_id and supabase:
-            try:
-                template_id = None
-                if template_record:
-                    template_id = template_record.get('id')
-                else:
-                    lookup_names = [template_name]
-                    if not template_name.endswith('.docx'):
-                        lookup_names.append(f"{template_name}.docx")
-                    else:
-                        lookup_names.append(template_name.replace('.docx', ''))
-
-                    template_res = supabase.table('document_templates').select('id').in_('file_name', lookup_names).eq('is_active', True).limit(1).execute()
-                    if template_res.data:
-                        template_id = template_res.data[0]['id']
-
-                if template_id:
-                    download_record = {
-                        'user_id': user_id,
-                        'template_id': template_id,
-                        'vessel_imo': vessel_imo,
-                        'download_type': 'pdf' if pdf_path.endswith('.pdf') else 'docx',
-                        'file_size': len(file_content)
-                    }
-                    supabase.table('user_document_downloads').insert(download_record).execute()
-                    logger.info(f"Recorded download for user {user_id}, template {template_id}")
-            except Exception as e:
-                logger.warning(f"Failed to record download: {e}")
-
-        # Clean up temp files
-        try:
-            if os.path.exists(processed_docx):
-                os.remove(processed_docx)
-            if pdf_path.endswith('.pdf') and pdf_path != processed_docx and os.path.exists(pdf_path):
-                os.remove(pdf_path)
-            if template_temp_path and os.path.exists(template_temp_path):
-                os.remove(template_temp_path)
-        except Exception as cleanup_error:
-            logger.debug(f"Cleanup warning: {cleanup_error}")
-
-        # Return file with properly encoded filename
-        encoded_filename = quote(filename.encode('utf-8'))
-        content_disposition = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_filename}'
-        
-        headers = {
-            "Content-Disposition": content_disposition,
-            "Content-Type": media_type,
-            "X-Content-Type-Options": "nosniff"
-        }
-        
-        return Response(
-            content=file_content,
-            media_type=media_type,
-            headers=headers
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
         )
+        ai_result = json.loads(response.choices[0].message.content)
+        for k, v in ai_result.items():
+            if k not in pre_filled:
+                pre_filled[k] = v
+        return pre_filled
+    except Exception as e:
+        error_str = str(e).lower()
+        if "quota" in error_str or "billing" in error_str or "insufficient" in error_str or "rate_limit" in error_str or "429" in error_str:
+            print(f"[OPENAI QUOTA ERROR] {e}")
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "openai_quota_exceeded",
+                    "message": "OpenAI API quota exceeded or billing issue. Please recharge your OpenAI account immediately.",
+                    "type": "billing_error"
+                }
+            )
+        print(f"OpenAI API error: {e}")
+        return pre_filled
+
+
+@app.get("/")
+async def root():
+    return {
+        "name": "PetroDealHub Document Processor API",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "templates": "/templates",
+            "upload_template": "/upload-template",
+            "detect_placeholders": "/detect-placeholders/{template_name}",
+            "process_document": "/process-document",
+            "convert_to_pdf": "/convert-to-pdf",
+            "database_tables": "/database-tables",
+            "vessels": "/vessels",
+            "plans": "/plans"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "version": "1.0.0"}
+
+
+@app.post("/upload-template")
+async def upload_template(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    font_family: Optional[str] = Form(None),
+    font_size: Optional[int] = Form(None),
+    plan_ids: Optional[str] = Form(None)
+):
+    if not file.filename.endswith(".docx"):
+        raise HTTPException(status_code=400, detail="Only DOCX files are allowed")
+    
+    content = await file.read()
+    template_id = str(uuid.uuid4())
+    file_path = os.path.join(TEMPLATES_DIR, file.filename)
+    
+    async with aiofiles.open(file_path, "wb") as f:
+        await f.write(content)
+    
+    doc = Document(BytesIO(content))
+    placeholders_by_location = extract_placeholders_from_document(doc)
+    all_placeholders = []
+    for phs in placeholders_by_location.values():
+        all_placeholders.extend(phs)
+    all_placeholders = list(set(all_placeholders))
+    
+    plan_ids_list = json.loads(plan_ids) if plan_ids else ["basic", "professional", "enterprise"]
+    
+    metadata = load_template_metadata()
+    metadata[template_id] = {
+        "id": template_id,
+        "name": name,
+        "file_name": file.filename,
+        "description": description,
+        "placeholders": all_placeholders,
+        "placeholder_count": len(all_placeholders),
+        "font_family": font_family,
+        "font_size": font_size,
+        "file_size": len(content),
+        "plan_ids": plan_ids_list,
+        "is_active": True,
+        "created_at": datetime.now().isoformat()
+    }
+    save_template_metadata(metadata)
+    
+    return {
+        "success": True,
+        "template_id": template_id,
+        "file_name": file.filename,
+        "placeholders": all_placeholders,
+        "placeholder_count": len(all_placeholders),
+        "file_size": len(content)
+    }
+
+
+@app.get("/templates")
+async def list_templates():
+    metadata = load_template_metadata()
+    return {"templates": list(metadata.values())}
+
+
+@app.get("/templates/{template_id}")
+async def get_template(template_id: str):
+    metadata = load_template_metadata()
+    if template_id not in metadata:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return metadata[template_id]
+
+
+@app.delete("/templates/{template_name}")
+async def delete_template(template_name: str):
+    file_path = os.path.join(TEMPLATES_DIR, template_name)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    
+    metadata = load_template_metadata()
+    for tid, tmpl in list(metadata.items()):
+        if tmpl.get("file_name") == template_name:
+            del metadata[tid]
+            break
+    save_template_metadata(metadata)
+    
+    return {"success": True}
+
+
+@app.post("/templates/{template_id}/metadata")
+async def update_template_metadata(template_id: str, body: TemplateMetadata):
+    metadata = load_template_metadata()
+    if template_id not in metadata:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    if body.display_name:
+        metadata[template_id]["name"] = body.display_name
+    if body.description is not None:
+        metadata[template_id]["description"] = body.description
+    if body.font_family:
+        metadata[template_id]["font_family"] = body.font_family
+    if body.font_size:
+        metadata[template_id]["font_size"] = body.font_size
+    if body.plan_ids:
+        metadata[template_id]["plan_ids"] = body.plan_ids
+    
+    save_template_metadata(metadata)
+    return {"success": True}
+
+
+@app.get("/detect-placeholders/{template_name}")
+async def detect_placeholders(template_name: str):
+    file_path = os.path.join(TEMPLATES_DIR, template_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    doc = Document(file_path)
+    placeholders_by_location = extract_placeholders_from_document(doc)
+    all_placeholders = []
+    for phs in placeholders_by_location.values():
+        all_placeholders.extend(phs)
+    all_placeholders = list(set(all_placeholders))
+    
+    return {
+        "template_name": template_name,
+        "placeholders": all_placeholders,
+        "placeholder_count": len(all_placeholders),
+        "by_location": placeholders_by_location
+    }
+
+
+@app.get("/database-tables")
+async def get_database_tables():
+    return {"tables": DATABASE_TABLES}
+
+
+@app.get("/database-tables/{table_name}/columns")
+async def get_table_columns(table_name: str):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    if table_name not in DATABASE_TABLES:
+        raise HTTPException(status_code=404, detail="Table not found")
+    
+    try:
+        response = supabase.table(table_name).select("*").limit(1).execute()
+        if response.data and len(response.data) > 0:
+            sample = response.data[0]
+            columns = []
+            for key, value in sample.items():
+                col_type = "text"
+                if isinstance(value, int):
+                    col_type = "integer"
+                elif isinstance(value, float):
+                    col_type = "numeric"
+                elif isinstance(value, bool):
+                    col_type = "boolean"
+                columns.append({
+                    "name": key,
+                    "type": col_type,
+                    "nullable": True
+                })
+            return {"table": table_name, "columns": columns}
+        return {"table": table_name, "columns": []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/placeholder-settings")
+async def get_placeholder_settings(template_name: str = Query(...)):
+    settings_file = os.path.join(SETTINGS_DIR, f"{template_name}.json")
+    if os.path.exists(settings_file):
+        with open(settings_file, "r") as f:
+            data = json.load(f)
+        return data
+    
+    metadata = load_template_metadata()
+    template_id = None
+    for tid, tmpl in metadata.items():
+        if tmpl.get("file_name") == template_name:
+            template_id = tid
+            break
+    
+    return {
+        "template_name": template_name,
+        "template_id": template_id,
+        "settings": {}
+    }
+
+
+@app.post("/placeholder-settings")
+async def save_placeholder_settings(body: PlaceholderSettingsRequest):
+    settings_file = os.path.join(SETTINGS_DIR, f"{body.template_name}.json")
+    data = {
+        "template_name": body.template_name,
+        "template_id": body.template_id,
+        "settings": body.settings
+    }
+    with open(settings_file, "w") as f:
+        json.dump(data, f, indent=2)
+    return {"success": True}
+
+
+@app.get("/vessels")
+async def list_vessels():
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    try:
+        response = supabase.table("vessels").select("id, name, imo, vessel_type, flag").execute()
+        return {"vessels": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/vessel/{identifier}")
+async def get_vessel(identifier: str):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    try:
+        if identifier.isdigit():
+            response = supabase.table("vessels").select("*").eq("id", int(identifier)).execute()
+        else:
+            response = supabase.table("vessels").select("*").eq("imo", identifier).execute()
+        
+        if response.data and len(response.data) > 0:
+            return response.data[0]
+        raise HTTPException(status_code=404, detail="Vessel not found")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error generating document: %s\n%s", e, traceback.format_exc())
-        raise HTTPException(status_code=500, detail="Document generation failed")
-    finally:
-        if template_temp_path and os.path.exists(template_temp_path):
-            try:
-                os.remove(template_temp_path)
-            except Exception as cleanup_error:
-                logger.debug(f"Template temp cleanup warning: {cleanup_error}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.options("/process-document")
-async def options_process_document(request: Request):
-    """Handle CORS preflight for legacy process-document endpoint"""
-    return Response(status_code=200, headers=_cors_preflight_headers(request, "POST, OPTIONS"))
 
 @app.post("/process-document")
-async def process_document_legacy(request: Request):
-    """Legacy route that proxies to generate-document for backward compatibility"""
-    return await generate_document(request)
+async def process_document(body: ProcessDocumentRequest):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    template_name = body.template_name
+    if not template_name.lower().endswith('.docx'):
+        template_name = f"{template_name}.docx"
+    
+    file_path = os.path.join(TEMPLATES_DIR, template_name)
+    if not os.path.exists(file_path):
+        file_path_no_ext = os.path.join(TEMPLATES_DIR, body.template_name)
+        if os.path.exists(file_path_no_ext):
+            file_path = file_path_no_ext
+            template_name = body.template_name
+        else:
+            raise HTTPException(status_code=404, detail=f"Template '{body.template_name}' not found")
+    
+    doc = Document(file_path)
+    placeholders_by_location = extract_placeholders_from_document(doc)
+    all_placeholders = set()
+    for phs in placeholders_by_location.values():
+        all_placeholders.update(phs)
+    
+    placeholder_data = {}
+    from_database = 0
+    from_ai = 0
+    context = {}
+    ai_only_placeholders = []
+    
+    print(f"\n[PROCESS] ========== TEMPLATE PLACEHOLDERS LOOKUP ==========")
+    template_mappings = fetch_template_placeholders(template_name)
+    
+    if template_mappings:
+        print(f"[PROCESS] Found {len(template_mappings)} mappings in document_template_fields table")
+        
+        print(f"[PROCESS] NOTE: database mappings will be resolved after vessel fetch (2nd pass)")
+        
+        for mapping in template_mappings:
+            placeholder_name = mapping.get("placeholder_name", "")
+            placeholder_name = re.sub(r'[\{\}\[\]<>%#]', '', placeholder_name).strip()
+            source = mapping.get("source", "").lower()
+            
+            if source == "ai":
+                ai_only_placeholders.append(placeholder_name)
+                print(f"[PROCESS] MAPPING: {placeholder_name} <- AI (as configured)")
+            elif source == "database":
+                print(f"[PROCESS] MAPPING (queued): {placeholder_name} <- database (will resolve after entity fetch)")
+    else:
+        print("[PROCESS] No mappings found in document_template_fields, using fallback table fetches")
+    
+    print(f"[PROCESS] ============================================\n")
+    
+    vessel_buyer_company_uuid = None
+    vessel_seller_company_uuid = None
+    
+    if body.vessel_id:
+        try:
+            response = supabase.table("vessels").select("*").eq("id", body.vessel_id).execute()
+            if response.data:
+                vessel = response.data[0]
+                context["vessel_name"] = vessel.get("name", "")
+                for key, value in vessel.items():
+                    placeholder_data[f"vessel_{key}"] = value
+                    placeholder_data[key] = value
+                from_database += len(vessel)
+                vessel_buyer_company_uuid = vessel.get("buyer_company_uuid")
+                vessel_seller_company_uuid = vessel.get("seller_company_uuid")
+                print(f"[PROCESS] Vessel FK: buyer_company_uuid={vessel_buyer_company_uuid}, seller_company_uuid={vessel_seller_company_uuid}")
+        except Exception as e:
+            print(f"Error fetching vessel: {e}")
+    
+    effective_buyer_id = body.buyer_id or vessel_buyer_company_uuid
+    effective_seller_id = body.seller_id or vessel_seller_company_uuid
+    
+    if not effective_buyer_id:
+        try:
+            all_buyers = supabase.table("buyer_companies").select("id").execute()
+            if all_buyers.data:
+                random_buyer = random.choice(all_buyers.data)
+                effective_buyer_id = random_buyer["id"]
+                print(f"[PROCESS] Random buyer selected: {effective_buyer_id} (from {len(all_buyers.data)} available)")
+        except Exception as e:
+            print(f"[PROCESS] Error fetching random buyer: {e}")
 
-# ============================================================================
-# STARTUP
-# ============================================================================
+    if not effective_seller_id:
+        try:
+            all_sellers = supabase.table("seller_companies").select("id").execute()
+            if all_sellers.data:
+                random_seller = random.choice(all_sellers.data)
+                effective_seller_id = random_seller["id"]
+                print(f"[PROCESS] Random seller selected: {effective_seller_id} (from {len(all_sellers.data)} available)")
+        except Exception as e:
+            print(f"[PROCESS] Error fetching random seller: {e}")
+
+    if effective_buyer_id:
+        buyer_id_str = str(effective_buyer_id)
+        print(f"[PROCESS] Using buyer_id: {buyer_id_str} (from {'request' if body.buyer_id else 'vessel.buyer_company_uuid'})")
+        try:
+            response = supabase.table("buyer_companies").select("*").eq("id", buyer_id_str).execute()
+            if response.data:
+                buyer = response.data[0]
+                context["buyer_name"] = buyer.get("name", "")
+                for key, value in buyer.items():
+                    placeholder_data[f"buyer_{key}"] = value
+                from_database += len(buyer)
+        except Exception as e:
+            print(f"Error fetching buyer: {e}")
+    
+    if effective_seller_id:
+        seller_id_str = str(effective_seller_id)
+        print(f"[PROCESS] Using seller_id: {seller_id_str} (from {'request' if body.seller_id else 'vessel.seller_company_uuid'})")
+        try:
+            response = supabase.table("seller_companies").select("*").eq("id", seller_id_str).execute()
+            if response.data:
+                seller = response.data[0]
+                context["seller_name"] = seller.get("name", "")
+                for key, value in seller.items():
+                    placeholder_data[f"seller_{key}"] = value
+                from_database += len(seller)
+        except Exception as e:
+            print(f"Error fetching seller: {e}")
+    
+    if body.product_id:
+        try:
+            response = supabase.table("oil_products").select("*").eq("id", body.product_id).execute()
+            if response.data:
+                product = response.data[0]
+                context["cargo_type"] = product.get("commodity_name", "")
+                for key, value in product.items():
+                    placeholder_data[f"product_{key}"] = value
+                from_database += len(product)
+        except Exception as e:
+            print(f"Error fetching product: {e}")
+    
+    if body.refinery_id:
+        try:
+            response = supabase.table("refineries").select("*").eq("id", body.refinery_id).execute()
+            if response.data:
+                refinery = response.data[0]
+                for key, value in refinery.items():
+                    placeholder_data[f"refinery_{key}"] = value
+                from_database += len(refinery)
+        except Exception as e:
+            print(f"Error fetching refinery: {e}")
+    
+    if body.departure_port_id:
+        try:
+            response = supabase.table("ports").select("*").eq("id", body.departure_port_id).execute()
+            if response.data:
+                port = response.data[0]
+                context["departure_port"] = port.get("name", "")
+                for key, value in port.items():
+                    placeholder_data[f"departure_port_{key}"] = value
+                from_database += len(port)
+        except Exception as e:
+            print(f"Error fetching departure port: {e}")
+    
+    if body.destination_port_id:
+        try:
+            response = supabase.table("ports").select("*").eq("id", body.destination_port_id).execute()
+            if response.data:
+                port = response.data[0]
+                context["destination_port"] = port.get("name", "")
+                for key, value in port.items():
+                    placeholder_data[f"destination_port_{key}"] = value
+                from_database += len(port)
+        except Exception as e:
+            print(f"Error fetching destination port: {e}")
+    
+    if body.buyer_bank_id:
+        try:
+            response = supabase.table("buyer_company_bank_accounts").select("*").eq("id", body.buyer_bank_id).execute()
+            if response.data:
+                bank = response.data[0]
+                for key, value in bank.items():
+                    placeholder_data[f"buyer_bank_{key}"] = value
+                from_database += len(bank)
+        except Exception as e:
+            print(f"Error fetching buyer bank: {e}")
+    
+    if body.seller_bank_id:
+        try:
+            response = supabase.table("seller_company_bank_accounts").select("*").eq("id", body.seller_bank_id).execute()
+            if response.data:
+                bank = response.data[0]
+                for key, value in bank.items():
+                    placeholder_data[f"seller_bank_{key}"] = value
+                from_database += len(bank)
+        except Exception as e:
+            print(f"Error fetching seller bank: {e}")
+    
+    if template_mappings:
+        print(f"\n[PROCESS] ========== RESOLVING TEMPLATE MAPPINGS (2nd pass) ==========")
+        entity_ids = {
+            "vessels": body.vessel_id,
+            "buyer_companies": effective_buyer_id,
+            "seller_companies": effective_seller_id,
+            "oil_products": body.product_id,
+            "refineries": body.refinery_id,
+            "ports": body.departure_port_id or body.destination_port_id,
+            "buyer_company_bank_accounts": body.buyer_bank_id,
+            "seller_company_bank_accounts": body.seller_bank_id
+        }
+        print(f"[PROCESS] Entity IDs: buyer={effective_buyer_id} (from {'request' if body.buyer_id else 'vessel'}), seller={effective_seller_id} (from {'request' if body.seller_id else 'vessel'})")
+        
+        for mapping in template_mappings:
+            placeholder_name = mapping.get("placeholder_name", "")
+            placeholder_name = re.sub(r'[\{\}\[\]<>%#]', '', placeholder_name).strip()
+            source = mapping.get("source", "").lower()
+            db_table = mapping.get("database_table", "")
+            db_column = mapping.get("database_column", "")
+            
+            if source == "database" and db_table and db_column:
+                entity_id = entity_ids.get(db_table)
+                value = fetch_value_from_database(db_table, db_column, entity_id)
+                if value is not None:
+                    was_set = placeholder_name in placeholder_data
+                    placeholder_data[placeholder_name] = value
+                    from_database += 1
+                    if was_set:
+                        print(f"[PROCESS] OVERWRITE: {placeholder_name} <- {db_table}.{db_column} = '{str(value)[:50]}...' (mapping overrides prefix)")
+                    else:
+                        print(f"[PROCESS] RESOLVED: {placeholder_name} <- {db_table}.{db_column} = '{str(value)[:50]}...'")
+                else:
+                    print(f"[PROCESS] NOT FOUND: {placeholder_name} <- {db_table}.{db_column} (entity_id={entity_id}), will use AI")
+                    ai_only_placeholders.append(placeholder_name)
+        print(f"[PROCESS] ============================================================\n")
+    
+    missing_placeholders = []
+    for ph in all_placeholders:
+        found = False
+        for key in placeholder_data:
+            if ph.lower() == key.lower() or ph.lower().replace("_", "") == key.lower().replace("_", ""):
+                found = True
+                break
+        if not found:
+            missing_placeholders.append(ph)
+    
+    placeholders_for_ai = list(set(missing_placeholders + ai_only_placeholders))
+    print(f"[PROCESS] Placeholders for AI generation: {len(placeholders_for_ai)} (missing: {len(missing_placeholders)}, mapped to AI: {len(ai_only_placeholders)})")
+    
+    ai_generated_placeholders = []
+    if placeholders_for_ai and openai_client:
+        ai_values = await generate_ai_values(placeholders_for_ai, context)
+        for ph, value in ai_values.items():
+            placeholder_data[ph] = value
+            ai_generated_placeholders.append(ph)
+            from_ai += 1
+        missing_placeholders = [p for p in missing_placeholders if p not in ai_values]
+        print(f"[PROCESS] AI-generated placeholders: {ai_generated_placeholders[:20]}...")
+    
+    print(f"\n[PROCESS] ========== FINAL SUMMARY ==========")
+    print(f"[PROCESS] From Database: {from_database} values")
+    print(f"[PROCESS] From AI: {from_ai} values")
+    print(f"[PROCESS] Still missing: {len(missing_placeholders)}")
+    print(f"[PROCESS] =====================================\n")
+    
+    doc = Document(file_path)
+    replacements_made = replace_placeholders_in_document(doc, placeholder_data)
+    apply_consistent_fonts(doc)
+    
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    docx_bytes = output.read()
+    
+    pdf_bytes, conversion_method = convert_docx_to_image_pdf(docx_bytes, dpi=200)
+    pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    
+    base_name = template_name.replace(".docx", "").replace(".DOCX", "")
+    
+    return {
+        "success": True,
+        "pdf_base64": pdf_base64,
+        "pdf_file_name": f"{base_name}_filled.pdf",
+        "replacements_made": replacements_made,
+        "from_database": from_database,
+        "from_ai": from_ai,
+        "ai_generated_placeholders": ai_generated_placeholders,
+        "conversion_method": conversion_method,
+        "missing_placeholders": missing_placeholders
+    }
+
+
+@app.post("/generate-document")
+async def generate_document(body: GenerateDocumentRequest):
+    """Generate a document with vessel_imo support - alias for process-document"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    template_name = body.template_name
+    if not template_name.lower().endswith('.docx'):
+        template_name = f"{template_name}.docx"
+    
+    file_path = os.path.join(TEMPLATES_DIR, template_name)
+    if not os.path.exists(file_path):
+        file_path_no_ext = os.path.join(TEMPLATES_DIR, body.template_name)
+        if os.path.exists(file_path_no_ext):
+            file_path = file_path_no_ext
+            template_name = body.template_name
+        else:
+            raise HTTPException(status_code=404, detail=f"Template '{body.template_name}' not found")
+    
+    print(f"\n[GENERATE] ========== REQUEST PARAMETERS ==========")
+    print(f"[GENERATE] template_name: {body.template_name}")
+    print(f"[GENERATE] vessel_imo: {body.vessel_imo}")
+    print(f"[GENERATE] vessel_id: {body.vessel_id}")
+    print(f"[GENERATE] buyer_id: {body.buyer_id} (type: {type(body.buyer_id).__name__})")
+    print(f"[GENERATE] seller_id: {body.seller_id} (type: {type(body.seller_id).__name__})")
+    print(f"[GENERATE] product_id: {body.product_id}")
+    print(f"[GENERATE] refinery_id: {body.refinery_id}")
+    print(f"[GENERATE] departure_port_id: {body.departure_port_id}")
+    print(f"[GENERATE] destination_port_id: {body.destination_port_id}")
+    print(f"[GENERATE] buyer_bank_id: {body.buyer_bank_id}")
+    print(f"[GENERATE] seller_bank_id: {body.seller_bank_id}")
+    print(f"[GENERATE] ================================================\n")
+    
+    vessel_id = body.vessel_id
+    if body.vessel_imo and not vessel_id:
+        try:
+            response = supabase.table("vessels").select("id").eq("imo", body.vessel_imo).execute()
+            if response.data and len(response.data) > 0:
+                vessel_id = response.data[0]["id"]
+                print(f"[GENERATE] Resolved vessel_imo {body.vessel_imo} -> vessel_id {vessel_id}")
+            else:
+                raise HTTPException(status_code=404, detail=f"Vessel with IMO '{body.vessel_imo}' not found")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error looking up vessel: {str(e)}")
+    
+    doc = Document(file_path)
+    placeholders_by_location = extract_placeholders_from_document(doc)
+    all_placeholders = set()
+    for phs in placeholders_by_location.values():
+        all_placeholders.update(phs)
+    
+    placeholder_data = {}
+    database_sources = {}
+    from_database = 0
+    from_ai = 0
+    context = {}
+    ai_only_placeholders = []
+    
+    print(f"\n[GENERATE] ========== TEMPLATE PLACEHOLDERS LOOKUP ==========")
+    template_mappings = fetch_template_placeholders(template_name)
+    
+    if template_mappings:
+        print(f"[GENERATE] Found {len(template_mappings)} mappings in document_template_fields table")
+        
+        print(f"[GENERATE] NOTE: entity_ids will be finalized after vessel lookup (buyer/seller may come from vessel)")
+        
+        for mapping in template_mappings:
+            placeholder_name = mapping.get("placeholder_name", "")
+            placeholder_name = re.sub(r'[\{\}\[\]<>%#]', '', placeholder_name).strip()
+            source = mapping.get("source", "").lower()
+            db_table = mapping.get("database_table", "")
+            db_column = mapping.get("database_column", "")
+            
+            if source == "database" and db_table and db_column:
+                ai_only_placeholders_temp = []
+                print(f"[GENERATE] MAPPING (queued): {placeholder_name} <- {db_table}.{db_column} (will resolve after entity fetch)")
+            elif source == "ai":
+                ai_only_placeholders.append(placeholder_name)
+                print(f"[GENERATE] MAPPING: {placeholder_name} <- AI (as configured)")
+            else:
+                print(f"[GENERATE] MAPPING: {placeholder_name} <- Unknown source: {source}")
+    else:
+        print("[GENERATE] No mappings found in document_template_fields, using fallback table fetches")
+    
+    print(f"[GENERATE] ============================================\n")
+    
+    vessel_buyer_company_uuid = None
+    vessel_seller_company_uuid = None
+    
+    if vessel_id:
+        try:
+            response = supabase.table("vessels").select("*").eq("id", vessel_id).execute()
+            if response.data:
+                vessel = response.data[0]
+                context["vessel_name"] = vessel.get("name", "")
+                print(f"[GENERATE] VESSELS table: fetched {len(vessel)} fields for id={vessel_id}")
+                for key, value in vessel.items():
+                    placeholder_data[f"vessel_{key}"] = value
+                    placeholder_data[key] = value
+                    database_sources[f"vessel_{key}"] = "vessels"
+                    database_sources[key] = "vessels"
+                from_database += len(vessel)
+                
+                vessel_buyer_company_uuid = vessel.get("buyer_company_uuid")
+                vessel_seller_company_uuid = vessel.get("seller_company_uuid")
+                print(f"[GENERATE] Vessel FK: buyer_company_uuid={vessel_buyer_company_uuid}, seller_company_uuid={vessel_seller_company_uuid}")
+            else:
+                print(f"[GENERATE] WARNING: No data found in vessels for id={vessel_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching vessel: {e}")
+    
+    effective_buyer_id = body.buyer_id or vessel_buyer_company_uuid
+    effective_seller_id = body.seller_id or vessel_seller_company_uuid
+    
+    if not effective_buyer_id:
+        try:
+            all_buyers = supabase.table("buyer_companies").select("id").execute()
+            if all_buyers.data:
+                random_buyer = random.choice(all_buyers.data)
+                effective_buyer_id = random_buyer["id"]
+                print(f"[GENERATE] Random buyer selected: {effective_buyer_id} (from {len(all_buyers.data)} available)")
+        except Exception as e:
+            print(f"[GENERATE] Error fetching random buyer: {e}")
+
+    if not effective_seller_id:
+        try:
+            all_sellers = supabase.table("seller_companies").select("id").execute()
+            if all_sellers.data:
+                random_seller = random.choice(all_sellers.data)
+                effective_seller_id = random_seller["id"]
+                print(f"[GENERATE] Random seller selected: {effective_seller_id} (from {len(all_sellers.data)} available)")
+        except Exception as e:
+            print(f"[GENERATE] Error fetching random seller: {e}")
+
+    if effective_buyer_id:
+        buyer_id_str = str(effective_buyer_id)
+        print(f"[GENERATE] Using buyer_id: {buyer_id_str} (from {'request' if body.buyer_id else 'vessel.buyer_company_uuid'})")
+        try:
+            response = supabase.table("buyer_companies").select("*").eq("id", buyer_id_str).execute()
+            if response.data:
+                buyer = response.data[0]
+                context["buyer_name"] = buyer.get("name", "")
+                print(f"[GENERATE] BUYER_COMPANIES table: fetched {len(buyer)} fields for id={buyer_id_str}")
+                for key, value in buyer.items():
+                    placeholder_data[f"buyer_{key}"] = value
+                    database_sources[f"buyer_{key}"] = "buyer_companies"
+                from_database += len(buyer)
+            else:
+                print(f"[GENERATE] WARNING: No data found in buyer_companies for id={buyer_id_str}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching buyer: {e}")
+    
+    if effective_seller_id:
+        seller_id_str = str(effective_seller_id)
+        print(f"[GENERATE] Using seller_id: {seller_id_str} (from {'request' if body.seller_id else 'vessel.seller_company_uuid'})")
+        try:
+            response = supabase.table("seller_companies").select("*").eq("id", seller_id_str).execute()
+            if response.data:
+                seller = response.data[0]
+                context["seller_name"] = seller.get("name", "")
+                print(f"[GENERATE] SELLER_COMPANIES table: fetched {len(seller)} fields for id={seller_id_str}")
+                for key, value in seller.items():
+                    placeholder_data[f"seller_{key}"] = value
+                    database_sources[f"seller_{key}"] = "seller_companies"
+                from_database += len(seller)
+            else:
+                print(f"[GENERATE] WARNING: No data found in seller_companies for id={seller_id_str}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching seller: {e}")
+    
+    if body.product_id:
+        if not is_valid_uuid(body.product_id):
+            print(f"[GENERATE] ERROR: product_id '{body.product_id}' is not a valid UUID format")
+            raise HTTPException(status_code=400, detail=f"product_id '{body.product_id}' is not a valid UUID. Please provide a valid UUID from oil_products table.")
+        try:
+            print(f"[GENERATE] Querying oil_products with id='{body.product_id}'")
+            response = supabase.table("oil_products").select("*").eq("id", body.product_id).execute()
+            if response.data:
+                product = response.data[0]
+                context["cargo_type"] = product.get("commodity_name", "")
+                print(f"[GENERATE] OIL_PRODUCTS table: fetched {len(product)} fields for id={body.product_id}")
+                for key, value in product.items():
+                    placeholder_data[f"product_{key}"] = value
+                    database_sources[f"product_{key}"] = "oil_products"
+                from_database += len(product)
+            else:
+                print(f"[GENERATE] WARNING: No data found in oil_products for id={body.product_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching product: {e}")
+    
+    if body.refinery_id:
+        if not is_valid_uuid(body.refinery_id):
+            print(f"[GENERATE] ERROR: refinery_id '{body.refinery_id}' is not a valid UUID format")
+            raise HTTPException(status_code=400, detail=f"refinery_id '{body.refinery_id}' is not a valid UUID. Please provide a valid UUID from refineries table.")
+        try:
+            print(f"[GENERATE] Querying refineries with id='{body.refinery_id}'")
+            response = supabase.table("refineries").select("*").eq("id", body.refinery_id).execute()
+            if response.data:
+                refinery = response.data[0]
+                print(f"[GENERATE] REFINERIES table: fetched {len(refinery)} fields for id={body.refinery_id}")
+                for key, value in refinery.items():
+                    placeholder_data[f"refinery_{key}"] = value
+                    database_sources[f"refinery_{key}"] = "refineries"
+                from_database += len(refinery)
+            else:
+                print(f"[GENERATE] WARNING: No data found in refineries for id={body.refinery_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching refinery: {e}")
+    
+    if body.departure_port_id:
+        try:
+            response = supabase.table("ports").select("*").eq("id", body.departure_port_id).execute()
+            if response.data:
+                port = response.data[0]
+                context["departure_port"] = port.get("name", "")
+                print(f"[GENERATE] PORTS table (departure): fetched {len(port)} fields for id={body.departure_port_id}")
+                for key, value in port.items():
+                    placeholder_data[f"departure_port_{key}"] = value
+                    database_sources[f"departure_port_{key}"] = "ports"
+                from_database += len(port)
+            else:
+                print(f"[GENERATE] WARNING: No data found in ports for departure id={body.departure_port_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching departure port: {e}")
+    
+    if body.destination_port_id:
+        try:
+            response = supabase.table("ports").select("*").eq("id", body.destination_port_id).execute()
+            if response.data:
+                port = response.data[0]
+                context["destination_port"] = port.get("name", "")
+                print(f"[GENERATE] PORTS table (destination): fetched {len(port)} fields for id={body.destination_port_id}")
+                for key, value in port.items():
+                    placeholder_data[f"destination_port_{key}"] = value
+                    database_sources[f"destination_port_{key}"] = "ports"
+                from_database += len(port)
+            else:
+                print(f"[GENERATE] WARNING: No data found in ports for destination id={body.destination_port_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching destination port: {e}")
+    
+    if body.buyer_bank_id:
+        try:
+            print(f"[GENERATE] Querying buyer_company_bank_accounts with id='{body.buyer_bank_id}'")
+            response = supabase.table("buyer_company_bank_accounts").select("*").eq("id", body.buyer_bank_id).execute()
+            if response.data:
+                bank = response.data[0]
+                print(f"[GENERATE] BUYER_BANK table: fetched {len(bank)} fields for id={body.buyer_bank_id}")
+                for key, value in bank.items():
+                    placeholder_data[f"buyer_bank_{key}"] = value
+                    database_sources[f"buyer_bank_{key}"] = "buyer_company_bank_accounts"
+                from_database += len(bank)
+            else:
+                print(f"[GENERATE] WARNING: No data found in buyer_company_bank_accounts for id={body.buyer_bank_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching buyer bank: {e}")
+    elif effective_buyer_id:
+        try:
+            print(f"[GENERATE] Auto-fetching buyer bank by company_id='{effective_buyer_id}'")
+            response = supabase.table("buyer_company_bank_accounts").select("*").eq("company_id", str(effective_buyer_id)).execute()
+            if response.data:
+                bank = response.data[0]
+                print(f"[GENERATE] BUYER_BANK table (auto): fetched {len(bank)} fields for company_id={effective_buyer_id}")
+                for key, value in bank.items():
+                    placeholder_data[f"buyer_bank_{key}"] = value
+                    database_sources[f"buyer_bank_{key}"] = "buyer_company_bank_accounts"
+                from_database += len(bank)
+            else:
+                print(f"[GENERATE] No buyer bank found for company_id={effective_buyer_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR auto-fetching buyer bank: {e}")
+    
+    if body.seller_bank_id:
+        try:
+            print(f"[GENERATE] Querying seller_company_bank_accounts with id='{body.seller_bank_id}'")
+            response = supabase.table("seller_company_bank_accounts").select("*").eq("id", body.seller_bank_id).execute()
+            if response.data:
+                bank = response.data[0]
+                print(f"[GENERATE] SELLER_BANK table: fetched {len(bank)} fields for id={body.seller_bank_id}")
+                for key, value in bank.items():
+                    placeholder_data[f"seller_bank_{key}"] = value
+                    database_sources[f"seller_bank_{key}"] = "seller_company_bank_accounts"
+                from_database += len(bank)
+            else:
+                print(f"[GENERATE] WARNING: No data found in seller_company_bank_accounts for id={body.seller_bank_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR fetching seller bank: {e}")
+    elif effective_seller_id:
+        try:
+            print(f"[GENERATE] Auto-fetching seller bank by company_id='{effective_seller_id}'")
+            response = supabase.table("seller_company_bank_accounts").select("*").eq("company_id", str(effective_seller_id)).execute()
+            if response.data:
+                bank = response.data[0]
+                print(f"[GENERATE] SELLER_BANK table (auto): fetched {len(bank)} fields for company_id={effective_seller_id}")
+                for key, value in bank.items():
+                    placeholder_data[f"seller_bank_{key}"] = value
+                    database_sources[f"seller_bank_{key}"] = "seller_company_bank_accounts"
+                from_database += len(bank)
+            else:
+                print(f"[GENERATE] No seller bank found for company_id={effective_seller_id}")
+        except Exception as e:
+            print(f"[GENERATE] ERROR auto-fetching seller bank: {e}")
+    
+    if template_mappings:
+        print(f"\n[GENERATE] ========== RESOLVING TEMPLATE MAPPINGS (2nd pass) ==========")
+        entity_ids = {
+            "vessels": vessel_id,
+            "buyer_companies": effective_buyer_id,
+            "seller_companies": effective_seller_id,
+            "oil_products": body.product_id,
+            "refineries": body.refinery_id,
+            "ports": body.departure_port_id or body.destination_port_id,
+            "buyer_company_bank_accounts": body.buyer_bank_id,
+            "seller_company_bank_accounts": body.seller_bank_id
+        }
+        print(f"[GENERATE] Entity IDs: buyer={effective_buyer_id} (from {'request' if body.buyer_id else 'vessel'}), seller={effective_seller_id} (from {'request' if body.seller_id else 'vessel'})")
+        
+        for mapping in template_mappings:
+            placeholder_name = mapping.get("placeholder_name", "")
+            placeholder_name = re.sub(r'[\{\}\[\]<>%#]', '', placeholder_name).strip()
+            source = mapping.get("source", "").lower()
+            db_table = mapping.get("database_table", "")
+            db_column = mapping.get("database_column", "")
+            
+            if source == "database" and db_table and db_column:
+                entity_id = entity_ids.get(db_table)
+                value = fetch_value_from_database(db_table, db_column, entity_id)
+                if value is not None:
+                    was_set = placeholder_name in placeholder_data
+                    placeholder_data[placeholder_name] = value
+                    database_sources[placeholder_name] = f"{db_table}.{db_column}"
+                    from_database += 1
+                    if was_set:
+                        print(f"[GENERATE] OVERWRITE: {placeholder_name} <- {db_table}.{db_column} = '{str(value)[:50]}...' (mapping overrides prefix)")
+                    else:
+                        print(f"[GENERATE] RESOLVED: {placeholder_name} <- {db_table}.{db_column} = '{str(value)[:50]}...'")
+                else:
+                    print(f"[GENERATE] NOT FOUND: {placeholder_name} <- {db_table}.{db_column} (entity_id={entity_id}), will use AI")
+                    ai_only_placeholders.append(placeholder_name)
+        print(f"[GENERATE] ============================================================\n")
+    
+    print(f"\n[GENERATE] ========== DATABASE SUMMARY ==========")
+    print(f"[GENERATE] Total placeholders from database: {from_database}")
+    print(f"[GENERATE] Placeholder data keys: {list(placeholder_data.keys())[:20]}...")
+    print(f"[GENERATE] ==========================================\n")
+    
+    missing_placeholders = []
+    for ph in all_placeholders:
+        found = False
+        for key in placeholder_data:
+            if ph.lower() == key.lower() or ph.lower().replace("_", "") == key.lower().replace("_", ""):
+                found = True
+                break
+        if not found:
+            missing_placeholders.append(ph)
+    
+    placeholders_for_ai = list(set(missing_placeholders + ai_only_placeholders))
+    print(f"[GENERATE] Placeholders for AI generation: {len(placeholders_for_ai)} (missing: {len(missing_placeholders)}, mapped to AI: {len(ai_only_placeholders)})")
+    
+    ai_generated_placeholders = []
+    if placeholders_for_ai and openai_client:
+        ai_values = await generate_ai_values(placeholders_for_ai, context)
+        for ph, value in ai_values.items():
+            placeholder_data[ph] = value
+            ai_generated_placeholders.append(ph)
+            from_ai += 1
+        missing_placeholders = [p for p in missing_placeholders if p not in ai_values]
+        print(f"[GENERATE] AI-generated placeholders: {ai_generated_placeholders[:20]}...")
+    
+    print(f"\n[GENERATE] ========== FINAL SUMMARY ==========")
+    print(f"[GENERATE] From Database: {from_database} values")
+    print(f"[GENERATE] From AI: {from_ai} values")
+    print(f"[GENERATE] Still missing: {len(missing_placeholders)}")
+    print(f"[GENERATE] =====================================\n")
+    
+    doc = Document(file_path)
+    replacements_made = replace_placeholders_in_document(doc, placeholder_data)
+    apply_consistent_fonts(doc)
+    
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    docx_bytes = output.read()
+    
+    pdf_bytes, conversion_method = convert_docx_to_image_pdf(docx_bytes, dpi=200)
+    pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    
+    base_name = template_name.replace(".docx", "").replace(".DOCX", "")
+    
+    return {
+        "success": True,
+        "pdf_base64": pdf_base64,
+        "pdf_file_name": f"{base_name}_filled.pdf",
+        "replacements_made": replacements_made,
+        "from_database": from_database,
+        "from_ai": from_ai,
+        "ai_generated_placeholders": ai_generated_placeholders,
+        "conversion_method": conversion_method,
+        "missing_placeholders": missing_placeholders
+    }
+
+
+@app.post("/upload-csv")
+async def upload_csv(
+    file: UploadFile = File(...),
+    data_type: str = Form(...)
+):
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files are allowed")
+    
+    content = await file.read()
+    csv_id = str(uuid.uuid4())
+    file_path = os.path.join(CSV_DIR, file.filename)
+    
+    async with aiofiles.open(file_path, "wb") as f:
+        await f.write(content)
+    
+    df = pd.read_csv(BytesIO(content))
+    headers = list(df.columns)
+    row_count = len(df)
+    
+    csv_metadata_file = os.path.join(SETTINGS_DIR, "csv_metadata.json")
+    csv_metadata = {}
+    if os.path.exists(csv_metadata_file):
+        with open(csv_metadata_file, "r") as f:
+            csv_metadata = json.load(f)
+    
+    csv_metadata[csv_id] = {
+        "id": csv_id,
+        "name": file.filename,
+        "data_type": data_type,
+        "headers": headers,
+        "row_count": row_count,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    with open(csv_metadata_file, "w") as f:
+        json.dump(csv_metadata, f, indent=2)
+    
+    return {
+        "success": True,
+        "csv_id": csv_id,
+        "file_name": file.filename,
+        "headers": headers,
+        "row_count": row_count
+    }
+
+
+@app.get("/csv-files")
+async def list_csv_files():
+    csv_metadata_file = os.path.join(SETTINGS_DIR, "csv_metadata.json")
+    if os.path.exists(csv_metadata_file):
+        with open(csv_metadata_file, "r") as f:
+            csv_metadata = json.load(f)
+        return {"csv_files": list(csv_metadata.values())}
+    return {"csv_files": []}
+
+
+@app.get("/data/all")
+async def get_all_data_sources():
+    data_sources = {}
+    
+    for table in DATABASE_TABLES:
+        data_sources[table] = {
+            "type": "database",
+            "name": table.replace("_", " ").title(),
+            "row_count": 0
+        }
+        if supabase:
+            try:
+                response = supabase.table(table).select("id", count="exact").execute()
+                data_sources[table]["row_count"] = response.count or 0
+            except:
+                pass
+    
+    csv_metadata_file = os.path.join(SETTINGS_DIR, "csv_metadata.json")
+    if os.path.exists(csv_metadata_file):
+        with open(csv_metadata_file, "r") as f:
+            csv_metadata = json.load(f)
+        for csv_id, csv_data in csv_metadata.items():
+            data_sources[f"csv_{csv_data['data_type']}"] = {
+                "type": "csv",
+                "name": csv_data["name"],
+                "row_count": csv_data["row_count"]
+            }
+    
+    return {"data_sources": data_sources}
+
+
+DEFAULT_PLANS = {
+    "basic": {
+        "id": "basic",
+        "plan_name": "Basic",
+        "plan_tier": "basic",
+        "can_download": True,
+        "max_downloads_per_month": 10,
+        "allowed_templates": ["vessel_certificate"]
+    },
+    "professional": {
+        "id": "professional",
+        "plan_name": "Professional",
+        "plan_tier": "professional",
+        "can_download": True,
+        "max_downloads_per_month": 50,
+        "allowed_templates": ["vessel_certificate", "sales_purchase_agreement", "bill_of_lading"]
+    },
+    "enterprise": {
+        "id": "enterprise",
+        "plan_name": "Enterprise",
+        "plan_tier": "enterprise",
+        "can_download": True,
+        "max_downloads_per_month": -1,
+        "allowed_templates": ["*"]
+    }
+}
+
+
+@app.get("/plans")
+async def get_plans():
+    return {"plans": DEFAULT_PLANS}
+
+
+@app.get("/plans-db")
+async def get_plans_from_db():
+    if not supabase:
+        return {"plans": DEFAULT_PLANS}
+    
+    try:
+        response = supabase.table("subscription_plans").select("*").execute()
+        if response.data:
+            plans = {}
+            for plan in response.data:
+                plan_id = plan.get("id", plan.get("plan_id", str(uuid.uuid4())))
+                plans[plan_id] = plan
+            return {"plans": plans}
+        return {"plans": DEFAULT_PLANS}
+    except Exception as e:
+        return {"plans": DEFAULT_PLANS}
+
+
+@app.post("/update-plan")
+async def update_plan(body: PlanUpdateRequest):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    try:
+        response = supabase.table("subscription_plans").update(body.plan_data).eq("id", body.plan_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def convert_docx_to_pdf_direct(docx_bytes: bytes) -> bytes:
+    """Convert DOCX to PDF directly using LibreOffice (faster, text selectable)"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        docx_path = os.path.join(temp_dir, "document.docx")
+        with open(docx_path, "wb") as f:
+            f.write(docx_bytes)
+        
+        result = subprocess.run([
+            "libreoffice", "--headless", "--convert-to", "pdf",
+            "--outdir", temp_dir, docx_path
+        ], capture_output=True, timeout=120)
+        
+        if result.returncode != 0:
+            raise Exception(f"LibreOffice conversion failed: {result.stderr.decode()}")
+        
+        pdf_path = os.path.join(temp_dir, "document.pdf")
+        if not os.path.exists(pdf_path):
+            raise Exception("PDF file was not created by LibreOffice")
+        
+        with open(pdf_path, "rb") as f:
+            return f.read()
+
+
+def convert_docx_to_image_pdf(docx_bytes: bytes, dpi: int = 200) -> tuple:
+    """Convert DOCX to image-based PDF (non-editable) using hybrid method:
+    
+    HYBRID PIPELINE:
+    1. Try docx2pdf first (if available)
+    2. If docx2pdf fails, fallback to LibreOffice
+    3. PDF -> Images (pdf2image/poppler) at specified DPI
+    4. Images -> PDF (img2pdf)
+    
+    Args:
+        docx_bytes: The DOCX file as bytes
+        dpi: Resolution for image conversion (default 200 for better quality)
+    
+    Returns:
+        tuple: (PDF bytes, conversion_method used)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    conversion_method = "unknown"
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        docx_path = os.path.join(temp_dir, "document.docx")
+        pdf_path = os.path.join(temp_dir, "document.pdf")
+        
+        with open(docx_path, "wb") as f:
+            f.write(docx_bytes)
+        logger.info(f"Step 1: Saved DOCX to {docx_path}, size: {len(docx_bytes)} bytes")
+        print(f"[PDF] Step 1: Saved DOCX, size: {len(docx_bytes)} bytes")
+        
+        docx2pdf_success = False
+        if DOCX2PDF_AVAILABLE:
+            try:
+                print("[PDF] Step 2: Trying docx2pdf conversion...")
+                docx2pdf_convert(docx_path, pdf_path)
+                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 100:
+                    docx2pdf_success = True
+                    conversion_method = "docx2pdf"
+                    print(f"[PDF] Step 2 SUCCESS: docx2pdf created PDF, size: {os.path.getsize(pdf_path)} bytes")
+                else:
+                    print("[PDF] Step 2 WARNING: docx2pdf did not create valid PDF")
+            except Exception as e:
+                print(f"[PDF] Step 2 WARNING: docx2pdf failed: {str(e)}")
+                print("[PDF] Falling back to LibreOffice...")
+        
+        if not docx2pdf_success:
+            print("[PDF] Step 2: Using LibreOffice for DOCX to PDF conversion...")
+            conversion_method = "libreoffice"
+            try:
+                result = subprocess.run(
+                    ["soffice", "--headless", "--convert-to", "pdf", "--outdir", temp_dir, docx_path],
+                    capture_output=True,
+                    timeout=180,
+                    env={**os.environ, "HOME": temp_dir}
+                )
+                print(f"[PDF] Step 2: LibreOffice returned code {result.returncode}")
+                if result.stderr:
+                    print(f"[PDF] LibreOffice stderr: {result.stderr.decode()[:500]}")
+            except subprocess.TimeoutExpired:
+                print("[PDF] ERROR: LibreOffice timed out after 180s")
+                raise Exception("DOCX to PDF conversion timed out (180s). Document may be too large.")
+            except FileNotFoundError:
+                print("[PDF] ERROR: LibreOffice/soffice not found")
+                raise Exception("LibreOffice is not installed. Cannot convert DOCX to PDF.")
+        
+        if not os.path.exists(pdf_path):
+            files_in_dir = os.listdir(temp_dir)
+            print(f"[PDF] ERROR: PDF not created. Files in temp dir: {files_in_dir}")
+            raise Exception(f"PDF was not created by LibreOffice. Return code: {result.returncode}")
+        
+        pdf_size = os.path.getsize(pdf_path)
+        print(f"[PDF] Step 2 complete: PDF created, size: {pdf_size} bytes")
+        
+        if pdf_size < 100:
+            raise Exception("Generated PDF is too small, likely corrupted.")
+        
+        try:
+            print(f"[PDF] Step 3: Converting PDF to images at {dpi} DPI...")
+            images = convert_from_path(
+                pdf_path,
+                dpi=dpi,
+                fmt="jpeg",
+                thread_count=1,
+                use_pdftocairo=True
+            )
+            print(f"[PDF] Step 3 complete: Converted {len(images)} pages to images")
+        except Exception as e:
+            print(f"[PDF] ERROR in Step 3: {str(e)}")
+            raise Exception(f"Failed to convert PDF to images: {str(e)}")
+        
+        if not images or len(images) == 0:
+            raise Exception("No pages were extracted from the PDF.")
+        
+        image_paths = []
+        for i, img in enumerate(images):
+            img_path = os.path.join(temp_dir, f"page_{i:03d}.jpg")
+            img = img.convert("RGB")
+            img.save(img_path, "JPEG", quality=95, optimize=True)
+            image_paths.append(img_path)
+        print(f"[PDF] Step 4: Saved {len(image_paths)} JPEG images")
+        
+        try:
+            print("[PDF] Step 5: Merging images into final PDF...")
+            final_pdf_bytes = img2pdf.convert(image_paths)
+            print(f"[PDF] Step 5 complete: Final PDF size: {len(final_pdf_bytes)} bytes")
+        except Exception as e:
+            print(f"[PDF] ERROR in Step 5: {str(e)}")
+            raise Exception(f"Failed to merge images into PDF: {str(e)}")
+        
+        if not final_pdf_bytes or len(final_pdf_bytes) < 500:
+            raise Exception("Final PDF is empty or too small.")
+        
+        print(f"[PDF] SUCCESS: Generated {len(final_pdf_bytes)} byte image-based PDF using {conversion_method}")
+        return final_pdf_bytes, conversion_method
+
+
+class ConvertToPdfRequest(BaseModel):
+    docx_base64: str
+    file_name: Optional[str] = "document"
+
+
+@app.post("/convert-to-pdf")
+async def convert_to_pdf(body: ConvertToPdfRequest):
+    """Convert a base64-encoded DOCX to an image-based PDF (non-editable)"""
+    try:
+        docx_bytes = base64.b64decode(body.docx_base64)
+        
+        pdf_bytes, conversion_method = convert_docx_to_image_pdf(docx_bytes)
+        
+        pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
+        
+        return {
+            "success": True,
+            "pdf_base64": pdf_base64,
+            "file_name": f"{body.file_name}.pdf",
+            "file_size": len(pdf_bytes),
+            "conversion_method": conversion_method
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF conversion failed: {str(e)}")
+
+
+class DownloadDocumentRequest(BaseModel):
+    template_name: str
+    vessel_imo: Optional[str] = None
+    vessel_id: Optional[int] = None
+    buyer_id: Optional[str] = None
+    seller_id: Optional[str] = None
+    product_id: Optional[str] = None
+    refinery_id: Optional[str] = None
+    departure_port_id: Optional[int] = None
+    destination_port_id: Optional[int] = None
+    buyer_bank_id: Optional[str] = None
+    seller_bank_id: Optional[str] = None
+
+
+@app.post("/download-document")
+async def download_document(body: DownloadDocumentRequest):
+    """Generate and download document directly as PDF or DOCX file (not base64 JSON)"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    template_name = body.template_name
+    if not template_name.lower().endswith('.docx'):
+        template_name = f"{template_name}.docx"
+    
+    file_path = os.path.join(TEMPLATES_DIR, template_name)
+    if not os.path.exists(file_path):
+        file_path_no_ext = os.path.join(TEMPLATES_DIR, body.template_name)
+        if os.path.exists(file_path_no_ext):
+            file_path = file_path_no_ext
+            template_name = body.template_name
+        else:
+            raise HTTPException(status_code=404, detail=f"Template '{body.template_name}' not found")
+    
+    vessel_id = body.vessel_id
+    if body.vessel_imo and not vessel_id:
+        try:
+            response = supabase.table("vessels").select("id").eq("imo", body.vessel_imo).execute()
+            if response.data and len(response.data) > 0:
+                vessel_id = response.data[0]["id"]
+        except Exception:
+            pass
+    
+    doc = Document(file_path)
+    placeholders_by_location = extract_placeholders_from_document(doc)
+    all_placeholders = set()
+    for phs in placeholders_by_location.values():
+        all_placeholders.update(phs)
+    
+    placeholder_data = {}
+    context = {}
+    
+    if vessel_id:
+        try:
+            response = supabase.table("vessels").select("*").eq("id", vessel_id).execute()
+            if response.data:
+                vessel = response.data[0]
+                context["vessel_name"] = vessel.get("name", "")
+                for key, value in vessel.items():
+                    placeholder_data[f"vessel_{key}"] = value
+                    placeholder_data[key] = value
+        except Exception:
+            pass
+    
+    if body.buyer_id:
+        try:
+            response = supabase.table("buyer_companies").select("*").eq("id", body.buyer_id).execute()
+            if response.data:
+                for key, value in response.data[0].items():
+                    placeholder_data[f"buyer_{key}"] = value
+        except Exception:
+            pass
+    
+    if body.seller_id:
+        try:
+            response = supabase.table("seller_companies").select("*").eq("id", body.seller_id).execute()
+            if response.data:
+                for key, value in response.data[0].items():
+                    placeholder_data[f"seller_{key}"] = value
+        except Exception:
+            pass
+    
+    missing_placeholders = list(all_placeholders - set(placeholder_data.keys()))
+    if missing_placeholders and openai_client:
+        ai_values = await generate_ai_values(missing_placeholders, context)
+        for ph, value in ai_values.items():
+            placeholder_data[ph] = value
+    
+    doc = Document(file_path)
+    replace_placeholders_in_document(doc, placeholder_data)
+    
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    docx_bytes = output.read()
+    
+    base_name = template_name.replace(".docx", "").replace(".DOCX", "")
+    
+    pdf_bytes, conversion_method = convert_docx_to_image_pdf(docx_bytes, dpi=200)
+    print(f"[DOWNLOAD] PDF generated using {conversion_method}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{base_name}_filled.pdf"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+
+@app.post("/process-document-pdf")
+async def process_document_and_convert_to_pdf(body: ProcessDocumentRequest):
+    """Process document and return as image-based PDF"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    file_path = os.path.join(TEMPLATES_DIR, body.template_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    doc = Document(file_path)
+    placeholders_by_location = extract_placeholders_from_document(doc)
+    all_placeholders = set()
+    for phs in placeholders_by_location.values():
+        all_placeholders.update(phs)
+    
+    placeholder_data = {}
+    from_database = 0
+    from_ai = 0
+    context = {}
+    
+    if body.vessel_id:
+        try:
+            response = supabase.table("vessels").select("*").eq("id", body.vessel_id).execute()
+            if response.data:
+                vessel = response.data[0]
+                context["vessel_name"] = vessel.get("name", "")
+                for key, value in vessel.items():
+                    placeholder_data[f"vessel_{key}"] = value
+                    placeholder_data[key] = value
+                from_database += len(vessel)
+        except Exception as e:
+            print(f"Error fetching vessel: {e}")
+    
+    if body.buyer_id:
+        try:
+            response = supabase.table("buyer_companies").select("*").eq("id", body.buyer_id).execute()
+            if response.data:
+                buyer = response.data[0]
+                context["buyer_name"] = buyer.get("name", "")
+                for key, value in buyer.items():
+                    placeholder_data[f"buyer_{key}"] = value
+                from_database += len(buyer)
+        except Exception as e:
+            print(f"Error fetching buyer: {e}")
+    
+    if body.seller_id:
+        try:
+            response = supabase.table("seller_companies").select("*").eq("id", body.seller_id).execute()
+            if response.data:
+                seller = response.data[0]
+                context["seller_name"] = seller.get("name", "")
+                for key, value in seller.items():
+                    placeholder_data[f"seller_{key}"] = value
+                from_database += len(seller)
+        except Exception as e:
+            print(f"Error fetching seller: {e}")
+    
+    if body.product_id:
+        try:
+            response = supabase.table("oil_products").select("*").eq("id", body.product_id).execute()
+            if response.data:
+                product = response.data[0]
+                context["cargo_type"] = product.get("commodity_name", "")
+                for key, value in product.items():
+                    placeholder_data[f"product_{key}"] = value
+                from_database += len(product)
+        except Exception as e:
+            print(f"Error fetching product: {e}")
+    
+    if body.refinery_id:
+        try:
+            response = supabase.table("refineries").select("*").eq("id", body.refinery_id).execute()
+            if response.data:
+                refinery = response.data[0]
+                for key, value in refinery.items():
+                    placeholder_data[f"refinery_{key}"] = value
+                from_database += len(refinery)
+        except Exception as e:
+            print(f"Error fetching refinery: {e}")
+    
+    if body.departure_port_id:
+        try:
+            response = supabase.table("ports").select("*").eq("id", body.departure_port_id).execute()
+            if response.data:
+                port = response.data[0]
+                context["departure_port"] = port.get("name", "")
+                for key, value in port.items():
+                    placeholder_data[f"departure_port_{key}"] = value
+                from_database += len(port)
+        except Exception as e:
+            print(f"Error fetching departure port: {e}")
+    
+    if body.destination_port_id:
+        try:
+            response = supabase.table("ports").select("*").eq("id", body.destination_port_id).execute()
+            if response.data:
+                port = response.data[0]
+                context["destination_port"] = port.get("name", "")
+                for key, value in port.items():
+                    placeholder_data[f"destination_port_{key}"] = value
+                from_database += len(port)
+        except Exception as e:
+            print(f"Error fetching destination port: {e}")
+    
+    if body.buyer_bank_id:
+        try:
+            response = supabase.table("buyer_company_bank_accounts").select("*").eq("id", body.buyer_bank_id).execute()
+            if response.data:
+                bank = response.data[0]
+                for key, value in bank.items():
+                    placeholder_data[f"buyer_bank_{key}"] = value
+                from_database += len(bank)
+        except Exception as e:
+            print(f"Error fetching buyer bank: {e}")
+    
+    if body.seller_bank_id:
+        try:
+            response = supabase.table("seller_company_bank_accounts").select("*").eq("id", body.seller_bank_id).execute()
+            if response.data:
+                bank = response.data[0]
+                for key, value in bank.items():
+                    placeholder_data[f"seller_bank_{key}"] = value
+                from_database += len(bank)
+        except Exception as e:
+            print(f"Error fetching seller bank: {e}")
+    
+    missing_placeholders = []
+    for ph in all_placeholders:
+        found = False
+        for key in placeholder_data:
+            if ph.lower() == key.lower() or ph.lower().replace("_", "") == key.lower().replace("_", ""):
+                found = True
+                break
+        if not found:
+            missing_placeholders.append(ph)
+    
+    if missing_placeholders and openai_client:
+        ai_values = await generate_ai_values(missing_placeholders, context)
+        for ph, value in ai_values.items():
+            placeholder_data[ph] = value
+            from_ai += 1
+        missing_placeholders = [p for p in missing_placeholders if p not in ai_values]
+    
+    doc = Document(file_path)
+    replacements_made = replace_placeholders_in_document(doc, placeholder_data)
+    
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    docx_bytes = output.read()
+    
+    pdf_bytes, conversion_method = convert_docx_to_image_pdf(docx_bytes, dpi=200)
+    pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    
+    output_filename = body.template_name.replace(".docx", "_filled.pdf")
+    
+    return {
+        "success": True,
+        "pdf_base64": pdf_base64,
+        "file_name": output_filename,
+        "replacements_made": replacements_made,
+        "from_database": from_database,
+        "from_ai": from_ai,
+        "conversion_method": conversion_method,
+        "missing_placeholders": missing_placeholders
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting Document Processing API v2.0...")
-    logger.info(f"SUPABASE_SERVICE_ROLE_KEY: {'configured (RLS bypass enabled)' if SUPABASE_SERVICE_ROLE_KEY else 'not set (buyer/seller may fail)'}")
-    logger.info(f"Templates directory: {TEMPLATES_DIR}")
-    logger.info(f"Storage directory: {STORAGE_DIR}")
-    logger.info("AI upload mapping: enabled (database/csv/random per placeholder, disk fallback if no template_id)")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=5000)
