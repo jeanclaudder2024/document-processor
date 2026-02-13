@@ -2245,4 +2245,6 @@ async def process_document_and_convert_to_pdf(body: ProcessDocumentRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    # VPS: use port 8000 (Nginx proxies /api to localhost:8000). Local: set PORT=5000 in .env
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
