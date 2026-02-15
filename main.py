@@ -24,7 +24,7 @@ _load_dotenv()
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse, HTMLResponse
 from docx import Document
 from docx.shared import Pt
 from supabase import create_client
@@ -728,6 +728,65 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
+
+
+@app.get("/portal", response_class=HTMLResponse)
+async def portal():
+    """Portal page for Document Processor API: status, connection info, and links."""
+    supabase_status = "connected" if supabase else "not configured"
+    openai_status = "available" if openai_client else "not configured"
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Document Processor API – Portal</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{ font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 2rem; background: #0f172a; color: #e2e8f0; line-height: 1.6; }}
+    .container {{ max-width: 640px; margin: 0 auto; }}
+    h1 {{ color: #38bdf8; margin-top: 0; }}
+    .card {{ background: #1e293b; border-radius: 8px; padding: 1.25rem; margin: 1rem 0; border: 1px solid #334155; }}
+    .badge {{ display: inline-block; padding: 0.2em 0.5em; border-radius: 4px; font-size: 0.85em; font-weight: 600; }}
+    .badge.ok {{ background: #065f46; color: #6ee7b7; }}
+    .badge.warn {{ background: #92400e; color: #fcd34d; }}
+    a {{ color: #38bdf8; }}
+    code {{ background: #334155; padding: 0.1em 0.4em; border-radius: 4px; font-size: 0.9em; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Document Processor API – Portal</h1>
+    <p>Use this page to verify the API is running and to connect the frontend (PetroDealHub) to this backend.</p>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Status</h2>
+      <p><strong>API:</strong> <span class="badge ok">running</span> &nbsp; <strong>Version:</strong> 1.0.0</p>
+      <p><strong>Supabase:</strong> <span class="badge {'ok' if supabase else 'warn'}">{supabase_status}</span></p>
+      <p><strong>OpenAI:</strong> <span class="badge {'ok' if openai_client else 'warn'}">{openai_status}</span></p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Connect frontend to this API</h2>
+      <p>In the PetroDealHub app, open <strong>Document API Portal</strong> (or Admin → Document Publishing → API Endpoint Settings) and set the API URL to this server:</p>
+      <p><code id="api-url">(this origin)</code></p>
+      <p>Examples: <code>https://yourdomain.com/api</code> or <code>http://localhost:8000</code></p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Endpoints</h2>
+      <ul>
+        <li><a href="/health">/health</a> – health check</li>
+        <li><a href="/">/</a> – API info (JSON)</li>
+        <li><a href="/templates">/templates</a> – list templates</li>
+      </ul>
+    </div>
+  </div>
+  <script>
+    document.getElementById("api-url").textContent = window.location.origin;
+  </script>
+</body>
+</html>"""
 
 
 @app.post("/upload-template")
@@ -2245,6 +2304,4 @@ async def process_document_and_convert_to_pdf(body: ProcessDocumentRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # VPS: use port 8000 (Nginx proxies /api to localhost:8000). Local: set PORT=5000 in .env
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=5000)
