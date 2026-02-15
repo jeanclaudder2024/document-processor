@@ -2304,4 +2304,5 @@ async def process_document_and_convert_to_pdf(body: ProcessDocumentRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    port = int(os.getenv("FASTAPI_PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
