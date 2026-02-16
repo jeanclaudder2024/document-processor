@@ -730,6 +730,17 @@ async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
 
 
+@app.get("/ai-status")
+async def ai_status():
+    """AI generation status for the frontend (avoids 404)."""
+    return {
+        "available": openai_client is not None,
+        "message": "AI available" if openai_client else "OpenAI not configured",
+        "credits_remaining": None,
+        "last_error": None,
+    }
+
+
 @app.get("/portal", response_class=HTMLResponse)
 async def portal():
     """Portal page for Document Processor API: status, connection info, and links."""
@@ -770,7 +781,7 @@ async def portal():
       <h2 style="margin-top:0;">Connect frontend to this API</h2>
       <p>In the PetroDealHub app, open <strong>Document API Portal</strong> (or Admin → Document Publishing → API Endpoint Settings) and set the API URL to this server:</p>
       <p><code id="api-url">(this origin)</code></p>
-      <p>Examples: <code>https://yourdomain.com/api</code> or <code>http://localhost:8000</code></p>
+      <p>Examples: <code>https://petrodealhub.com/api</code> or <code>http://localhost:8000</code></p>
     </div>
 
     <div class="card">
